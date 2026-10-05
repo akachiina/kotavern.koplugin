@@ -1,0 +1,8 @@
+# runtime data (per-device, never committed)
+data/
+# internal planning notes (not shipped)
+/PLAN.md
+/API_CONNECTIONS_PROMPT.md
+# temp files
+*.tmp
+.DS_Store

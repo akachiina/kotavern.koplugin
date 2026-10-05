@@ -1,0 +1,1520 @@
+# KOTavern Brazilian Portuguese translation.
+# Copyright (C) 2026 KOTavern contributors.
+# Content-Type: text/plain; charset=UTF-8
+# Language: pt_BR
+# NOTE: msgid order matches the sorted extraction in tools (do not reorder).
+
+msgid "%s %s %s"
+msgstr "%s %s %s"
+
+msgid "(default)"
+msgstr "(padrão)"
+
+msgid "(empty)"
+msgstr "(vazio)"
+
+msgid "(no keys)"
+msgstr "(sem chaves)"
+
+msgid "1 entry"
+msgstr "1 entrada"
+
+msgid "1 greeting"
+msgstr "1 saudação"
+
+msgid "@ depth"
+msgstr "@ profundidade"
+
+msgid "AND all secondary"
+msgstr "E todas secundárias"
+
+msgid "AND any secondary"
+msgstr "E qualquer secundária"
+
+msgid "API"
+msgstr "API"
+
+msgid "API Connections"
+msgstr "Conexões de API"
+
+msgid "API Error: "
+msgstr "Erro de API: "
+
+msgid "About / version"
+msgstr "Sobre / versão"
+
+msgid "Actions"
+msgstr "Ações"
+
+msgid "Activate (this chat)"
+msgstr "Ativar (neste chat)"
+
+msgid "Add"
+msgstr "Adicionar"
+
+msgid "Add System Note"
+msgstr "Adicionar nota do sistema"
+
+msgid "Add at least one key (or mark as constant)."
+msgstr "Adicione ao menos uma chave (ou marque como constante)."
+
+msgid "Add to Favorites"
+msgstr "Adicionar aos favoritos"
+
+msgid "After character"
+msgstr "Após personagem"
+
+msgid "All"
+msgstr "Tudo"
+
+msgid "Already generating. Stop the current response first."
+msgstr "Já gerando. Pare a resposta atual primeiro."
+
+msgid "Already using this folder."
+msgstr "Já usando esta pasta."
+
+msgid "Alternate Greetings"
+msgstr "Saudações alternativas"
+
+msgid "Always (no limit)"
+msgstr "Sempre (sem limite)"
+
+msgid "Always visible"
+msgstr "Sempre visível"
+
+msgid "Appearance"
+msgstr "Aparência"
+
+msgid "Apply to"
+msgstr "Aplicar a"
+
+msgid "Artifact (commits)"
+msgstr "Artifact (commits)"
+
+msgid "Author's Note"
+msgstr "Nota do autor"
+
+msgid "Auto-continue"
+msgstr "Continuação automática"
+
+msgid "Auto-continue target"
+msgstr "Meta da continuação automática"
+
+msgid "Auto-continue target (tokens)"
+msgstr "Meta da continuação automática (tokens)"
+
+msgid "Avatar size"
+msgstr "Tamanho do avatar"
+
+msgid "Background (curl)"
+msgstr "Em segundo plano (curl)"
+
+msgid "Backup complete"
+msgstr "Backup concluído"
+
+msgid "Before character"
+msgstr "Antes do personagem"
+
+msgid "Before scenario"
+msgstr "Antes do cenário"
+
+msgid "Behavior"
+msgstr "Comportamento"
+
+msgid "Blank = built-in default"
+msgstr "Em branco = padrão interno"
+
+msgid "Book"
+msgstr "Livro"
+
+msgid "Both"
+msgstr "Ambos"
+
+msgid "Branch created: "
+msgstr "Ramificação criada: "
+
+msgid "Branch from here"
+msgstr "Ramificar daqui"
+
+msgid "Bubbles (ST)"
+msgstr "Bolhas (ST)"
+
+msgid "Calm"
+msgstr "Suave"
+
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgid "Caption band"
+msgstr "Faixa de legenda"
+
+msgid "Card exported to "
+msgstr "Card exportado para "
+
+msgid "Card first message: "
+msgstr "Primeira mensagem do card: "
+
+msgid "Card height"
+msgstr "Altura do card"
+
+msgid "Case sensitive"
+msgstr "Diferenciar maiúsculas"
+
+msgid "Chain a Continue when the reply hits the token limit"
+msgstr "Encadear um Continuar quando a resposta atingir o limite de tokens"
+
+msgid "Change API Connection"
+msgstr "Trocar conexão de API"
+
+msgid "Character"
+msgstr "Personagem"
+
+msgid "Character card saved!"
+msgstr "Card de personagem salvo!"
+
+msgid "Character deleted."
+msgstr "Personagem excluído."
+
+msgid "Character duplicated!"
+msgstr "Personagem duplicado!"
+
+msgid "Character imported!"
+msgstr "Personagem importado!"
+
+msgid "Chat"
+msgstr "Chat"
+
+msgid "Chat Name"
+msgstr "Nome do chat"
+
+msgid "Chat Options"
+msgstr "Opções do chat"
+
+msgid "Chat background"
+msgstr "Fundo do chat"
+
+msgid "Chat exported to "
+msgstr "Chat exportado para "
+
+msgid "Chat imported!"
+msgstr "Chat importado!"
+
+msgid "Chat not fully configured."
+msgstr "Chat sem configuração completa."
+
+msgid "Chat style"
+msgstr "Estilo do chat"
+
+msgid "Chat, character or message"
+msgstr "Chat, personagem ou mensagem"
+
+msgid "Chats"
+msgstr "Chats"
+
+msgid "Check for updates"
+msgstr "Verificar update"
+
+msgid "Checking for updates…"
+msgstr "Verificando update…"
+
+msgid "Choose provider"
+msgstr "Escolher provedor"
+
+msgid "Clear"
+msgstr "Limpar"
+
+msgid "Clear Note"
+msgstr "Limpar nota"
+
+msgid "Collapse newlines"
+msgstr "Recolher quebras de linha"
+
+msgid "Columns"
+msgstr "Colunas"
+
+msgid "Comma separated"
+msgstr "Separados por vírgula"
+
+msgid "Comment"
+msgstr "Comentário"
+
+msgid "Compact"
+msgstr "Compacto"
+
+msgid "Confirm"
+msgstr "Confirmar"
+
+msgid "Connection"
+msgstr "Conexão"
+
+msgid "Connection working!"
+msgstr "Conexão funcionando!"
+
+msgid "Constant (always on)"
+msgstr "Constante (sempre ativa)"
+
+msgid "Content"
+msgstr "Conteúdo"
+
+msgid "Context template prompts"
+msgstr "Prompts de modelo de contexto"
+
+msgid "Continue"
+msgstr "Continuar"
+
+msgid "Continue Nudge Prompt"
+msgstr "Prompt de incentivo do Continuar"
+
+msgid "Cooldown (messages)"
+msgstr "Espera (mensagens)"
+
+msgid "Copied!"
+msgstr "Copiado!"
+
+msgid "Copy"
+msgstr "Copiar"
+
+msgid "Could not list models: "
+msgstr "Não foi possível listar modelos: "
+
+msgid "Could not load chat."
+msgstr "Não foi possível carregar o chat."
+
+msgid "Could not load the image."
+msgstr "Não foi possível carregar a imagem."
+
+msgid "Could not load this chat."
+msgstr "Não foi possível carregar este chat."
+
+msgid "Could not open file."
+msgstr "Não foi possível abrir o arquivo."
+
+msgid "Could not parse character card."
+msgstr "Não foi possível interpretar o card de personagem."
+
+msgid "Could not parse the lorebook file."
+msgstr "Não foi possível interpretar o arquivo de lorebook."
+
+msgid "Could not read the image."
+msgstr "Não foi possível ler a imagem."
+
+msgid "Could not read this character card."
+msgstr "Não foi possível ler este card de personagem."
+
+msgid "Could not save the image."
+msgstr "Não foi possível salvar a imagem."
+
+msgid "Could not save the lorebook."
+msgstr "Não foi possível salvar o lorebook."
+
+msgid "Covers"
+msgstr "Capas"
+
+msgid "Create"
+msgstr "Criar"
+
+msgid "Dashboard"
+msgstr "Painel"
+
+msgid "Data"
+msgstr "Dados"
+
+msgid "Data folder"
+msgstr "Pasta de dados"
+
+msgid "Deactivate (this chat)"
+msgstr "Desativar (neste chat)"
+
+msgid "Default"
+msgstr "Padrão"
+
+msgid "Default (not sent)"
+msgstr "Padrão (não enviado)"
+
+msgid "Default view"
+msgstr "Visão padrão"
+
+msgid "Delay (messages)"
+msgstr "Atraso (mensagens)"
+
+msgid "Delay until recursion"
+msgstr "Atrasar até a recursão"
+
+msgid "Delete"
+msgstr "Excluir"
+
+msgid "Delete "
+msgstr "Excluir "
+
+msgid "Delete Chat"
+msgstr "Excluir chat"
+
+msgid "Delete Profile"
+msgstr "Excluir perfil"
+
+msgid "Delete character"
+msgstr "Excluir personagem"
+
+msgid "Delete chat"
+msgstr "Excluir chat"
+
+msgid "Delete connection"
+msgstr "Excluir conexão"
+
+msgid "Delete from here"
+msgstr "Excluir daqui em diante"
+
+msgid "Delete greeting"
+msgstr "Excluir saudação"
+
+msgid "Delete lorebook"
+msgstr "Excluir lorebook"
+
+msgid "Delete persona"
+msgstr "Excluir persona"
+
+msgid "Delete preset"
+msgstr "Excluir preset"
+
+msgid "Delete script"
+msgstr "Excluir script"
+
+msgid "Delete this character and all its chats?"
+msgstr "Excluir este personagem e todos os seus chats?"
+
+msgid "Delete this chat permanently?"
+msgstr "Excluir este chat permanentemente?"
+
+msgid "Delete this greeting?"
+msgstr "Excluir esta saudação?"
+
+msgid "Delete this message and all after it?"
+msgstr "Excluir esta mensagem e todas depois dela?"
+
+msgid "Delete this message?"
+msgstr "Excluir esta mensagem?"
+
+msgid "Delete this persona permanently?"
+msgstr "Excluir esta persona permanentemente?"
+
+msgid "Delete this preset permanently?"
+msgstr "Excluir este preset permanentemente?"
+
+msgid "Delete this regex script?"
+msgstr "Excluir este script de regex?"
+
+msgid "Density"
+msgstr "Densidade"
+
+msgid "Depth"
+msgstr "Profundidade"
+
+msgid "Description (sent as context to AI)"
+msgstr "Descrição (enviada como contexto à IA)"
+
+msgid "Dev builds"
+msgstr "Builds de dev"
+
+msgid "Developed by akachiina · GitHub"
+msgstr "Desenvolvido por akachiina · GitHub"
+
+msgid "Disabled"
+msgstr "Desativado"
+
+msgid "Display only"
+msgstr "Só exibição"
+
+msgid "Done"
+msgstr "Pronto"
+
+msgid "Download & install"
+msgstr "Baixar e instalar"
+
+msgid "Downloading update…"
+msgstr "Baixando update…"
+
+msgid "Duplicate"
+msgstr "Duplicar"
+
+msgid "Edit"
+msgstr "Editar"
+
+msgid "Edit & send"
+msgstr "Editar e enviar"
+
+msgid "Edit Card"
+msgstr "Editar card"
+
+msgid "Edit Character"
+msgstr "Editar personagem"
+
+msgid "Edit Connection"
+msgstr "Editar conexão"
+
+msgid "Edit Entry"
+msgstr "Editar entrada"
+
+msgid "Edit Greeting"
+msgstr "Editar saudação"
+
+msgid "Edit Note"
+msgstr "Editar nota"
+
+msgid "Edit Persona"
+msgstr "Editar persona"
+
+msgid "Edit Preset"
+msgstr "Editar preset"
+
+msgid "Edit Prompt"
+msgstr "Editar prompt"
+
+msgid "Edit Quick Reply"
+msgstr "Editar resposta rápida"
+
+msgid "Edit Script"
+msgstr "Editar script"
+
+msgid "Edit Tags"
+msgstr "Editar tags"
+
+msgid "Edit message"
+msgstr "Editar mensagem"
+
+msgid "Edit the message"
+msgstr "Editar a mensagem"
+
+msgid "Edit your message"
+msgstr "Edite sua mensagem"
+
+msgid "Edit your message, then Send"
+msgstr "Edite sua mensagem e toque Enviar"
+
+msgid "Empty to disable"
+msgstr "Vazio para desativar"
+
+msgid "English"
+msgstr "Inglês"
+
+msgid "Enter a name for this chat"
+msgstr "Dê um nome a este chat"
+
+msgid "Enter chat name"
+msgstr "Digite o nome do chat"
+
+msgid "Entry"
+msgstr "Entrada"
+
+msgid "Error"
+msgstr "Erro"
+
+msgid "Every N user messages"
+msgstr "A cada N mensagens do usuário"
+
+msgid "Exclude from recursion"
+msgstr "Excluir da recursão"
+
+msgid "Export Card"
+msgstr "Exportar card"
+
+msgid "Export Chat"
+msgstr "Exportar chat"
+
+msgid "Export JSON"
+msgstr "Exportar JSON"
+
+msgid "Export PNG"
+msgstr "Exportar PNG"
+
+msgid "Export TXT"
+msgstr "Exportar TXT"
+
+msgid "Export backup"
+msgstr "Exportar backup"
+
+msgid "Export failed: "
+msgstr "Falha na exportação: "
+
+msgid "Export failed: could not write file"
+msgstr "Falha na exportação: não foi possível gravar o arquivo"
+
+msgid "Export failed: encode error"
+msgstr "Falha na exportação: erro de codificação"
+
+msgid "Exporting backup…"
+msgstr "Exportando backup…"
+
+msgid "Failed to duplicate: "
+msgstr "Falha ao duplicar: "
+
+msgid "Failed to save: "
+msgstr "Falha ao salvar: "
+
+msgid "Failed to start streaming."
+msgstr "Falha ao iniciar o streaming."
+
+msgid "Failed: "
+msgstr "Falha: "
+
+msgid "False"
+msgstr "Falso"
+
+msgid "Favorite star"
+msgstr "Estrela de favorito"
+
+msgid "Favorites"
+msgstr "Favoritos"
+
+msgid "Favorites first"
+msgstr "Favoritos primeiro"
+
+msgid "Fill the API URL first, then search models."
+msgstr "Preencha a URL da API primeiro e depois busque modelos."
+
+msgid "Filter"
+msgstr "Filtrar"
+
+msgid "Filter characters"
+msgstr "Filtrar personagens"
+
+msgid "Filter models"
+msgstr "Filtrar modelos"
+
+msgid "Find (Lua pattern)"
+msgstr "Buscar (padrão Lua)"
+
+msgid "First message for a new chat"
+msgstr "Primeira mensagem de um novo chat"
+
+msgid "Flat"
+msgstr "Plano"
+
+msgid "Follow system"
+msgstr "Seguir o sistema"
+
+msgid "Font size"
+msgstr "Tamanho da fonte"
+
+msgid "From this character card"
+msgstr "Deste card de personagem"
+
+msgid "Generation prompts"
+msgstr "Prompts de geração"
+
+msgid "GitHub token"
+msgstr "GitHub token"
+
+msgid "Give the lorebook a name first."
+msgstr "Dê um nome ao lorebook primeiro."
+
+msgid "Greeting"
+msgstr "Saudação"
+
+msgid "Greeting for a new chat"
+msgstr "Saudação de um novo chat"
+
+msgid "Greeting must not be empty."
+msgstr "A saudação não pode estar vazia."
+
+msgid "Grid"
+msgstr "Grade"
+
+msgid "Hidden"
+msgstr "Oculta"
+
+msgid "Hide"
+msgstr "Ocultar"
+
+msgid "History trimmed to fit the model's context window."
+msgstr "Histórico aparado para caber na janela de contexto do modelo."
+
+msgid "Home"
+msgstr "Início"
+
+msgid "How often the screen repaints while streaming"
+msgstr "Com que frequência a tela repinta durante o stream"
+
+msgid "Image"
+msgstr "Imagem"
+
+msgid "Impersonate"
+msgstr "Personificar"
+
+msgid "Import"
+msgstr "Importar"
+
+msgid "Import & Activate"
+msgstr "Importar e ativar"
+
+msgid "Import Character Card"
+msgstr "Importar card de personagem"
+
+msgid "Import Chat"
+msgstr "Importar chat"
+
+msgid "Import backup"
+msgstr "Importar backup"
+
+msgid "Import character"
+msgstr "Importar personagem"
+
+msgid "Import chat"
+msgstr "Importar chat"
+
+msgid "Import failed: "
+msgstr "Falha na importação: "
+
+msgid "Import into which character?"
+msgstr "Importar para qual personagem?"
+
+msgid "Importing backup…"
+msgstr "Importando backup…"
+
+msgid "In prompt"
+msgstr "No prompt"
+
+msgid "In-chat @ depth"
+msgstr "No chat @ profundidade"
+
+msgid "Injected into the AI context"
+msgstr "Injetado no contexto da IA"
+
+msgid "Inline images"
+msgstr "Imagens no chat"
+
+msgid "Insert at depth"
+msgstr "Inserir na profundidade"
+
+msgid "Insertion order"
+msgstr "Ordem de inserção"
+
+msgid "Installed"
+msgstr "Instalado"
+
+msgid "Interval"
+msgstr "Intervalo"
+
+msgid "Invalid backup file."
+msgstr "Arquivo de backup inválido."
+
+msgid "Invalid folder."
+msgstr "Pasta inválida."
+
+msgid "Inverted"
+msgstr "Invertido"
+
+msgid "KOTavern"
+msgstr "KOTavern"
+
+msgid "KOTavern v"
+msgstr "KOTavern v"
+
+msgid "Keys (comma separated)"
+msgstr "Chaves (separadas por vírgula)"
+
+msgid "Label"
+msgstr "Rótulo"
+
+msgid "Language"
+msgstr "Idioma"
+
+msgid "Large"
+msgstr "Grande"
+
+msgid "Light"
+msgstr "Claro"
+
+msgid "Light gray"
+msgstr "Cinza claro"
+
+msgid "List"
+msgstr "Lista"
+
+msgid "Live"
+msgstr "Ao vivo"
+
+msgid "Lorebook"
+msgstr "Lorebook"
+
+msgid "Lorebook active: "
+msgstr "Lorebook ativo: "
+
+msgid "Lorebook exported"
+msgstr "Lorebook exportado"
+
+msgid "Lorebook imported: "
+msgstr "Lorebook importado: "
+
+msgid "Lorebook name"
+msgstr "Nome do lorebook"
+
+msgid "Lorebook saved!"
+msgstr "Lorebook salvo!"
+
+msgid "Lorebooks"
+msgstr "Lorebooks"
+
+msgid "Match whole words"
+msgstr "Palavras inteiras"
+
+msgid "Message"
+msgstr "Mensagem"
+
+msgid "Message Actions"
+msgstr "Ações da mensagem"
+
+msgid "Message info"
+msgstr "Info da mensagem"
+
+msgid "Model ID contains…"
+msgstr "ID do modelo contém…"
+
+msgid "Move Down"
+msgstr "Mover para baixo"
+
+msgid "Move Up"
+msgstr "Mover para cima"
+
+msgid "Moving data…"
+msgstr "Movendo dados…"
+
+msgid "NOT all secondary"
+msgstr "NÃO todas secundárias"
+
+msgid "NOT any secondary"
+msgstr "NÃO nenhuma secundária"
+
+msgid "Name"
+msgstr "Nome"
+
+msgid "Name A-Z"
+msgstr "Nome A-Z"
+
+msgid "Name Z-A"
+msgstr "Nome Z-A"
+
+msgid "Name and API URL are required."
+msgstr "Nome e URL da API são obrigatórios."
+
+msgid "Name, creator or tag"
+msgstr "Nome, criador ou tag"
+
+msgid "Network"
+msgstr "Rede"
+
+msgid "New Chat"
+msgstr "Novo chat"
+
+msgid "New Connection"
+msgstr "Nova conexão"
+
+msgid "New Entry"
+msgstr "Nova entrada"
+
+msgid "New Greeting"
+msgstr "Nova saudação"
+
+msgid "New Lorebook"
+msgstr "Novo lorebook"
+
+msgid "New Persona"
+msgstr "Nova persona"
+
+msgid "New Preset"
+msgstr "Novo preset"
+
+msgid "New Prompt"
+msgstr "Novo prompt"
+
+msgid "New Quick Reply"
+msgstr "Nova resposta rápida"
+
+msgid "New Script"
+msgstr "Novo script"
+
+msgid "New connection"
+msgstr "Nova conexão"
+
+msgid "New name"
+msgstr "Novo nome"
+
+msgid "New persona"
+msgstr "Nova persona"
+
+msgid "New preset"
+msgstr "Novo preset"
+
+msgid "New script"
+msgstr "Novo script"
+
+msgid "New swipe"
+msgstr "Nova alternativa"
+
+msgid "Newest"
+msgstr "Mais recentes"
+
+msgid "Next swipe"
+msgstr "Próxima alternativa"
+
+msgid "No API connection configured."
+msgstr "Nenhuma conexão de API configurada."
+
+msgid "No API connection configured.\nOpen Options → Change API Connection to set one."
+msgstr "Nenhuma conexão de API configurada.\nAbra Opções → Trocar conexão de API para definir uma."
+
+msgid "No API connections available."
+msgstr "Nenhuma conexão de API disponível."
+
+msgid "No API connections yet!\nGo to API tab to add one."
+msgstr "Sem conexões de API ainda!\nVá até a aba API para adicionar uma."
+
+msgid "No API connections yet. Add one to start chatting!"
+msgstr "Sem conexões de API ainda. Adicione uma para começar a conversar!"
+
+msgid "No API key configured for this connection.\nOpen the connection editor and paste your key."
+msgstr "Nenhuma chave de API configurada para esta conexão.\nAbra o editor de conexão e cole sua chave."
+
+msgid "No active connection."
+msgstr "Sem conexão ativa."
+
+msgid "No alternate greetings yet. Add alternatives to the first message for new chats."
+msgstr "Sem saudações alternativas ainda. Adicione variações da primeira mensagem para novos chats."
+
+msgid "No characters match."
+msgstr "Nenhum personagem corresponde."
+
+msgid "No characters yet. Import a character card to start."
+msgstr "Sem personagens ainda. Importe um card de personagem para começar."
+
+msgid "No chats match your search."
+msgstr "Nenhum chat corresponde à busca."
+
+msgid "No chats yet. Open a character card on Home and start a chat."
+msgstr "Sem chats ainda. Abra um card de personagem no Início e comece um chat."
+
+msgid "No entries in this card's lorebook."
+msgstr "Sem entradas no lorebook deste card."
+
+msgid "No entries yet. Entries activate when their keywords match the conversation."
+msgstr "Sem entradas ainda. Entradas ativam quando suas palavras-chave combinam com a conversa."
+
+msgid "No greeting"
+msgstr "Sem saudação"
+
+msgid "No lorebooks yet. Lorebooks inject context when keywords match the conversation."
+msgstr "Sem lorebooks ainda. Lorebooks injetam contexto quando palavras-chave combinam com a conversa."
+
+msgid "No model list. Use Search Model."
+msgstr "Sem lista de modelos. Use Buscar modelo."
+
+msgid "No models match."
+msgstr "Nenhum modelo corresponde."
+
+msgid "No other chats for this character. Use Chat Options → Start new chat to begin one."
+msgstr "Sem outros chats para este personagem. Use Opções do chat → Iniciar novo chat."
+
+msgid "No personas yet. Personas tell the AI who you are."
+msgstr "Sem personas ainda. Personas dizem à IA quem é você."
+
+msgid "No presets yet. Presets hold generation parameters (temperature, tokens...)."
+msgstr "Sem presets ainda. Presets guardam parâmetros de geração (temperatura, tokens...)."
+
+msgid "No profiles saved."
+msgstr "Nenhum perfil salvo."
+
+msgid "No profiles yet - save one from this menu first."
+msgstr "Sem perfis ainda - salve um neste menu primeiro."
+
+msgid "No prompts in this preset."
+msgstr "Sem prompts neste preset."
+
+msgid "No quick replies. Manage them in Settings → Data."
+msgstr "Sem respostas rápidas. Gerencie em Configurações → Dados."
+
+msgid "No regex scripts. They find/replace text in AI output or prompts (Lua patterns)."
+msgstr "Sem scripts de regex. Eles localizam/substituem texto na saída da IA ou nos prompts (padrões Lua)."
+
+msgid "No repository configured. Set it in Settings → Updates."
+msgstr "Nenhum repositório configurado. Defina em Configurações → Updates."
+
+msgid "None"
+msgstr "Nenhum"
+
+msgid "None (connection defaults)"
+msgstr "Nenhum (padrões da conexão)"
+
+msgid "Normal"
+msgstr "Normal"
+
+msgid "Not configured"
+msgstr "Não configurado"
+
+msgid "Note position"
+msgstr "Posição da nota"
+
+msgid "Note role"
+msgstr "Papel da nota"
+
+msgid "Nothing to edit."
+msgstr "Nada para editar."
+
+msgid "Nothing to view."
+msgstr "Nada para ver."
+
+msgid "Number"
+msgstr "Número"
+
+msgid "OK"
+msgstr "OK"
+
+msgid "Off"
+msgstr "Desligado"
+
+msgid "Oldest"
+msgstr "Mais antigos"
+
+msgid "Only when favorite"
+msgstr "Só quando favorito"
+
+msgid "Open"
+msgstr "Abrir"
+
+msgid "Open a chat first to activate a lorebook."
+msgstr "Abra um chat primeiro para ativar um lorebook."
+
+msgid "Operation failed: "
+msgstr "Operação falhou: "
+
+msgid "Options"
+msgstr "Opções"
+
+msgid "Outline user bubbles"
+msgstr "Contornar bolhas do usuário"
+
+msgid "Paper"
+msgstr "Papel"
+
+msgid "Past Chats"
+msgstr "Chats passados"
+
+msgid "Persona"
+msgstr "Persona"
+
+msgid "Personas"
+msgstr "Personas"
+
+msgid "Placeholder sent if you submit an empty message (ST send_if_empty)"
+msgstr "Mensagem provisória enviada se você submeter texto vazio (ST send_if_empty)"
+
+msgid "Placement"
+msgstr "Aplicação"
+
+msgid "Please give the persona a name."
+msgstr "Dê um nome à persona."
+
+msgid "Please give the preset a name."
+msgstr "Dê um nome ao preset."
+
+msgid "Please select a .json preset file."
+msgstr "Selecione um arquivo de preset .json."
+
+msgid "Please select a .jsonl chat file."
+msgstr "Selecione um arquivo de chat .jsonl."
+
+msgid "Please select an image file (.png, .jpg, .webp)."
+msgstr "Selecione um arquivo de imagem (.png, .jpg, .webp)."
+
+msgid "Portuguese (Brazil)"
+msgstr "Português (Brasil)"
+
+msgid "Position"
+msgstr "Posição"
+
+msgid "Preset"
+msgstr "Preset"
+
+msgid "Preset exported to "
+msgstr "Preset exportado para "
+
+msgid "Preset imported!"
+msgstr "Preset importado!"
+
+msgid "Presets"
+msgstr "Presets"
+
+msgid "Prevent recursion"
+msgstr "Impedir recursão"
+
+msgid "Previous swipe"
+msgstr "Alternativa anterior"
+
+msgid "Probability (%)"
+msgstr "Probabilidade (%)"
+
+msgid "Profile deleted: "
+msgstr "Perfil excluído: "
+
+msgid "Profile name"
+msgstr "Nome do perfil"
+
+msgid "Profile saved: "
+msgstr "Perfil salvo: "
+
+msgid "Prompt Manager"
+msgstr "Gerenciador de prompts"
+
+msgid "Prompt name"
+msgstr "Nome do prompt"
+
+msgid "Prompt only"
+msgstr "Só prompt"
+
+msgid "Provider"
+msgstr "Provedor"
+
+msgid "Quick Replies"
+msgstr "Respostas rápidas"
+
+msgid "Quick Reply"
+msgstr "Resposta rápida"
+
+msgid "Quit"
+msgstr "Sair"
+
+msgid "Reasoning"
+msgstr "Raciocínio"
+
+msgid "Reasoning auto-parse"
+msgstr "Raciocínio auto-extraído"
+
+msgid "Reasoning prefix"
+msgstr "Prefixo do raciocínio"
+
+msgid "Reasoning suffix"
+msgstr "Sufixo do raciocínio"
+
+msgid "Recent chats"
+msgstr "Chats recentes"
+
+msgid "Recent first"
+msgstr "Recentes primeiro"
+
+msgid "Refresh"
+msgstr "Atualizar"
+
+msgid "Regenerate"
+msgstr "Regenerar"
+
+msgid "Regex Scripts"
+msgstr "Scripts de regex"
+
+msgid "Regex scripts"
+msgstr "Scripts de regex"
+
+msgid "Remove"
+msgstr "Remover"
+
+msgid "Remove Favorite"
+msgstr "Remover favorito"
+
+msgid "Remove Global Default"
+msgstr "Remover padrão global"
+
+msgid "Remove Image"
+msgstr "Remover imagem"
+
+msgid "Remove prompt"
+msgstr "Remover prompt"
+
+msgid "Remove this prompt from the preset?"
+msgstr "Remover este prompt do preset?"
+
+msgid "Rename"
+msgstr "Renomear"
+
+msgid "Rename Chat"
+msgstr "Renomear chat"
+
+msgid "Rename Prompt"
+msgstr "Renomear prompt"
+
+msgid "Rename lorebook"
+msgstr "Renomear lorebook"
+
+msgid "Replace ($1..$9)"
+msgstr "Substituir ($1..$9)"
+
+msgid "Replace all current data with this backup?"
+msgstr "Substituir todos os dados atuais por este backup?"
+
+msgid "Repository"
+msgstr "Repositório"
+
+msgid "Request backend"
+msgstr "Motor de requisição"
+
+msgid "Request timeout"
+msgstr "Tempo de requisição"
+
+msgid "Reset"
+msgstr "Redefinir"
+
+msgid "Reset dashboard settings?"
+msgstr "Redefinir ajustes do painel?"
+
+msgid "Response was cut by the token limit - use Continue to finish it."
+msgstr "A resposta foi cortada pelo limite de tokens - use Continuar para terminá-la."
+
+msgid "Restart now"
+msgstr "Reiniciar agora"
+
+msgid "Restore complete"
+msgstr "Restauração concluída"
+
+msgid "Restore defaults"
+msgstr "Restaurar padrões"
+
+msgid "Retries (429/5xx)"
+msgstr "Tentativas (429/5xx)"
+
+msgid "Retry"
+msgstr "Tentar de novo"
+
+msgid "Role"
+msgstr "Papel"
+
+msgid "Role (system/user/assistant)"
+msgstr "Papel (system/user/assistant)"
+
+msgid "Role @ depth"
+msgstr "Papel @ profundidade"
+
+msgid "Rounded"
+msgstr "Arredondado"
+
+msgid "Save"
+msgstr "Salvar"
+
+msgid "Save as Profile"
+msgstr "Salvar como perfil"
+
+msgid "Script"
+msgstr "Script"
+
+msgid "Search"
+msgstr "Buscar"
+
+msgid "Search Model"
+msgstr "Buscar modelo"
+
+msgid "Search characters"
+msgstr "Buscar personagens"
+
+msgid "Search chats"
+msgstr "Buscar chats"
+
+msgid "Secondary keys"
+msgstr "Chaves secundárias"
+
+msgid "Secondary logic"
+msgstr "Lógica secundária"
+
+msgid "Select"
+msgstr "Selecionar"
+
+msgid "Select API"
+msgstr "Selecionar API"
+
+msgid "Select API Connection"
+msgstr "Selecionar conexão de API"
+
+msgid "Select Model"
+msgstr "Selecionar modelo"
+
+msgid "Select Persona"
+msgstr "Selecionar persona"
+
+msgid "Select Preset"
+msgstr "Selecionar preset"
+
+msgid "Select a lorebook .json file."
+msgstr "Selecione um arquivo de lorebook .json."
+
+msgid "Select greeting"
+msgstr "Selecionar saudação"
+
+msgid "Semi-transparent"
+msgstr "Semitransparente"
+
+msgid "Send"
+msgstr "Enviar"
+
+msgid "Send when empty"
+msgstr "Enviar quando vazio"
+
+msgid "Set Image"
+msgstr "Definir imagem"
+
+msgid "Set as Active"
+msgstr "Definir como ativo"
+
+msgid "Set as Global Default"
+msgstr "Definir como padrão global"
+
+msgid "Settings"
+msgstr "Configurações"
+
+msgid "Short"
+msgstr "Curto"
+
+msgid "Show avatars"
+msgstr "Mostrar avatares"
+
+msgid "Show more"
+msgstr "Mostrar mais"
+
+msgid "Show on cards"
+msgstr "Mostrar nos cards"
+
+msgid "Show timestamps"
+msgstr "Mostrar horários"
+
+msgid "Show token counts"
+msgstr "Mostrar contagem de tokens"
+
+msgid "SillyTavern"
+msgstr "SillyTavern"
+
+msgid "Small"
+msgstr "Pequeno"
+
+msgid "Solid"
+msgstr "Sólido"
+
+msgid "Sort"
+msgstr "Ordenar"
+
+msgid "Sort characters"
+msgstr "Ordenar personagens"
+
+msgid "Sort chats"
+msgstr "Ordenar chats"
+
+msgid "Spacious"
+msgstr "Espaçoso"
+
+msgid "Spanish"
+msgstr "Espanhol"
+
+msgid "Square"
+msgstr "Quadrado"
+
+msgid "Stable"
+msgstr "Estável"
+
+msgid "Start"
+msgstr "Iniciar"
+
+msgid "Start Chat"
+msgstr "Iniciar chat"
+
+msgid "Start new chat"
+msgstr "Iniciar novo chat"
+
+msgid "Starting a new conversation. Tap Write to send a message!"
+msgstr "Iniciando uma nova conversa. Toque Escrever para enviar uma mensagem!"
+
+msgid "Status"
+msgstr "Status"
+
+msgid "Sticky (messages)"
+msgstr "Fixo (mensagens)"
+
+msgid "Still"
+msgstr "Estático"
+
+msgid "Stop"
+msgstr "Parar"
+
+msgid "Storage usage"
+msgstr "Uso de armazenamento"
+
+msgid "Stream error: "
+msgstr "Erro de stream: "
+
+msgid "Stream idle timeout"
+msgstr "Tempo ocioso do stream"
+
+msgid "Stream refresh"
+msgstr "Atualização do stream"
+
+msgid "Stream update interval"
+msgstr "Intervalo de atualização do stream"
+
+msgid "Stream update interval (ms)"
+msgstr "Intervalo de atualização do stream (ms)"
+
+msgid "Streaming"
+msgstr "Streaming"
+
+msgid "Strip think tags into the collapsible reasoning block"
+msgstr "Extrair tags think para o bloco de raciocínio recolhível"
+
+msgid "Style"
+msgstr "Estilo"
+
+msgid "Switch Profile"
+msgstr "Trocar perfil"
+
+msgid "Sync curl"
+msgstr "curl síncrono"
+
+msgid "Sync socket"
+msgstr "socket síncrono"
+
+msgid "System Note"
+msgstr "Nota do sistema"
+
+msgid "Tags"
+msgstr "Tags"
+
+msgid "Tall"
+msgstr "Alto"
+
+msgid "Test"
+msgstr "Testar"
+
+msgid "Testing connection..."
+msgstr "Testando conexão..."
+
+msgid "Theme"
+msgstr "Tema"
+
+msgid "This profile's connection no longer exists."
+msgstr "A conexão deste perfil não existe mais."
+
+msgid "Token (dev channel only)"
+msgstr "Token (só canal dev)"
+
+msgid "Tokens & creator"
+msgstr "Tokens e criador"
+
+msgid "Trim incomplete sentences"
+msgstr "Aparar frases incompletas"
+
+msgid "True"
+msgstr "Verdadeiro"
+
+msgid "Type your message..."
+msgstr "Digite sua mensagem..."
+
+msgid "Unhide"
+msgstr "Reexibir"
+
+msgid "Unknown"
+msgstr "Desconhecido"
+
+msgid "Unknown character"
+msgstr "Personagem desconhecido"
+
+msgid "Unknown error"
+msgstr "Erro desconhecido"
+
+msgid "Unsupported chat file. Expected a SillyTavern JSONL chat."
+msgstr "Arquivo de chat não suportado. Esperado um chat JSONL do SillyTavern."
+
+msgid "Unsupported file type. Please use .png, .json or .jsonl"
+msgstr "Tipo de arquivo não suportado. Use .png, .json ou .jsonl"
+
+msgid "Untitled"
+msgstr "Sem título"
+
+msgid "Up to date"
+msgstr "Atualizado"
+
+msgid "Update available"
+msgstr "Update disponível"
+
+msgid "Update channel"
+msgstr "Canal de update"
+
+msgid "Update installed"
+msgstr "Update instalado"
+
+msgid "Updates"
+msgstr "Updates"
+
+msgid "View"
+msgstr "Ver"
+
+msgid "View Card"
+msgstr "Ver card"
+
+msgid "View Full"
+msgstr "Ver completo"
+
+msgid "Visible in the chat, hidden from the AI"
+msgstr "Visível no chat, oculto da IA"
+
+msgid "Welcome"
+msgstr "Boas-vindas"
+
+msgid "Write"
+msgstr "Escrever"
+
+msgid "Write as "
+msgstr "Escrever como "
+
+msgid "active"
+msgstr "ativo"
+
+msgid "assistant"
+msgstr "assistente"
+
+msgid "both"
+msgstr "ambos"
+
+msgid "characters"
+msgstr "personagens"
+
+msgid "constant"
+msgstr "constante"
+
+msgid "disabled"
+msgstr "desativado"
+
+msgid "display"
+msgstr "exibição"
+
+msgid "entries"
+msgstr "entradas"
+
+msgid "files"
+msgstr "arquivos"
+
+msgid "greetings"
+msgstr "saudações"
+
+msgid "marker (dynamic content)"
+msgstr "marcador (conteúdo dinâmico)"
+
+msgid "prompt"
+msgstr "prompt"
+
+msgid "prompts"
+msgstr "prompts"
+
+msgid "system"
+msgstr "sistema"
+
+msgid "this chat"
+msgstr "este chat"
+
+msgid "to"
+msgstr "ao"
+
+msgid "tok"
+msgstr "tok"
+
+msgid "user"
+msgstr "usuário"
