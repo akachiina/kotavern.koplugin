@@ -1217,6 +1217,93 @@ local function cv_scratch(w, h, bb)
     return _cv_scratch
 end
 
+-- Creator Notes rich text: markdown blocks from Md.parse laid out as paint
+-- items (measure and paint share this so heights always agree). Inline bold
+-- comes from Md.inline (PTF, same as chat bubbles).
+local function notes_layout(text, w)
+    local Md = require("ktui/md")
+    local body_lh = Theme.line_h("default")
+    local tiny_lh = Theme.line_h("tiny")
+    local gap = Theme.scale(4)
+    local items = {}
+    text = tostring(text or "")
+    if text:match("^%s*$") then
+        return items
+    end
+    local function add_text(t, opts)
+        opts = opts or {}
+        local lines = math.max(1, P.paragraph_line_count(t, opts.w or w, "default", { bold = opts.bold }))
+        items[#items + 1] = { kind = "text", text = t, w = opts.w or w,
+            bold = opts.bold, color = opts.color, h = lines * body_lh }
+    end
+    for _, b in ipairs(Md.parse(text)) do
+        if b.kind == "rule" then
+            items[#items + 1] = { kind = "rule", w = w, h = Theme.scale(10) }
+        elseif b.kind == "image" then
+            local t = (b.alt and b.alt ~= "") and ("[" .. b.alt .. "]") or "[image]"
+            items[#items + 1] = { kind = "text", text = t, w = w,
+                color = Theme.muted, h = tiny_lh }
+        elseif b.kind == "table" then
+            local rows = {}
+            if type(b.header) == "table" then
+                rows[#rows + 1] = table.concat(b.header, " | ")
+            end
+            for _, row in ipairs(b.rows or {}) do
+                rows[#rows + 1] = table.concat(row, " | ")
+            end
+            add_text(table.concat(rows, "\n"))
+        elseif b.kind == "code" then
+            items[#items + 1] = { kind = "pad", h = Theme.scale(4) }
+            add_text(tostring(b.text or ""))
+            items[#items + 1] = { kind = "pad", h = Theme.scale(4) }
+        elseif b.kind == "heading" then
+            add_text(Md.inline(tostring(b.text or "")), { bold = true })
+        elseif b.kind == "quote" then
+            local qw = math.max(8, w - Theme.scale(8))
+            local lines = math.max(1, P.paragraph_line_count(Md.inline(tostring(b.text or "")),
+                qw, "default"))
+            items[#items + 1] = { kind = "quote", text = Md.inline(tostring(b.text or "")),
+                w = qw, h = lines * body_lh }
+        else
+            add_text(Md.inline(tostring(b.text or "")))
+        end
+        items[#items + 1] = { kind = "pad", h = gap }
+    end
+    if #items > 0 and items[#items].kind == "pad" then
+        items[#items] = nil
+    end
+    return items
+end
+
+local function notes_height(items)
+    local h = 0
+    for _, it in ipairs(items) do
+        h = h + (it.h or 0)
+    end
+    if h > 0 then
+        h = h + Theme.scale(10)
+    end
+    return h
+end
+
+-- Paint laid-out notes items at (x, oy) in the scratch buffer (already
+-- filled); code blocks get a soft backdrop, quotes a left rule.
+local function notes_paint(scratch, items, x, oy)
+    local y = oy
+    for _, it in ipairs(items) do
+        if it.kind == "text" then
+            P.paragraph(scratch, it.text, x, y, it.w, it.h, "default",
+                { bold = it.bold, color = it.color })
+        elseif it.kind == "quote" then
+            P.rect(scratch, x, y, Theme.scale(2), it.h, Theme.muted)
+            P.paragraph(scratch, it.text, x + Theme.scale(6), y, it.w, it.h, "default")
+        elseif it.kind == "rule" then
+            P.rect(scratch, x, y + math.floor(it.h / 2), it.w or 0, 1, Theme.muted)
+        end
+        y = y + (it.h or 0)
+    end
+end
+
 function Pages.character_view(view, bb, x, y, w, h, scroll)
     P.rect(bb, x, y, w, h, Theme.bg)
     local profile = view.app.state.viewing_character
@@ -1255,21 +1342,20 @@ function Pages.character_view(view, bb, x, y, w, h, scroll)
     local top = y + bar_h
     local content_w = w - pad * 2
 
+    -- Read view: curated fields only (prompt-technical ones live in the card
+    -- editor). Labels are _() literals so the extractor covers them; open[]
+    -- is keyed by stable id so switching language keeps the state.
     local sections = {}
-    local function add_section(label, text)
+    local function add_section(id, label, text)
         text = tostring(text or "")
         if text == "" then return end
-        table.insert(sections, { label = label, text = text })
+        table.insert(sections, { id = id, label = label, text = text })
     end
-    add_section("Description", card.description)
-    add_section("Personality", card.personality)
-    add_section("Scenario", card.scenario)
-    add_section("First Message", card.first_mes)
-    add_section("Example Messages", card.mes_example)
-    add_section("System Prompt", card.system_prompt)
-    add_section("Post-History Instructions", card.post_history_instructions)
-    add_section("Creator Notes", card.creator_notes)
-    add_section("Tags", card.tags and #card.tags > 0 and table.concat(card.tags, ", ") or "")
+    add_section("description", _("Description"), card.description)
+    add_section("personality", _("Personality"), card.personality)
+    add_section("scenario", _("Scenario"), card.scenario)
+    add_section("first_mes", _("First Message"), card.first_mes)
+    add_section("tags", _("Tags"), card.tags and #card.tags > 0 and table.concat(card.tags, ", ") or "")
 
     -- Measure per-section text heights (paragraph with the same face used at
     -- draw time, so measurement matches rendering).
@@ -1277,43 +1363,66 @@ function Pages.character_view(view, bb, x, y, w, h, scroll)
     local body_lh = Theme.line_h("default")
     local section_gap = Theme.scale(12)
 
-    -- Avatar block sized from the image's own aspect ratio (contain-fit):
-    -- portrait cards show fully (no aggressive middle crop), and the box
-    -- hugs the image (no miniature floating in a white sea).
-    local area_w = w - pad * 2
-    -- ZenPM featured pattern: the cover shows capped on the first screen;
-    -- the first page-down EXPANDS it to full height (and resets the scroll).
-    local cover_cap = view.app.state.character_view_expanded
-        and Theme.scale(2400) or Theme.scale(340)
-    local fit_w, fit_h = P.image_dimensions(profile.path, area_w - Theme.scrollbar_w(), cover_cap)
-    -- Signal for AppView._scroll_list (only while the cover is on screen).
-    view.character_view_featured_visible = (tonumber(scroll) or 0) <= 0
-    local av_x, av_w, av_h
-    if fit_w and fit_h then
-        av_w, av_h = fit_w, fit_h
-        av_x = x + pad + math.floor((area_w - fit_w) / 2)
-    else
-        av_w, av_h = area_w, Theme.scale(200)
-        av_x = x + pad
-    end
+    -- Rich header (scrolls with the content): medium avatar + name/creator/
+    -- tokens column, tag line below. Tap the avatar for fullscreen.
+    local av_s = Theme.scale(120)
+    local av_x = x + pad
     local av_y = top + Theme.scale(4)
-    local view_top = av_y + av_h + Theme.scale(10)
+    local col_x = av_x + av_s + Theme.scale(10)
+    local col_w = math.max(8, x + w - pad - col_x)
+    local head_text_h = label_lh
+    local creator = tostring(card.creator or "")
+    if creator ~= "" then
+        head_text_h = head_text_h + Theme.scale(2) + Theme.line_h("tiny")
+    end
+    if (profile.tokens or 0) > 0 then
+        head_text_h = head_text_h + Theme.scale(2) + Theme.line_h("tiny")
+    end
+    local header_h = math.max(av_s, head_text_h)
+    local tags_line = ""
+    if card.tags and #card.tags > 0 then
+        tags_line = Widgets.fit_text(table.concat(card.tags, ", "), content_w, "tiny")
+    end
+    if tags_line ~= "" then
+        header_h = header_h + Theme.scale(6) + Theme.line_h("tiny")
+    end
+    local view_top = av_y + header_h + Theme.scale(10)
 
     local avail = (y + h) - view_top
     local text_w = w - pad * 2 - Theme.scale(8)
+    -- Collapsible sections (all closed per visit): open[sec.id] expands
+    -- the full text; closed shows label + 1-line preview. Tap toggles.
+    local open = view.app.state.character_view_open
+    if type(open) ~= "table" then
+        open = {}
+        view.app.state.character_view_open = open
+    end
+    local tiny_lh = Theme.line_h("tiny")
     local block_h = {}
     local total_h = 0
     for i, sec in ipairs(sections) do
-        local nlines = math.max(1, #(TextBoxWidget:new{
-            text = sec.text,
-            face = Theme.face("default"),
-            width = math.max(text_w, 1),
-            height = 1,
-            height_adjust = true,
-        }.vertical_string_list or {}))
-        block_h[i] = label_lh + Theme.scale(4) + nlines * body_lh
+        local head = label_lh + Theme.scale(4)
+        if open[sec.id] then
+            local nlines = math.max(1, #(TextBoxWidget:new{
+                text = sec.text,
+                face = Theme.face("default"),
+                width = math.max(text_w, 1),
+                height = 1,
+                height_adjust = true,
+            }.vertical_string_list or {}))
+            block_h[i] = head + nlines * body_lh
+        else
+            block_h[i] = head + tiny_lh + Theme.scale(2)
+        end
         total_h = total_h + block_h[i] + section_gap
     end
+    -- Creator Notes live at the top of the scrolling band (always visible,
+    -- markdown rendered, no collapse). Laid out with the same width used at
+    -- measure time; re-laid-out below once the gutter is known.
+    local notes_text = tostring(card.creator_notes or "")
+    local notes_items = notes_layout(notes_text, text_w)
+    local notes_h = notes_height(notes_items)
+    total_h = total_h + notes_h
     local max_scroll = math.max(0, total_h - avail)
     scroll = math.max(0, math.min(scroll or 0, max_scroll))
     view.app.state.scroll[view.app:scroll_key()] = scroll
@@ -1321,56 +1430,131 @@ function Pages.character_view(view, bb, x, y, w, h, scroll)
     local gutter = scrollable and Theme.scrollbar_w() or 0
     content_w = w - pad * 2 - gutter
     text_w = content_w - Theme.scale(8)
+    do
+        local pre_h = notes_h
+        notes_items = notes_layout(notes_text, text_w)
+        notes_h = notes_height(notes_items)
+        -- Gutter-narrowed re-layout may shift heights by a line or two
+        -- (same pre-existing drift as section paragraphs); re-clamp scroll.
+        total_h = total_h - pre_h + notes_h
+        max_scroll = math.max(0, total_h - avail)
+        scroll = math.max(0, math.min(scroll or 0, max_scroll))
+        view.app.state.scroll[view.app:scroll_key()] = scroll
+    end
+    notes_items = notes_layout(notes_text, text_w)
+    notes_h = notes_height(notes_items)
 
-    -- Draw avatar (exact aspect-fit box). Tap opens the fullscreen viewer.
-    local av_bot = av_y + av_h
-    if av_bot >= y and av_y <= y + h then
-        local vis_top = math.max(av_y, y)
-        local vis_h = av_bot - vis_top
-        P.box(bb, av_x, vis_top, av_w, av_h, {
+    -- Rich header, fixed above the scrolling sections: avatar + name /
+    -- creator / tokens column, tag line below. Tap the avatar for fullscreen.
+    if av_y <= y + h then
+        P.box(bb, av_x, av_y, av_s, av_s, {
             border_color = Theme.soft, border_size = 1, radius = Theme.scale(8), background = Theme.panel,
         })
-        local drawn = fit_w and P.image(bb, profile.path, av_x, vis_top, av_w, av_h)
+        local drawn = P.image(bb, profile.path, av_x, av_y, av_s, av_s, { cover = true })
         if not drawn then
-            P.center_text_box(bb, (card.name and Widgets.first_glyph(card.name) or "?"), av_x, vis_top, av_w, av_h, "title", { bold = true })
+            P.center_text_box(bb, Widgets.first_glyph(card.name or "?"):upper(),
+                av_x, av_y, av_s, av_s, "title", { bold = true })
         end
-        P.hit(view, av_x, vis_top, av_w, av_h, function()
+        P.hit(view, av_x, av_y, av_s, av_s, function()
             view.app:show_character_image_fullscreen(profile.path)
         end, "cv_avatar")
+        local ny = av_y
+        P.text(bb, Widgets.fit_text(card.name or "?", col_w, "default", { bold = true }),
+            col_x, ny, col_w, "default", { bold = true })
+        ny = ny + label_lh + Theme.scale(2)
+        if creator ~= "" then
+            P.text(bb, Widgets.fit_text(creator, col_w, "tiny"), col_x, ny, col_w, "tiny",
+                { color = Theme.muted })
+            ny = ny + Theme.line_h("tiny") + Theme.scale(2)
+        end
+        if (profile.tokens or 0) > 0 then
+            P.text(bb, "~" .. tostring(profile.tokens) .. " " .. _("tok"), col_x, ny, col_w,
+                "tiny", { color = Theme.muted })
+        end
+        if tags_line ~= "" then
+            P.text(bb, tags_line, x + pad, av_y + math.max(av_s, head_text_h) + Theme.scale(6),
+                content_w, "tiny", { color = Theme.muted })
+        end
     end
 
-    -- Sections band (variable-height, scrolled). Only rows that intersect the
-    -- viewport are painted; top-cut paragraphs use the scratch-buffer clip.
+    -- Sections band (variable-height, scrolled). Creator Notes paint first
+    -- (always visible, markdown), then the collapsible sections. Top-cut
+    -- content clips through the scratch buffer exactly.
+    local chev_s = Theme.scale(20)
     local cy = view_top - scroll
     local sec_x = x + pad
+    if notes_h > 0 and text_w >= 8 and cy + notes_h > view_top and cy < view_top + avail then
+        local scratch = cv_scratch(text_w, notes_h, bb)
+        scratch:fill(Theme.bg)
+        notes_paint(scratch, notes_items, 0, 0)
+        local src_top = math.max(cy, view_top)
+        local src_bot = math.min(cy + notes_h, view_top + avail)
+        if src_bot > src_top then
+            bb:blitFrom(scratch, sec_x, src_top, 0, src_top - cy, text_w, src_bot - src_top)
+        end
+        cy = cy + notes_h
+    elseif notes_h > 0 then
+        cy = cy + notes_h
+    end
     for i, sec in ipairs(sections) do
+        local is_open = open[sec.id] == true
+        local head_h = label_lh + Theme.scale(4)
+        if not is_open then
+            head_h = head_h + tiny_lh + Theme.scale(2)
+        end
         if cy + block_h[i] > view_top and cy < view_top + avail then
             local y_top = math.max(cy, view_top)
             local y_bot = math.min(cy + block_h[i], view_top + avail)
+            -- Header hitbox first (wide): narrower hits below win their taps.
+            local hy0 = math.max(cy, view_top)
+            local hy1 = math.min(cy + head_h, view_top + avail)
+            if hy1 > hy0 then
+                P.hit(view, sec_x, hy0, content_w, hy1 - hy0, function()
+                    open[sec.id] = not open[sec.id]
+                    view:refresh()
+                end, "cvsec:" .. tostring(sec.id))
+            end
             local label_top = y_top
-            P.text(bb, _(sec.label), sec_x, label_top, content_w, "small", { bold = true, color = Theme.muted })
-            local para_h = block_h[i] - (label_lh + Theme.scale(4))
-            local py = cy + label_lh + Theme.scale(4)
-            if py + para_h <= view_top + avail and py >= view_top then
-                P.paragraph(bb, sec.text, x + pad, py, text_w, para_h, "default")
+            P.text(bb, sec.label, sec_x, label_top, content_w - chev_s - Theme.scale(4),
+                "small", { bold = true, color = Theme.muted })
+            Icons.center(bb, is_open and "chev-down" or "chev-right",
+                sec_x + content_w - chev_s, label_top, chev_s, label_lh, Theme.scale(8))
+            if is_open then
+                local para_h = block_h[i] - (label_lh + Theme.scale(4))
+                local py = cy + label_lh + Theme.scale(4)
+                if py + para_h <= view_top + avail and py >= view_top then
+                    P.paragraph(bb, sec.text, x + pad, py, text_w, para_h, "default")
+                else
+                    local src_top = math.max(py, view_top)
+                    local src_bot = math.min(py + para_h, view_top + avail)
+                    if src_bot > src_top then
+                        local scratch = cv_scratch(text_w, para_h, bb)
+                        scratch:fill(Theme.bg)
+                        local widget = TextBoxWidget:new{
+                            text = sec.text,
+                            face = Theme.face("default"),
+                            fgcolor = Theme.ink,
+                            width = text_w,
+                            height = para_h,
+                            height_adjust = true,
+                            height_overflow_show_ellipsis = true,
+                        }
+                        widget:paintTo(scratch, 0, 0)
+                        widget:free()
+                        bb:blitFrom(scratch, x + pad, src_top, 0, src_top - py, text_w, src_bot - src_top)
+                    end
+                end
             else
-                local src_top = math.max(py, view_top)
-                local src_bot = math.min(py + para_h, view_top + avail)
-                if src_bot > src_top then
-                    local scratch = cv_scratch(text_w, para_h, bb)
-                    scratch:fill(Theme.bg)
-                    local widget = TextBoxWidget:new{
-                        text = sec.text,
-                        face = Theme.face("default"),
-                        fgcolor = Theme.ink,
-                        width = text_w,
-                        height = para_h,
-                        height_adjust = true,
-                        height_overflow_show_ellipsis = true,
-                    }
-                    widget:paintTo(scratch, 0, 0)
-                    widget:free()
-                    bb:blitFrom(scratch, x + pad, src_top, 0, src_top - py, text_w, src_bot - src_top)
+                -- One-line preview, painted only when fully inside the band:
+                -- a top-cut header keeps its label, never a stray line above.
+                local py_prev = cy + label_lh + Theme.scale(4)
+                if py_prev >= view_top then
+                    local first = tostring(sec.text or ""):match("^([^\n]*)") or ""
+                    local preview = Widgets.fit_text(first:gsub("%s+", " "), text_w, "tiny")
+                    if preview ~= "" then
+                        P.text(bb, preview, sec_x, py_prev,
+                            text_w, "tiny", { color = Theme.muted })
+                    end
                 end
             end
         end

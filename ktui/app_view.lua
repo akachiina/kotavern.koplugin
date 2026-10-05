@@ -329,22 +329,12 @@ end
 
 function AppView:_scroll_list(steps, page_sized)
     local key = self.app:scroll_key()
-    -- ZenPM featured pattern: paging forward from the top of a character view
-    -- expands the cover instead of scrolling (once per page visit).
-    if steps > 0 and self.character_view_featured_visible
-        and not self.app.state.character_view_expanded then
-        self.app.state.character_view_expanded = true
-        self.app.state.scroll[key] = 0
-        self:refresh()
-        return true
-    end
     local old = self.app.state.scroll[key] or 0
     local delta = self.scroll_step or math.floor(Screen:getHeight() * 0.45)
     if page_sized and self.list_bounds then
         delta = math.floor(self.list_bounds.h * 0.9)
     elseif self.swipe_step then
-        -- Vertical swipes move ~90% of the viewport (zenpm-style), so a
-        -- flick always lands on fresh content instead of creeping by lines.
+        -- Chat swipe unit (a few text lines); other pages use scroll_step.
         delta = self.swipe_step
     end
     local new = math.max(0, math.min(old + steps * delta, self.max_scroll or 0))
@@ -400,7 +390,6 @@ function AppView:paintTo(bb, x, y)
     self.scroll_step = nil
     self.swipe_step = nil
     self.scrollbar = nil
-    self.character_view_featured_visible = false
 
     local m = Theme.metrics()
     self.dimen = Geom:new{ x = x, y = y, w = m.screen_w, h = m.screen_h }

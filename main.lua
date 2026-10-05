@@ -54,7 +54,9 @@ end
 function KOTavern:addToMainMenu(menu_items)
     menu_items.kotavern = {
         text = _("KOTavern"),
-        sorting_hint = "more_tools",
+        -- No sorting_hint: first menu like ZenPM. new = true skips the NEW
+        -- badge the sorter would otherwise prepend (user request).
+        new = true,
         callback = function()
             Launcher.open(self)
         end,

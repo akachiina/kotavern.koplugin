@@ -1315,6 +1315,202 @@ do
     ok(not has_hit2, "favlist: no star, no hitbox")
 end
 
+-- === 4u. load_settings keeps non-default persisted keys =========================
+do
+    local Store = require("kt_storage")
+    local App = require("kt_app")
+    local real_load, real_save = Store.load_settings, Store.save_settings
+    Store.load_settings = function()
+        return { theme = "light", streaming = false, update_channel = "commits",
+            plugin_lang = "es", default_preset_id = "p1", last_seen_chats = 123,
+            installed_build = { channel = "commits", version = "0.1.0" } }
+    end
+    Store.save_settings = function() end -- migrations must not touch disk here
+    local app = setmetatable({ state = {} }, { __index = App })
+    app:load_settings()
+    local s = app.state.settings
+    ok(s.update_channel == "commits", "settings: update_channel survives reboot")
+    ok(s.plugin_lang == "es", "settings: plugin_lang survives reboot")
+    ok(s.default_preset_id == "p1", "settings: default preset survives reboot")
+    ok(s.last_seen_chats == 123, "settings: last_seen survives reboot")
+    ok(type(s.installed_build) == "table" and s.installed_build.channel == "commits",
+        "settings: installed_build survives reboot")
+    ok(s.stream_refresh == "calm", "settings: missing defaults still filled")
+    ok(s.streaming == false, "settings: explicit false not clobbered")
+    Store.load_settings, Store.save_settings = real_load, real_save
+end
+
+-- === 4s. Character view: capped cover, collapsed sections ======================
+do
+    local card = {
+        name = "Aria", description = string.rep("brave mage. ", 30),
+        personality = "kind", scenario = "", first_mes = "hi",
+        mes_example = "", system_prompt = "", post_history_instructions = "",
+        creator_notes = "# Note\nSome **bold** text.\n\n- one\n- two\n\n> quoted",
+        tags = { "mage" },
+    }
+    local app = fake_app({ page = "character_view" })
+    app.state.viewing_character = { path = "/tmp/nope.png", card = card }
+    app.state.current_character = "Aria"
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    local bb = new_bb()
+    local Pages = require("ktui/pages")
+    local function render(scroll, h)
+        view.hitboxes = {}
+        return Pages.character_view(view, bb, 0, 0, VW, h or VH, scroll)
+    end
+    local max_closed = render(0)
+    ok(type(max_closed) == "number", "cv: renders with all sections closed")
+    ok(app.state.character_view_expanded == nil,
+        "cv: no auto-expand state ever set")
+    -- Tap toggles exactly one section open.
+    local sec_hit
+    local sec_ids = {}
+    for _, b in ipairs(view.hitboxes) do
+        local id = tostring(b.label or ""):match("^cvsec:(.+)$")
+        if id then
+            if tostring(b.label or "") == "cvsec:description" then sec_hit = b end
+            sec_ids[#sec_ids + 1] = id
+        end
+    end
+    ok(sec_hit ~= nil, "cv: section header has a tap hitbox")
+    ok(table.concat(sec_ids, ",") == "description,personality,first_mes,tags",
+        "cv: curated sections in order (got " .. table.concat(sec_ids, ",") .. ")")
+    sec_hit.callback()
+    ok(app.state.character_view_open["description"] == true
+        and app.state.character_view_open["personality"] == nil,
+        "cv: tap opens only that section")
+    -- Growth measured in a short viewport so content actually scrolls.
+    sec_hit.callback() -- shut again after the opens-only assert above
+    local small_closed = render(0, 300)
+    sec_hit.callback() -- open
+    local small_open = render(0, 300)
+    ok(small_open > small_closed, "cv: open section grows the content")
+    sec_hit.callback() -- shut
+    ok(app.state.character_view_open["description"] ~= true,
+        "cv: second tap closes it again")
+    local has_avatar = false
+    for _, b in ipairs(view.hitboxes) do
+        if tostring(b.label or "") == "cv_avatar" then has_avatar = true end
+    end
+    ok(has_avatar, "cv: avatar tap opens fullscreen")
+    -- Scroll position survives paging (no featured reset-to-top).
+    app.state.scroll["character_view"] = 300
+    local max_at_300 = render(300)
+    ok(app.state.scroll["character_view"] == math.min(300, max_at_300),
+        "cv: paging preserves scroll (no cover zoom reset)")
+    -- Menu entry: first menu, no NEW badge (declarative, read the source).
+    local main_src = io.open(PLUGIN .. "/main.lua", "r"):read("*a")
+    ok(main_src:find("sorting_hint =", 1, true) == nil
+        and main_src:find("new = true", 1, true) ~= nil,
+        "menu: no sorting_hint assignment, NEW badge suppressed")
+    -- Creator Notes paint as markdown above the sections (no collapse).
+    local function ink_top()
+        local n = 0
+        for yy = 0, 399 do
+            for xx = 0, VW - 1, 2 do
+                if bb:getPixel(xx, yy):getR() < 128 then n = n + 1 end
+            end
+        end
+        return n
+    end
+    local card_nonotes = {}
+    for k, v in pairs(card) do card_nonotes[k] = v end
+    card_nonotes.creator_notes = ""
+    app.state.viewing_character = { path = "/tmp/nope.png", card = card_nonotes }
+    bb:fill(Blitbuffer.COLOR_WHITE)
+    local max_nonotes = render(0, 250)
+    local ink_nonotes = ink_top()
+    app.state.viewing_character = { path = "/tmp/nope.png", card = card }
+    bb:fill(Blitbuffer.COLOR_WHITE)
+    local max_notes = render(0, 250)
+    ok(max_notes > max_nonotes, "cv: creator notes add always-visible content")
+    ok(ink_top() > ink_nonotes + 50, "cv: notes band paints markdown ink near the top")
+    render(0)
+    dump(bb, "character_view")
+    -- Avatar fallback (no image file): initial letter paints inside the box.
+    local av_ink = 0
+    for yy = 10, 130 do
+        for xx = 10, 130 do
+            if bb:getPixel(xx, yy):getR() < 128 then av_ink = av_ink + 1 end
+        end
+    end
+    ok(av_ink > 20, "cv: fallback initial paints in the avatar box")
+end
+
+-- === 4t. Dashboard shows the card name, not the file name =========================
+do
+    -- Minimal PNG with a tEXt chara chunk (base64 JSON, like ST cards).
+    local bit = require("bit")
+    local b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local function b64enc(s)
+        local out = {}
+        for i = 1, #s, 3 do
+            local a, b, c = s:byte(i, i + 2)
+            b = b or 0
+            c = c or 0
+            local n = a * 65536 + b * 256 + c
+            out[#out + 1] = b64:sub(math.floor(n / 262144) + 1, math.floor(n / 262144) + 1)
+                .. b64:sub(math.floor(n / 4096) % 64 + 1, math.floor(n / 4096) % 64 + 1)
+                .. (i + 1 > #s and "=" or b64:sub(math.floor(n / 64) % 64 + 1, math.floor(n / 64) % 64 + 1))
+                .. (i + 2 > #s and "=" or b64:sub(n % 64 + 1, n % 64 + 1))
+        end
+        return table.concat(out)
+    end
+    local function make_card(path, name)
+        local json = require("json")
+        local payload = b64enc(json.encode({ name = name, description = "d" }))
+        local function chunk(typ, data)
+            local out = string.char(
+                math.floor(#data / 16777216) % 256, math.floor(#data / 65536) % 256,
+                math.floor(#data / 256) % 256, #data % 256) .. typ .. data
+            -- CRC via pure lua (small payloads only).
+            local crc, poly = 0xFFFFFFFF, 0xEDB88320
+            local t = typ .. data
+            for i = 1, #t do
+                crc = bit.bxor(crc, t:byte(i))
+                for _ = 1, 8 do
+                    if bit.band(crc, 1) == 1 then
+                        crc = bit.bxor(0xEDB88320, bit.rshift(crc, 1))
+                    else
+                        crc = bit.rshift(crc, 1)
+                    end
+                end
+            end
+            crc = bit.bxor(crc, 0xFFFFFFFF)
+            local b = {}
+            for _ = 1, 4 do b[#b + 1] = string.char(bit.band(crc, 0xFF)); crc = bit.rshift(crc, 8) end
+            return out .. table.concat(b)
+        end
+        local f = io.open(path, "wb")
+        -- Rebuild properly: signature + IHDR + tEXt + IEND with real CRCs.
+        local sig = string.char(137, 80, 78, 71, 13, 10, 26, 10)
+        local ihdr_data = string.char(0,0,0,1,0,0,0,1,8,2,0,0,0)
+        f = io.open(path, "wb")
+        f:write(sig)
+        f:write(chunk("IHDR", ihdr_data))
+        f:write(chunk("tEXt", "chara\0" .. payload))
+        f:write(chunk("IEND", ""))
+        f:close()
+    end
+    make_card("/tmp/card_file_xyz.png", "Real Card Name")
+    local Store = require("kt_storage")
+    local real_list = Store.list_character_files
+    Store.list_character_files = function() return { "/tmp/card_file_xyz.png" } end
+    local App = require("kt_app")
+    local app = setmetatable({
+        state = { settings = {}, dashboard_query = "", _card_cache = nil },
+    }, { __index = App })
+    local items = app:dashboard_items()
+    ok(#items == 1 and items[1].display_name == "Real Card Name"
+        and items[1].name == "card_file_xyz",
+        "dashboard: display_name comes from the card (got "
+        .. tostring(items[1] and items[1].display_name) .. ")")
+    Store.list_character_files = real_list
+    os.remove("/tmp/card_file_xyz.png")
+end
+
 -- === 4l. Message actions open on hold/kebab, never on tap =====================
 do
     local AppView = require("ktui/app_view")

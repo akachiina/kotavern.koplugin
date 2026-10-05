@@ -313,6 +313,9 @@ msgstr "Capas"
 msgid "Create"
 msgstr "Criar"
 
+msgid "Creator Notes"
+msgstr "Notas do criador"
+
 msgid "Dashboard"
 msgstr "Painel"
 
@@ -408,6 +411,9 @@ msgstr "Densidade"
 
 msgid "Depth"
 msgstr "Profundidade"
+
+msgid "Description"
+msgstr "Descrição"
 
 msgid "Description (sent as context to AI)"
 msgstr "Descrição (enviada como contexto à IA)"
@@ -582,6 +588,9 @@ msgstr "Filtrar modelos"
 
 msgid "Find (Lua pattern)"
 msgstr "Buscar (padrão Lua)"
+
+msgid "First Message"
+msgstr "Primeira mensagem"
 
 msgid "First message for a new chat"
 msgstr "Primeira mensagem de um novo chat"
@@ -1000,6 +1009,9 @@ msgstr "Chats passados"
 msgid "Persona"
 msgstr "Persona"
 
+msgid "Personality"
+msgstr "Personalidade"
+
 msgid "Personas"
 msgstr "Personas"
 
@@ -1197,6 +1209,9 @@ msgstr "Salvar"
 
 msgid "Save as Profile"
 msgstr "Salvar como perfil"
+
+msgid "Scenario"
+msgstr "Cenário"
 
 msgid "Script"
 msgstr "Script"

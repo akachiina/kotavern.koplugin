@@ -143,6 +143,14 @@ function App:load_settings()
             s[k] = v
         end
     end
+    -- Preserve persisted keys with no compiled default (update_channel,
+    -- plugin_lang, installed_build, default_preset_id, ...): dropping them
+    -- silently reverted e.g. the update channel on every restart.
+    for k, v in pairs(stored) do
+        if s[k] == nil and v ~= nil then
+            s[k] = v
+        end
+    end
     self.state.settings = s
     self:apply_settings()
 end
@@ -778,6 +786,7 @@ function App:dashboard_items()
                 meta.version = card.character_version
                 meta.creator = card.creator
                 meta.tags = card.tags
+                meta.card_name = card.name
                 -- Token estimate = only what is actually sent to the LLM
                 -- (system_prompt + description + personality + scenario +
                 -- post_history_instructions). Rough heuristic: 1 token ≈ 4 chars.
@@ -789,6 +798,13 @@ function App:dashboard_items()
         it.creator = meta.creator or ""
         it.tags = meta.tags or {}
         it.tokens = meta.tokens or 0
+        -- Display the card's own name (not the file name); fall back to the
+        -- file-derived name when the card has none.
+        if type(meta.card_name) == "string" and meta.card_name ~= "" then
+            it.display_name = meta.card_name
+        else
+            it.display_name = it.name
+        end
         -- merge global tags (settings.tag_map)
         local global_tags = (self.state.settings.tag_map or {})[it.path]
         if type(global_tags) == "table" then
@@ -800,12 +816,16 @@ function App:dashboard_items()
         end
     end
 
-    -- Query filter (name / creator / tag, case-insensitive substring)
+    -- Query filter (name / creator / tag, case-insensitive substring).
+    -- Matches the displayed card name too, not just the file name.
     local q = (self.state.dashboard_query or ""):lower()
     if q ~= "" then
         local filtered = {}
         for _, it in ipairs(items) do
             local hit = (it.name or ""):lower():find(q, 1, true) ~= nil
+            if not hit and it.display_name and it.display_name ~= it.name then
+                hit = it.display_name:lower():find(q, 1, true) ~= nil
+            end
             if not hit and it.creator ~= "" then
                 hit = it.creator:lower():find(q, 1, true) ~= nil
             end
@@ -1019,8 +1039,19 @@ function App:view_character(item)
         card = card,
         name = card.name or Storage.character_name_from_path(path),
     }
-    -- Featured-cover expand resets per visit (first page-down expands it).
-    self.state.character_view_expanded = nil
+    -- Token estimate for the header (same heuristic as the dashboard, once
+    -- per visit instead of per paint).
+    do
+        local ok_m, Models = pcall(require, "kt_models")
+        if ok_m and Models and Models.build_system_prompt then
+            local ok_b, sysprompt = pcall(Models.build_system_prompt, card)
+            if ok_b and type(sysprompt) == "string" then
+                self.state.viewing_character.tokens = math.ceil(#sysprompt / 4)
+            end
+        end
+    end
+    -- Collapsed sections reset per visit (all closed).
+    self.state.character_view_open = nil
     self:navigate("character_view")
 end
 
