@@ -1,0 +1,18 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LuaJIT (device runtime syntax)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq luajit
+      - name: Syntax check every Lua file
+        run: |
+          fail=0
+          for f in $(find . -name '*.lua' -not -path './data/*'); do
+            luajit -bl "$f" > /dev/null 2>&1 || { echo "FAIL: $f"; fail=1; }
+          done
+          exit $fail
+      - name: i18n coverage (pt_BR + es)
+        run: python3 tools/check_i18n.py

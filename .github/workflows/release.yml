@@ -1,0 +1,30 @@
+name: release-asset
+on:
+  push:
+    tags:
+      - "v*"
+permissions:
+  contents: write
+jobs:
+  asset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build kotavern.koplugin-<version>.zip (root folder layout)
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          STAGE="$(mktemp -d)/kotavern.koplugin"
+          mkdir -p "$STAGE"
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='data/' ./ "$STAGE/"
+          find "$STAGE" -name '*.tmp' -delete
+          (cd "$(dirname "$STAGE")" && zip -qr "$GITHUB_WORKSPACE/kotavern.koplugin-$VER.zip" kotavern.koplugin)
+          unzip -l "$GITHUB_WORKSPACE/kotavern.koplugin-$VER.zip" | head -8
+      - name: Attach asset to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes
+          fi
+          gh release upload "${GITHUB_REF_NAME}" "kotavern.koplugin-$VER.zip" --clobber
