@@ -2521,5 +2521,95 @@ do
         "images: aborted download is NOT cached")
 end
 
+-- === 4v. Book style: page steps, indicator, edge taps ============================
+do
+    local Theme = require("ktui/theme")
+    local Pages = require("ktui/pages")
+    local ChatBubbles = require("ktui/chat_bubbles")
+    local AppView = require("ktui/app_view")
+    local saved_style = Theme.get_bubble_style()
+    local app = fake_app({ page = "chat",
+        settings = { show_avatars = true },
+        current_character = "Aria",
+        messages = {},
+    })
+    for i = 1, 30 do
+        app.state.messages[#app.state.messages + 1] =
+            { role = "user", content = "question number " .. i, name = "You" }
+        app.state.messages[#app.state.messages + 1] =
+            { role = "assistant", content = string.rep("answer text. ", 20), name = "Aria" }
+    end
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    view.dimen = { x = 0, y = 0, w = VW, h = VH }
+    setmetatable(view, { __index = AppView })
+    local bb = new_bb()
+
+    Theme.set_bubble_style("book")
+    Pages.chat(view, bb, 0, 0, VW, VH, 0)
+    local line = ChatBubbles.line_step()
+    local content_h = VH - Theme.scale(54)
+    local want_step = math.max(line, math.floor(content_h / math.max(1, line)) * line)
+    ok(view.swipe_step == want_step and want_step > line * 8,
+        "book: swipe step is a snapped page (got " .. tostring(view.swipe_step) .. ")")
+    Theme.set_bubble_style("bubbles")
+    Pages.chat(view, bb, 0, 0, VW, VH, 0)
+    ok(view.swipe_step == line * 8, "book: other styles keep the small step")
+
+    -- Pure page math.
+    local p1, t1 = Pages.chat_page(0, 700, 700, 700)
+    ok(p1 == 1 and t1 == 2, "book: first page of two")
+    local p2, t2 = Pages.chat_page(700, 700, 700, 700)
+    ok(p2 == 2 and t2 == 2, "book: second page of two")
+    ok(Pages.chat_page(0, 0, 700, 700) == nil, "book: no pages when it fits")
+
+    -- Edge taps turn pages in book style only.
+    Theme.set_bubble_style("book")
+    Pages.chat(view, bb, 0, 0, VW, VH, 0)
+    dump(bb, "chat_book")
+    view.max_scroll = 100000
+    view.list_bounds = nil
+    local key = app:scroll_key()
+    app.state.scroll[key] = 0
+    AppView.onTapKotavern(view, nil, { pos = { x = VW - 5, y = VH / 2 } })
+    ok(app.state.scroll[key] == view.swipe_step,
+        "book: tap on the right edge turns one page")
+    AppView.onTapKotavern(view, nil, { pos = { x = 5, y = VH / 2 } })
+    ok(app.state.scroll[key] == 0, "book: tap on the left edge goes back")
+    AppView.onTapKotavern(view, nil, { pos = { x = VW / 2, y = VH / 2 } })
+    ok(app.state.scroll[key] == 0, "book: center tap hits a bubble, turns nothing")
+    Theme.set_bubble_style("bubbles")
+    AppView.onTapKotavern(view, nil, { pos = { x = VW - 5, y = VH / 2 } })
+    ok(app.state.scroll[key] == 0, "book: edge taps inert in other styles")
+    Theme.set_bubble_style(saved_style)
+
+    -- Discrete paging: gestures always land on page starts, never between.
+    Theme.set_bubble_style("book")
+    view.swipe_step = 725
+    view.max_scroll = 100000
+    view.list_bounds = { h = 700 }
+    local function page_fling(from, steps)
+        app.state.scroll[key] = from
+        AppView._scroll_list(view, steps)
+        return app.state.scroll[key]
+    end
+    ok(page_fling(100, 1) == 725, "book: forward from mid-page lands on the next start")
+    ok(page_fling(700, 1) == 725, "book: forward from page end lands on next start")
+    ok(page_fling(800, -1) == 0, "book: back lands on the previous start")
+    ok(page_fling(0, -1) == 0, "book: back at top stays")
+    -- Drag release snaps to the nearest page.
+    app.state.scroll[key] = 400
+    ok(view:_snap_book_scroll() == true and app.state.scroll[key] == 725,
+        "book: drag release snaps forward")
+    app.state.scroll[key] = 300
+    ok(view:_snap_book_scroll() == true and app.state.scroll[key] == 0,
+        "book: drag release snaps back")
+    Theme.set_bubble_style("bubbles")
+    app.state.scroll[key] = 400
+    ok(view:_snap_book_scroll() == false and app.state.scroll[key] == 400,
+        "book: snap inert in other styles")
+    Theme.set_bubble_style(saved_style)
+end
+
 print(string.format("\n%d checks, %d failures", checks, fails))
 os.exit(fails == 0 and 0 or 1)

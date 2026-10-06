@@ -319,12 +319,8 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             callback = function()
                 app:choose_setting("bubble_style", _("Chat style"), {
                     { label = _("Bubbles (ST)"), value = "bubbles" },
-                    { label = _("SillyTavern"), value = "st" },
                     { label = _("Flat"), value = "flat" },
                     { label = _("Book"), value = "book" },
-                    { label = _("Rounded"), value = "rounded" },
-                    { label = _("Square"), value = "square" },
-                    { label = _("None"), value = "none" },
                 })
             end,
         },
@@ -732,6 +728,24 @@ end
 
 -- Storage usage: per-category bars (bytes + share + file count) plus
 -- backup export/import and data-folder actions.
+-- Book style page math (pure): current page + total from scroll position.
+-- Returns nil when there is nothing to paginate.
+function Pages.chat_page(scroll, max_scroll, content_h, step)
+    if not max_scroll or max_scroll <= 0 then
+        return nil
+    end
+    local page_h = math.max(1, step or content_h or 1)
+    local total_pages = math.max(1, math.ceil(((max_scroll or 0) + (content_h or 0)) / page_h))
+    local page = math.floor((scroll or 0) / page_h) + 1
+    if page > total_pages then
+        page = total_pages
+    end
+    if page < 1 then
+        page = 1
+    end
+    return page, total_pages
+end
+
 function Pages.data_storage(view, bb, x, y, w, h, scroll)
     local app = view.app
     local Storage = require("kt_storage")
@@ -2438,10 +2452,16 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     local content_h = h - action_bar_h
     local action_y = y + content_h
     local pad = Theme.scale(10)
-    -- Vertical swipes step by a few text lines (zenpm row parity: small and
-    -- precise instead of ~page jumps). Scales with the font size.
+    -- Swipe step by chat style: book turns whole pages (content height
+    -- snapped to whole text lines, so no line is ever cut mid-glyph);
+    -- every other style steps a few lines (zenpm row parity).
     local ChatBubblesHead = require("ktui/chat_bubbles")
-    view.swipe_step = ChatBubblesHead.line_step() * 8
+    local line_step = ChatBubblesHead.line_step()
+    if Theme.get_bubble_style() == "book" then
+        view.swipe_step = math.max(line_step, math.floor(content_h / math.max(1, line_step)) * line_step)
+    else
+        view.swipe_step = line_step * 8
+    end
 
     -- Message area - drawn BEFORE the action bar. The blitbuffer has no
     -- clipping, so paint order is the only guarantee that long messages can
@@ -2478,6 +2498,19 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
         -- Snap the scrollbar to whole lines so it never sits between rows
         Scroll.set_list_bounds(view, x, y, w, content_h, ChatBubbles.line_step())
         max_scroll = math.max(0, total_h - content_h)
+    end
+
+    -- Book style: page indicator (N / total) over the bottom-right corner.
+    -- No hitbox: taps there keep their normal meaning.
+    if Theme.get_bubble_style() == "book" and max_scroll > 0 then
+        local page, total_pages = Pages.chat_page(scroll, max_scroll, content_h,
+            math.max(1, view.swipe_step or content_h))
+        if page then
+            local indicator = tostring(page) .. " / " .. tostring(total_pages)
+            local isz = P.text_size(indicator, nil, "tiny")
+            P.text(bb, indicator, x + w - Theme.scrollbar_w() - isz.w - Theme.scale(6),
+                action_y - isz.h - Theme.scale(3), isz.w + 2, "tiny", { color = Theme.muted })
+        end
     end
 
     -- Bottom action bar - drawn after the message area so it always paints
