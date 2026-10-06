@@ -40,7 +40,7 @@ Copy the cloned folder into KOReader's `plugins/` directory (the folder name mus
 
 ## 🚀 Getting started
 
-1. Open the KOReader navigation menu (compass icon) — **KOTavern** sits at the bottom, next to ZenPM.
+1. Open the KOReader navigation menu (KOTavern sits at the bottom, next to ZenPM)
 2. Add a **connection**: pick a provider preset (or enter a custom base URL), paste your API key, and choose a model.
 3. Create or import a **character**, and optionally a **persona** or/and **preset**.
 4. Start chatting! 💬
@@ -61,9 +61,9 @@ Issues and pull requests are welcome! If you add or change user-facing strings, 
 
 ## 🙏 Acknowledgements
 
-- 🍺 [SillyTavern](https://github.com/SillyTavern/SillyTavern): the project KOTavern is modeled on. Feature set, behavior and character-card format follow it. KOTavern is an independent project and is not affiliated with SillyTavern.
-- 📚 [KOReader](https://github.com/koreader/koreader): the platform that makes all of this possible.
+- [SillyTavern](https://github.com/SillyTavern/SillyTavern): the project KOTavern is modeled on. Feature set, behavior and character-card format follow it. KOTavern is an independent project and is not affiliated with SillyTavern.
+- [KOReader](https://github.com/koreader/koreader): the platform that makes all of this possible.
 
 ## 📄 License
 
-[MIT](LICENSE) © 2026 akachiina.
+[MIT](LICENSE).
