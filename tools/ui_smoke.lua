@@ -2611,5 +2611,124 @@ do
     Theme.set_bubble_style(saved_style)
 end
 
+-- === 4w. Finger-following list drag (phone-style) ================================
+do
+    local AppView = require("ktui/app_view")
+    local Theme = require("ktui/theme")
+    local Pages = require("ktui/pages")
+    local saved_style = Theme.get_bubble_style()
+    local real_sched, real_unsched = UIManager.scheduleIn, UIManager.unschedule
+    UIManager.scheduleIn = function() end -- drag repaint pacing is not under test
+    UIManager.unschedule = function() end
+
+    local function mk_drag_view(max_scroll)
+        local view = {
+            app = fake_app({ page = "chat" }),
+            list_bounds = { x = 0, y = 0, w = VW, h = VH },
+            swipe_step = 40,
+            max_scroll = max_scroll or 5000,
+        }
+        function view:refresh() end
+        return setmetatable(view, { __index = AppView })
+    end
+    local function pan(view, y, start_y)
+        AppView.onPanKotavern(view, nil, {
+            relative = { x = 0, y = y - (start_y or 0) },
+            start_pos = { x = 300, y = start_y or 0 },
+            pos = { x = 300, y = y },
+        })
+    end
+
+    -- Grab: pan inside the list starts a drag; content follows the finger.
+    -- Phone semantics: finger UP (pos.y decreases) reveals later content,
+    -- finger DOWN scrolls back toward the top.
+    local view = mk_drag_view()
+    view.app.state.scroll["chat"] = 2000
+    pan(view, 300, 700)
+    ok(view._list_dragging == true, "drag: pan inside the list starts a drag")
+    ok(view.app.state.scroll["chat"] == 2400, "drag: finger up moves content 1:1")
+    pan(view, 900, 700)
+    ok(view.app.state.scroll["chat"] == 1800, "drag: finger down scrolls back")
+    pan(view, -9000, 700)
+    ok(view.app.state.scroll["chat"] == 5000, "drag: clamped at max_scroll")
+    pan(view, 9000, 700)
+    ok(view.app.state.scroll["chat"] == 0, "drag: clamped at the top")
+
+    -- Release commits the offset.
+    view.app.state.scroll["chat"] = 2000
+    pan(view, 900, 700)
+    AppView.onPanReleaseKotavern(view, nil, { pos = { x = 300, y = 900 } })
+    ok(view._list_dragging == false and view.app.state.scroll["chat"] == 1800,
+        "drag: slow release commits the offset")
+
+    -- Flick release (arrives disguised as a swipe): partial drag reverts and
+    -- the swipe applies its normal one-step scroll, no double scrolling.
+    local v2 = mk_drag_view()
+    v2.app.state.scroll["chat"] = 2000
+    pan(v2, 600, 700)
+    ok(v2.app.state.scroll["chat"] == 2100, "drag: partial drag tracks the finger")
+    AppView.onSwipeKotavern(v2, nil, {
+        direction = "south",
+        start_pos = { x = 300, y = 700 },
+        pos = { x = 300, y = 600 },
+    })
+    ok(v2._list_dragging == false and v2.app.state.scroll["chat"] == 2000 - v2.swipe_step,
+        "drag: flick reverts the drag; swipe steps once from the start")
+
+    -- Auto-follow integration: dragging up mid-generation pins the view;
+    -- dragging back to the bottom resumes it.
+    local v4 = mk_drag_view()
+    v4.app.state.is_generating = true
+    v4.app.state.scroll["chat"] = 4000
+    pan(v4, 900, 700)
+    ok(v4.app.state.user_scrolled_up == true, "drag: scrolling up mid-generation pins the view")
+    pan(v4, -3000, 700)
+    ok(v4.app.state.user_scrolled_up == nil, "drag: returning to the bottom resumes follow")
+
+    -- Book style never starts a drag (pages turn discretely).
+    Theme.set_bubble_style("book")
+    local v3 = mk_drag_view()
+    pan(v3, 300, 0)
+    ok(v3._list_dragging ~= true and (v3.app.state.scroll["chat"] or 0) == 0,
+        "drag: book style never starts a drag")
+
+    -- Scrollbar affordance per style: hidden in book, present otherwise.
+    -- draw_content (not Pages.chat alone) owns the scrollbar pass.
+    local function paint_chat(style)
+        local app = fake_app({ page = "chat", messages = {
+            { role = "user", content = "q", name = "You" },
+            { role = "assistant", content = string.rep("answer text. ", 400), name = "Aria" },
+        } })
+        local v = { app = app, hitboxes = {} }
+        function v:refresh() end
+        v.dimen = { x = 0, y = 0, w = VW, h = VH }
+        setmetatable(v, { __index = AppView })
+        Theme.set_bubble_style(style)
+        v:draw_content(new_bb(), 0, 0, VW, VH)
+        return v
+    end
+    local book_view = paint_chat("book")
+    ok(book_view.scrollbar == nil, "book: scrollbar hidden while paging")
+    local bub_view = paint_chat("bubbles")
+    ok(bub_view.scrollbar ~= nil and bub_view.scrollbar.travel > 0,
+        "bubbles: scrollbar still drawn")
+
+    -- A scrollbar TAP counts as a manual scroll too: mid-generation it must
+    -- release the auto-follow exactly like a thumb drag or a list drag.
+    local sb_hit
+    for _i, box in ipairs(bub_view.hitboxes) do
+        if tostring(box.label or "") == "scrollbar" then sb_hit = box break end
+    end
+    ok(sb_hit ~= nil, "scrollbar: track tap hitbox exists")
+    bub_view.app.state.is_generating = true
+    bub_view.app.state.scroll["chat"] = bub_view.max_scroll
+    sb_hit.callback(nil, (bub_view.scrollbar.track_y or 10) + 10)
+    ok(bub_view.app.state.user_scrolled_up == true,
+        "scrollbar: tap mid-generation pins the view")
+
+    UIManager.scheduleIn, UIManager.unschedule = real_sched, real_unsched
+    Theme.set_bubble_style(saved_style)
+end
+
 print(string.format("\n%d checks, %d failures", checks, fails))
 os.exit(fails == 0 and 0 or 1)

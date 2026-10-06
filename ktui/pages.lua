@@ -2500,15 +2500,17 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
         max_scroll = math.max(0, total_h - content_h)
     end
 
-    -- Book style: page indicator (N / total) over the bottom-right corner.
-    -- No hitbox: taps there keep their normal meaning.
+    -- Book style: page indicator (N / total), KOReader-footer style -
+    -- centered at the bottom edge of the message area (the scrollbar is
+    -- hidden in this style). No hitbox: taps there keep the edge-tap
+    -- paging semantics.
     if Theme.get_bubble_style() == "book" and max_scroll > 0 then
         local page, total_pages = Pages.chat_page(scroll, max_scroll, content_h,
             math.max(1, view.swipe_step or content_h))
         if page then
             local indicator = tostring(page) .. " / " .. tostring(total_pages)
             local isz = P.text_size(indicator, nil, "tiny")
-            P.text(bb, indicator, x + w - Theme.scrollbar_w() - isz.w - Theme.scale(6),
+            P.text(bb, indicator, x + math.floor((w - isz.w) / 2),
                 action_y - isz.h - Theme.scale(3), isz.w + 2, "tiny", { color = Theme.muted })
         end
     end

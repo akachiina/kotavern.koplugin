@@ -189,15 +189,22 @@ function AppView:show_koreader_menu_from_gesture(ges, kind)
 end
 
 function AppView:onSwipeKotavern(_, ges)
-    -- A fast scrollbar drag can terminate as a swipe rather than pan_release.
-    -- Finalize the in-progress drag with a clean repaint and consume the
-    -- event, so it neither leaks a stuck drag flag nor double-scrolls via the
-    -- paging logic below.
+    -- A fast list drag can terminate as a swipe rather than pan_release
+    -- (release inside the swipe interval). Finalize it first: the drag is a
+    -- flick, so its partial offset is reverted and the normal one-step
+    -- paging below applies cleanly, without double-scrolling.
+    if self._list_dragging then
+        self:_end_list_drag(ges and ges.time, true)
+        if ges.direction ~= "north" and ges.direction ~= "south" then
+            return true
+        end
+        -- Fall through: the flick applies its normal one-step scroll.
+    end
+    local direction = ges.direction
     if self._scroll_dragging then
         self:_end_scroll_drag(nil)
         return true
     end
-    local direction = ges.direction
     if Sheets.active(self.app) then
         -- Modal sheet: vertical swipes scroll the sheet, a swipe DOWN that
         -- started above the panel closes it (bottom-sheet affordance), and
@@ -278,32 +285,56 @@ function AppView:onPanKotavern(_, ges)
         -- Grab decision uses the gesture START position: testing the current
         -- finger position made any pan crossing the ~28px gutter jump into
         -- absolute thumb-mapping mid-gesture (violent scroll jump).
-        if not sb or sb.travel <= 0 or not ges.start_pos
-            or not P.contains(sb.zone, ges.start_pos.x, ges.start_pos.y) then
-            return false
+        if sb and sb.travel > 0 and ges.start_pos
+            and P.contains(sb.zone, ges.start_pos.x, ges.start_pos.y) then
+            self._scroll_dragging = true
         end
-        self._scroll_dragging = true
+    end
+    if self._scroll_dragging then
+        local rects = Scroll.paint_drag_thumb(self, ges.pos.y)
+        if rects then
+            for _i = 1, #rects do
+                UIManager:setDirty(nil, "fast", Geom:new(rects[_i]))
+            end
+        end
+
+        if Scroll.apply_y(self, ges.pos.y) then
+            self:_note_manual_scroll()
+            self:_schedule_drag_render()
+        end
+        return true
     end
 
-    local rects = Scroll.paint_drag_thumb(self, ges.pos.y)
-    if rects then
-        for _i = 1, #rects do
-            UIManager:setDirty(nil, "fast", Geom:new(rects[_i]))
+    -- Finger-following list drag (phone-style): while the finger is down the
+    -- content tracks the pan delta 1:1 (GestureDetector emits a pan per move
+    -- with `relative` accumulated from the contact start). The repaint is
+    -- debounced like the scrollbar thumb's; there is no inertia - on e-ink a
+    -- coasting viewport reads as an uncontrolled leap. Scrollbar grabs above
+    -- keep priority. Book style is excluded: its chat pages turn discretely
+    -- (edge taps / swipe steps), never drag.
+    if not self._list_dragging
+        and not (self.app.state.page == "chat" and Theme.get_bubble_style() == "book") then
+        local bounds = self.list_bounds
+        if bounds and (self.max_scroll or 0) > 0 and ges.start_pos
+            and P.contains(bounds, ges.start_pos.x, ges.start_pos.y) then
+            self._list_dragging = true
+            local key = self.app:scroll_key()
+            self._list_drag_start_scroll = self.app.state.scroll[key] or 0
+            self._list_drag_start_y = ges.start_pos.y
         end
     end
-
-    if Scroll.apply_y(self, ges.pos.y) then
-        self:_note_manual_scroll()
-        self._scroll_list_render = self._scroll_list_render or function()
-            self:_render_scroll_list()
-        end
-        UIManager:unschedule(self._scroll_list_render)
-        UIManager:scheduleIn(0.18, self._scroll_list_render)
+    if self._list_dragging then
+        self:_drag_list_to(ges.pos.y)
+        return true
     end
-    return true
+    return false
 end
 
 function AppView:onPanReleaseKotavern(_, ges)
+    if self._list_dragging then
+        self:_end_list_drag(ges and ges.time)
+        return true
+    end
     if ges and ges.from_mousewheel then
         if self._mousewheel_handled then
             self._mousewheel_handled = false
@@ -335,6 +366,56 @@ function AppView:_end_scroll_drag(pos_y)
         Scroll.apply_y(self, pos_y)
     end
     self:_snap_book_scroll()
+    self:refresh()
+end
+
+-- Shared debounced repaint for drag scrolling (scrollbar thumb and list
+-- drag): coalesces the pan-event storm into one list repaint per interval,
+-- the same pacing the scrollbar thumb already used.
+function AppView:_schedule_drag_render()
+    self._scroll_list_render = self._scroll_list_render or function()
+        self:_render_scroll_list()
+    end
+    UIManager:unschedule(self._scroll_list_render)
+    UIManager:scheduleIn(0.18, self._scroll_list_render)
+end
+
+-- List drag (phone-style), move step: content tracks the finger 1:1 from the
+-- drag's start offset, clamped to the list.
+function AppView:_drag_list_to(pos_y)
+    local delta = pos_y - (self._list_drag_start_y or pos_y)
+    local key = self.app:scroll_key()
+    local want = math.max(0, math.min((self._list_drag_start_scroll or 0) - delta,
+        self.max_scroll or 0))
+    if want == (self.app.state.scroll[key] or 0) then
+        return
+    end
+    self.app.state.scroll[key] = want
+    self:_note_manual_scroll()
+    self:_schedule_drag_render()
+end
+
+-- List drag release. The GestureDetector already separates the two cases:
+-- a release inside the swipe interval arrives here as a SWIPE (was_flick),
+-- anything slower arrives as pan_release. A flick reverts its partial drag
+-- offset and lets the swipe apply the normal one-step scroll (on e-ink the
+-- debounced render rarely painted the intermediate position, so there is no
+-- visible jump); a slow release commits where the finger left the list.
+function AppView:_end_list_drag(_, was_flick)
+    self._list_dragging = false
+    if self._scroll_list_render then
+        UIManager:unschedule(self._scroll_list_render)
+    end
+    if was_flick then
+        local key = self.app:scroll_key()
+        self.app.state.scroll[key] = self._list_drag_start_scroll or 0
+        -- The intermediate positions never happened as far as the view is
+        -- concerned: re-evaluate the follow flag against the restored offset
+        -- (back at the bottom mid-generation -> follow resumes).
+        self:_note_manual_scroll()
+    end
+    self._list_drag_start_scroll = nil
+    self._list_drag_start_y = nil
     self:refresh()
 end
 

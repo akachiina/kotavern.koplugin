@@ -21,6 +21,12 @@ function Scroll.set_list_bounds(view, x, y, w, h, step)
 end
 
 function Scroll.draw_scrollbar(view, bb, max_scroll, scroll)
+    -- Book style paginates like the KOReader reader: no scrollbar at all -
+    -- the page counter drawn by Pages.chat is the only position affordance.
+    if view.app and view.app.state and view.app.state.page == "chat"
+        and Theme.get_bubble_style() == "book" then
+        return
+    end
     if not view.list_bounds or not max_scroll or max_scroll <= 0 then
         return
     end
@@ -75,6 +81,11 @@ function Scroll.draw_scrollbar(view, bb, max_scroll, scroll)
         ratio = math.max(0, math.min(1, ratio))
         view.app.state.scroll[view.app:scroll_key()] =
             snap_scroll(max_scroll * ratio, view.scroll_step, max_scroll)
+        -- A scrollbar tap is a manual scroll too: mid-generation it must
+        -- release the auto-follow exactly like a thumb drag or list drag.
+        if view._note_manual_scroll then
+            view:_note_manual_scroll()
+        end
         view:refresh()
     end, "scrollbar")
 end

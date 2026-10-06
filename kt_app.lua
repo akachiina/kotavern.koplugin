@@ -4191,6 +4191,10 @@ function App:_do_generate(api_messages, opts)
         self._stream_partial_count = 0
         self._last_stream_paint = nil
         self.state.user_scrolled_up = nil
+        -- New generation: collapse reasoning blocks (same rationale as the
+        -- streaming path above).
+        self.state.reasoning_open = {}
+        self.state.reasoning_full = {}
         -- ST parity: on Regenerate the old reply clears IMMEDIATELY (fresh
         -- bubble in place); _streaming_base keeps it for restore on failure.
         if opts.regenerate then
@@ -4595,6 +4599,10 @@ function App:_do_stream_message(api_messages, opts)
     self._stream_partial_count = 0
     self._last_stream_paint = nil
     self.state.user_scrolled_up = nil
+    -- New generation: start with all reasoning blocks collapsed (ST parity -
+    -- a fresh reply renders clean, no stale expanded section lingering).
+    self.state.reasoning_open = {}
+    self.state.reasoning_full = {}
     self:refresh(true)
 
     local Client = require("kt_client")
