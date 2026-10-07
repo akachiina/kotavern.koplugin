@@ -372,6 +372,29 @@ local function png_dims(file)
     return nil
 end
 
+-- GIF dimensions from the logical screen descriptor (pure io, no
+-- decoding): 6-byte signature, then little-endian u16 width/height.
+local function gif_dims(file)
+    local f = io.open(file, "rb")
+    if not f then
+        return nil
+    end
+    local head = f:read(10)
+    f:close()
+    if not head or #head < 10 or head:sub(1, 3) ~= "GIF" then
+        return nil
+    end
+    local function le16(s)
+        local a, b = s:byte(1, 2)
+        return a + b * 256
+    end
+    local iw, ih = le16(head:sub(7, 8)), le16(head:sub(9, 10))
+    if iw > 0 and ih > 0 then
+        return iw, ih
+    end
+    return nil
+end
+
 -- SVG icons render at the exact requested size only when ImageWidget gets NO
 -- scale_factor (nil lets renderSVGImageFile map the viewBox onto w×h); any
 -- numeric scale_factor makes it aspect-keep instead.
@@ -493,6 +516,9 @@ function P.image_dims(file)
     end
     if file:lower():match("%.webp$") then
         return webp_dims(file)
+    end
+    if file:lower():match("%.gif$") then
+        return gif_dims(file)
     end
     local w, h = png_dims(file)
     if w then return w, h end

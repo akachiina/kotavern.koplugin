@@ -2521,96 +2521,6 @@ do
         "images: aborted download is NOT cached")
 end
 
--- === 4v. Book style: page steps, indicator, edge taps ============================
-do
-    local Theme = require("ktui/theme")
-    local Pages = require("ktui/pages")
-    local ChatBubbles = require("ktui/chat_bubbles")
-    local AppView = require("ktui/app_view")
-    local saved_style = Theme.get_bubble_style()
-    local app = fake_app({ page = "chat",
-        settings = { show_avatars = true },
-        current_character = "Aria",
-        messages = {},
-    })
-    for i = 1, 30 do
-        app.state.messages[#app.state.messages + 1] =
-            { role = "user", content = "question number " .. i, name = "You" }
-        app.state.messages[#app.state.messages + 1] =
-            { role = "assistant", content = string.rep("answer text. ", 20), name = "Aria" }
-    end
-    local view = { app = app, hitboxes = {} }
-    function view:refresh() end
-    view.dimen = { x = 0, y = 0, w = VW, h = VH }
-    setmetatable(view, { __index = AppView })
-    local bb = new_bb()
-
-    Theme.set_bubble_style("book")
-    Pages.chat(view, bb, 0, 0, VW, VH, 0)
-    local line = ChatBubbles.line_step()
-    local content_h = VH - Theme.scale(54)
-    local want_step = math.max(line, math.floor(content_h / math.max(1, line)) * line)
-    ok(view.swipe_step == want_step and want_step > line * 8,
-        "book: swipe step is a snapped page (got " .. tostring(view.swipe_step) .. ")")
-    Theme.set_bubble_style("bubbles")
-    Pages.chat(view, bb, 0, 0, VW, VH, 0)
-    ok(view.swipe_step == line * 8, "book: other styles keep the small step")
-
-    -- Pure page math.
-    local p1, t1 = Pages.chat_page(0, 700, 700, 700)
-    ok(p1 == 1 and t1 == 2, "book: first page of two")
-    local p2, t2 = Pages.chat_page(700, 700, 700, 700)
-    ok(p2 == 2 and t2 == 2, "book: second page of two")
-    ok(Pages.chat_page(0, 0, 700, 700) == nil, "book: no pages when it fits")
-
-    -- Edge taps turn pages in book style only.
-    Theme.set_bubble_style("book")
-    Pages.chat(view, bb, 0, 0, VW, VH, 0)
-    dump(bb, "chat_book")
-    view.max_scroll = 100000
-    view.list_bounds = nil
-    local key = app:scroll_key()
-    app.state.scroll[key] = 0
-    AppView.onTapKotavern(view, nil, { pos = { x = VW - 5, y = VH / 2 } })
-    ok(app.state.scroll[key] == view.swipe_step,
-        "book: tap on the right edge turns one page")
-    AppView.onTapKotavern(view, nil, { pos = { x = 5, y = VH / 2 } })
-    ok(app.state.scroll[key] == 0, "book: tap on the left edge goes back")
-    AppView.onTapKotavern(view, nil, { pos = { x = VW / 2, y = VH / 2 } })
-    ok(app.state.scroll[key] == 0, "book: center tap hits a bubble, turns nothing")
-    Theme.set_bubble_style("bubbles")
-    AppView.onTapKotavern(view, nil, { pos = { x = VW - 5, y = VH / 2 } })
-    ok(app.state.scroll[key] == 0, "book: edge taps inert in other styles")
-    Theme.set_bubble_style(saved_style)
-
-    -- Discrete paging: gestures always land on page starts, never between.
-    Theme.set_bubble_style("book")
-    view.swipe_step = 725
-    view.max_scroll = 100000
-    view.list_bounds = { h = 700 }
-    local function page_fling(from, steps)
-        app.state.scroll[key] = from
-        AppView._scroll_list(view, steps)
-        return app.state.scroll[key]
-    end
-    ok(page_fling(100, 1) == 725, "book: forward from mid-page lands on the next start")
-    ok(page_fling(700, 1) == 725, "book: forward from page end lands on next start")
-    ok(page_fling(800, -1) == 0, "book: back lands on the previous start")
-    ok(page_fling(0, -1) == 0, "book: back at top stays")
-    -- Drag release snaps to the nearest page.
-    app.state.scroll[key] = 400
-    ok(view:_snap_book_scroll() == true and app.state.scroll[key] == 725,
-        "book: drag release snaps forward")
-    app.state.scroll[key] = 300
-    ok(view:_snap_book_scroll() == true and app.state.scroll[key] == 0,
-        "book: drag release snaps back")
-    Theme.set_bubble_style("bubbles")
-    app.state.scroll[key] = 400
-    ok(view:_snap_book_scroll() == false and app.state.scroll[key] == 400,
-        "book: snap inert in other styles")
-    Theme.set_bubble_style(saved_style)
-end
-
 -- === 4w. Finger-following list drag (phone-style) ================================
 do
     local AppView = require("ktui/app_view")
@@ -2685,15 +2595,8 @@ do
     pan(v4, -3000, 700)
     ok(v4.app.state.user_scrolled_up == nil, "drag: returning to the bottom resumes follow")
 
-    -- Book style never starts a drag (pages turn discretely).
-    Theme.set_bubble_style("book")
-    local v3 = mk_drag_view()
-    pan(v3, 300, 0)
-    ok(v3._list_dragging ~= true and (v3.app.state.scroll["chat"] or 0) == 0,
-        "drag: book style never starts a drag")
-
-    -- Scrollbar affordance per style: hidden in book, present otherwise.
-    -- draw_content (not Pages.chat alone) owns the scrollbar pass.
+    -- Scrollbar affordance: draw_content (not Pages.chat alone) owns the
+    -- scrollbar pass.
     local function paint_chat(style)
         local app = fake_app({ page = "chat", messages = {
             { role = "user", content = "q", name = "You" },
@@ -2707,8 +2610,6 @@ do
         v:draw_content(new_bb(), 0, 0, VW, VH)
         return v
     end
-    local book_view = paint_chat("book")
-    ok(book_view.scrollbar == nil, "book: scrollbar hidden while paging")
     local bub_view = paint_chat("bubbles")
     ok(bub_view.scrollbar ~= nil and bub_view.scrollbar.travel > 0,
         "bubbles: scrollbar still drawn")
@@ -2728,6 +2629,148 @@ do
 
     UIManager.scheduleIn, UIManager.unschedule = real_sched, real_unsched
     Theme.set_bubble_style(saved_style)
+end
+
+-- === 18. Debug Mode + UI DSL (css_test sandbox) ==================================
+do
+    local UiDSL = require("ktui/uidsl")
+    local AppView = require("ktui/app_view")
+    local App = require("kt_app")
+
+    -- Parser: cascade, specificity, validation errors.
+    local sheet = UiDSL.parse("/* hi */\npage { background: gray(0.10); color: #111111; }\n" ..
+        "panel { color: #222222; }\n.card { radius: 8px; pad: 10px; }\n" ..
+        "#x.card { color: #333333; }\npage { background: gray(0.2); }")
+    local overrides, oerr = UiDSL.theme_overrides(sheet, "page")
+    ok(overrides.bg and overrides.ink, "uidsl: page palette overrides parsed")
+    ok(#oerr == 0, "uidsl: valid sheet has no errors")
+    local st = UiDSL.style_for(sheet, "panel", { classes = { card = true }, id = "x" })
+    ok(st.color, "uidsl: #id.class rule resolves for a matching node")
+    local rlen = UiDSL.resolve_value("radius", st.radius)
+    ok(rlen and rlen > 0, "uidsl: length prop resolves to scaled px via resolve_value")
+    ok(st.vars and next(st.vars) == nil, "uidsl: no vars on a plain sheet")
+    local vars_sheet = UiDSL.parse("@vars { --brand: #444444; }\npage { color: #111111; }")
+    local stv = UiDSL.style_for(vars_sheet, "page", {})
+    ok(stv.vars and stv.vars.brand == "#444444", "uidsl: @vars custom props collected")
+    local _, bad = UiDSL.theme_overrides(UiDSL.parse("page { background: oops; }"), "page")
+    ok(#bad == 1 and tostring(bad[1]):find("invalid color", 1, true) ~= nil,
+        "uidsl: bad color surfaces an error")
+    local _, nerr = UiDSL.theme_overrides(UiDSL.parse("page { pad: 12px; }"), "page")
+    ok(nerr and #nerr == 0, "uidsl: node-only props never error the palette")
+
+    -- Node layout: measure + paint a small box tree.
+    local n = UiDSL.node({ tag = "box", border = true, pad = 8, children = {
+        UiDSL.node({ tag = "text", text = "Hello" }),
+        UiDSL.node({ tag = "spacer", h = "4px" }),
+        UiDSL.node({ tag = "text", align = "center", text = "World", bold = true }),
+    } })
+    local mh = UiDSL.measure(n, 300)
+    ok(mh > 20, "uidsl: box measures padding + children")
+    local bbx = Blitbuffer.new(300, mh + 4, Blitbuffer.TYPE_BB8)
+    bbx:fill(Blitbuffer.COLOR_WHITE)
+    UiDSL.paint(n, bbx, 2, 2, 300)
+    ok(dark_in(bbx, 2, 2, 296, mh) > 0, "uidsl: painted box leaves ink on the canvas")
+
+    -- HTML -> nodes conversion (the "converting" layer).
+    local hit_fired = nil
+    local actions = { poke = function() hit_fired = true end }
+    local tree = UiDSL.from_html(
+        '<div class="card" id="c1"><h2>Title</h2><p class="muted">Body &amp; more</p>' ..
+        '<img src="/tmp/x.png" data-h="30px"/><div class="btn" data-action="poke"><span>Go</span></div></div>',
+        actions)
+    ok(tree.tag == "box" and #tree.children == 1, "uidsl: html root holds one div")
+    local card_node = tree.children[1]
+    ok(card_node.html_tag == "div" and card_node.classes.card and card_node.id == "c1",
+        "uidsl: div carries class + id")
+    ok(card_node.children[1].html_tag == "h2" and card_node.children[1].tag == "text"
+        and card_node.children[1].bold, "uidsl: h2 becomes bold text")
+    ok(card_node.children[2].tag == "para" and card_node.children[2].text == "Body & more",
+        "uidsl: p becomes para, entities decode (got tag=" ..
+        tostring(card_node.children[2].tag) .. " text=" ..
+        tostring(card_node.children[2].text) .. ")")
+    ok(card_node.children[3].tag == "image" and card_node.children[3].src == "/tmp/x.png",
+        "uidsl: img becomes image node with src")
+    local btn_node = card_node.children[4]
+    ok(btn_node.on_tap ~= nil, "uidsl: data-action wires a callback")
+    -- Painting registers the hitbox; firing it runs the action.
+    local btn_h = UiDSL.measure(btn_node, 200)
+    local fake_view = { hitboxes = {} }
+    UiDSL.paint(btn_node, new_bb(), 0, 0, 200, fake_view)
+    ok(#fake_view.hitboxes == 1 and fake_view.hitboxes[1].label == "uidsl:btn",
+        "uidsl: interactive node registers its hitbox")
+    fake_view.hitboxes[1].callback()
+    ok(hit_fired == true, "uidsl: hitbox callback fires the data-action")
+    -- CSS decorates the tree (border/pad from .card; color from .muted).
+    local sheet2 = UiDSL.parse("page { color: #111111; } .card { border: true; pad: 12px; } .muted { color: gray(0.45); }")
+    UiDSL.apply_styles(tree, sheet2)
+    ok(card_node.border == true and card_node.pad == Theme.scale(12),
+        "uidsl: apply_styles decorates nodes from CSS")
+    ok(card_node.children[2].color, "uidsl: .muted paints the para color")
+
+    -- demo_page: DEMO_HTML + DEMO_CSS build a styled tree with actions.
+    local dp = UiDSL.demo_page(UiDSL.parse(UiDSL.DEMO_CSS), actions)
+    ok(dp.children and #dp.children >= 6, "uidsl: demo page converts the HTML body")
+    ok(dp.children[1].bg, "uidsl: demo hero got its CSS background")
+
+    -- css_test page end-to-end (HTML body painted, toolbar registered).
+    local app = fake_app({ page = "css_test", settings = { debug_mode = true } })
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    view.dimen = { x = 0, y = 0, w = VW, h = VH }
+    setmetatable(view, { __index = AppView })
+    local bb = new_bb()
+    local max_s = Pages.css_test(view, bb, 0, 0, VW, VH, 0)
+    ok(max_s >= 0, "css_test: paints and returns max_scroll")
+    local nbtn = 0
+    for _i, hbox in ipairs(view.hitboxes) do
+        if tostring(hbox.label or ""):find("btn:", 1, true) == 1 then nbtn = nbtn + 1 end
+    end
+    ok(nbtn >= 2, "css_test: Reload + Shot buttons registered")
+    ok(ink_ratio(bb) > 0, "css_test: sandbox ink on screen")
+
+    -- Debug settings page: rows + the single Debug Mode toggle.
+    local app2 = fake_app({ page = "settings_debug", settings = { debug_mode = true } })
+    local v2 = { app = app2, hitboxes = {} }
+    function v2:refresh() end
+    Pages.settings_debug(v2, new_bb(), 0, 0, VW, VH, 0)
+    local nrow, ntog = 0, 0
+    for _i, hbox in ipairs(v2.hitboxes) do
+        local lb = tostring(hbox.label or "")
+        if lb:find("row:", 1, true) == 1 and lb ~= "row:toggle" then nrow = nrow + 1 end
+        if lb == "row:toggle" then ntog = ntog + 1 end
+    end
+    ok(nrow >= 4, "debug page: setting rows registered (got " .. tostring(nrow) .. ")")
+    ok(ntog == 1, "debug page: exactly one Debug Mode toggle")
+
+    -- Settings root: Debug category + easter egg appear only in debug mode.
+    local function paint_settings(settings_overrides)
+        local a = fake_app({ page = "settings", settings = settings_overrides })
+        local v = { app = a, hitboxes = {} }
+        function v:refresh() end
+        v.dimen = { x = 0, y = 0, w = VW, h = VH }
+        setmetatable(v, { __index = AppView })
+        local b = new_bb()
+        Pages.settings(v, b, 0, 0, VW, VH, 0)
+        return v, b
+    end
+    local von, bon = paint_settings({ debug_mode = true })
+    local voff, boff = paint_settings({})
+    ok(#von.hitboxes == #voff.hitboxes + 1,
+        "debug: exactly one extra category row in debug mode")
+    local strip_y = math.max(0, VH - Theme.scale(70))
+    local ink_on = dark_in(bon, 0, strip_y, VW, VH - strip_y)
+    local ink_off = dark_in(boff, 0, strip_y, VW, VH - strip_y)
+    ok(ink_on > ink_off + 10, "debug: easter egg strip paints in debug mode (" ..
+        tostring(ink_on) .. " vs " .. tostring(ink_off) .. ")")
+
+    -- Triple-tap arms debug; activation is stubbed so no storage is touched.
+    local app5 = fake_app({ page = "settings_updates", settings = {} })
+    function app5:enable_debug_mode() self._debug_armed = true end
+    App._debug_triple_tap(app5)
+    App._debug_triple_tap(app5)
+    ok(not app5._debug_armed, "debug: two taps do not arm Debug Mode")
+    App._debug_triple_tap(app5)
+    ok(app5._debug_armed == true, "debug: three rapid taps arm Debug Mode")
 end
 
 print(string.format("\n%d checks, %d failures", checks, fails))

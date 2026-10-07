@@ -49,6 +49,8 @@ local function page_title(view)
     local Storage = require("kt_storage")
     if page == "dashboard" then
         return _("%s %s %s"):format(_("Welcome"), _("to"), _("KOTavern"))
+    elseif page == "css_test" then
+        return _("CSS Test")
     elseif page == "chats" then
         local visible = view.app:chats_visible()
         local total = tostring(#(state.chats_index or {}))
@@ -81,6 +83,8 @@ local function page_title(view)
             settings_network = _("Network"),
             settings_language = _("Language"),
             settings_data = _("Data"),
+            settings_debug = _("Debug"),
+            css_test = _("CSS Test"),
         }
         return names[page] or _("Settings")
     elseif page == "character_editor" then

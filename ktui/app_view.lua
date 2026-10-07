@@ -90,21 +90,6 @@ function AppView:onTapKotavern(_, ges)
         Sheets.close(self.app)
         return true
     end
-    -- Book style page turn (KOReader reader parity: DTAP_ZONE_BACKWARD is
-    -- the left quarter, DTAP_ZONE_FORWARD the right three quarters): a tap
-    -- that hit no hitbox turns one page instead of doing nothing. Message
-    -- taps, hold, kebab and the sheet above keep priority.
-    if self.app.state.page == "chat" and Theme.get_bubble_style() == "book"
-        and self.dimen and self.dimen.w and self.dimen.w > 0 then
-        local rx = x - (self.dimen.x or 0)
-        if rx < self.dimen.w * 0.25 then
-            self:_scroll_list(-1)
-            return true
-        elseif rx > self.dimen.w * 0.25 then
-            self:_scroll_list(1)
-            return true
-        end
-    end
     if self:tap_should_pass_to_koreader_menu(ges) then
         return self:show_koreader_menu_from_gesture(ges, "tap")
     end
@@ -310,10 +295,8 @@ function AppView:onPanKotavern(_, ges)
     -- with `relative` accumulated from the contact start). The repaint is
     -- debounced like the scrollbar thumb's; there is no inertia - on e-ink a
     -- coasting viewport reads as an uncontrolled leap. Scrollbar grabs above
-    -- keep priority. Book style is excluded: its chat pages turn discretely
-    -- (edge taps / swipe steps), never drag.
-    if not self._list_dragging
-        and not (self.app.state.page == "chat" and Theme.get_bubble_style() == "book") then
+    -- keep priority.
+    if not self._list_dragging then
         local bounds = self.list_bounds
         if bounds and (self.max_scroll or 0) > 0 and ges.start_pos
             and P.contains(bounds, ges.start_pos.x, ges.start_pos.y) then
@@ -365,8 +348,7 @@ function AppView:_end_scroll_drag(pos_y)
     if pos_y then
         Scroll.apply_y(self, pos_y)
     end
-    self:_snap_book_scroll()
-    self:refresh()
+    self:_render_scroll_list()
 end
 
 -- Shared debounced repaint for drag scrolling (scrollbar thumb and list
@@ -413,38 +395,11 @@ function AppView:_end_list_drag(_, was_flick)
         -- concerned: re-evaluate the follow flag against the restored offset
         -- (back at the bottom mid-generation -> follow resumes).
         self:_note_manual_scroll()
-    end
-    self._list_drag_start_scroll = nil
+    end    self._list_drag_start_scroll = nil
     self._list_drag_start_y = nil
-    self:refresh()
-end
 
--- Book style (KOReader readerpaging parity): scroll positions are discrete
--- page starts, never half positions. Snaps the current offset to the
--- nearest page boundary; no-op everywhere else.
-function AppView:_snap_book_scroll()
-    if self.app.state.page ~= "chat" then
-        return false
-    end
-    if Theme.get_bubble_style() ~= "book" then
-        return false
-    end
-    local page_h = self.swipe_step
-    if not page_h or page_h <= 0 then
-        return false
-    end
-    local key = self.app:scroll_key()
-    local cur = self.app.state.scroll[key] or 0
-    local max_scroll = self.max_scroll or 0
-    local pages = math.max(1, math.ceil(((max_scroll or 0)
-        + ((self.list_bounds and self.list_bounds.h) or page_h)) / page_h))
-    local want = math.max(0, math.min(math.floor(cur / page_h + 0.5), pages - 1))
-    local snapped = want * page_h
-    if snapped == cur then
-        return false
-    end
-    self.app.state.scroll[key] = snapped
-    return true
+    -- Commit repaint: only the list area changed.
+    self:_render_scroll_list()
 end
 
 function AppView:onKotavernScroll(steps)
@@ -462,27 +417,15 @@ function AppView:_scroll_list(steps, page_sized)
         -- Chat swipe unit (a few text lines); other pages use scroll_step.
         delta = self.swipe_step
     end
-    local new
-    if self.app.state.page == "chat" and Theme.get_bubble_style() == "book"
-        and self.swipe_step and self.swipe_step > 0 then
-        -- Book paging (KOReader readerpaging parity): every gesture lands
-        -- on a page start, never a half position. swipe_step IS the snapped
-        -- page height here. Forward goes to the next page after the one
-        -- containing the offset; back goes to the previous page start.
-        local page_h = self.swipe_step
-        local viewport = (self.list_bounds and self.list_bounds.h) or page_h
-        local pages = math.max(1, math.ceil(((self.max_scroll or 0) + viewport) / page_h))
-        local want = math.max(0, math.min(math.floor(old / page_h) + steps, pages - 1))
-        new = want * page_h
-    else
-        new = math.max(0, math.min(old + steps * delta, self.max_scroll or 0))
-    end
+    local new = math.max(0, math.min(old + steps * delta, self.max_scroll or 0))
     if new == old then
         return false
     end
     self.app.state.scroll[key] = new
     self:_note_manual_scroll()
-    self:refresh()
+    -- Regional repaint: a scroll step only changes pixels inside the list, so
+    -- the e-ink waveform covers just that area instead of the whole panel.
+    self:_render_scroll_list()
     return true
 end
 
@@ -494,6 +437,13 @@ end
 -- === Paint pipeline ===
 
 function AppView:refresh(full, region)
+    local app = self.app
+    if app and app.refresh_flash then
+        -- Shared flash policy (App:refresh): routine "full" requests ride on
+        -- no-flash "partial" refreshes; visual identity changes flash once.
+        app:refresh(full, region)
+        return
+    end
     UIManager:setDirty(self, full and "full" or "ui",
         region and Geom:new(region) or self.dimen)
 end
@@ -614,6 +564,10 @@ function AppView:draw_content(bb, x, y, w, h)
         max_scroll = Pages.data_storage(self, bb, x, y, w, h, scroll)
     elseif page == "settings_updates" then
         max_scroll = Pages.settings_updates(self, bb, x, y, w, h, scroll)
+    elseif page == "settings_debug" then
+        max_scroll = Pages.settings_debug(self, bb, x, y, w, h, scroll)
+    elseif page == "css_test" then
+        max_scroll = Pages.css_test(self, bb, x, y, w, h, scroll)
     elseif page == "presets" then
         max_scroll = Pages.presets(self, bb, x, y, w, h, scroll)
     elseif page == "connections" then
@@ -649,23 +603,9 @@ function AppView:draw_content(bb, x, y, w, h)
     end
 
     Scroll.draw_scrollbar(self, bb, max_scroll, scroll)
-    -- Book last pages may start past max_scroll (partial tail page): settle
-    -- on the last page start instead of max. Every other case clamps back;
-    -- switching styles heals itself through the same lines.
-    local book_hold = page == "chat" and Theme.get_bubble_style() == "book"
+    -- Switching styles heals itself: a stale offset past max clamps back.
     if scroll > max_scroll then
-        if book_hold then
-            local page_h = self.swipe_step
-            local viewport = self.list_bounds and self.list_bounds.h
-            if page_h and page_h > 0 and viewport and viewport > 0 then
-                local pages = math.max(1, math.ceil((max_scroll + viewport) / page_h))
-                state.scroll[scroll_key] = (pages - 1) * page_h
-            else
-                state.scroll[scroll_key] = max_scroll
-            end
-        else
-            state.scroll[scroll_key] = max_scroll
-        end
+        state.scroll[scroll_key] = max_scroll
     end
     self.max_scroll = max_scroll
 end

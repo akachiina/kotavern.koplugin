@@ -124,8 +124,6 @@ msgstr "Comportamiento"
 msgid "Blank = built-in default"
 msgstr "En blanco = predeterminado interno"
 
-msgid "Book"
-msgstr "Libro"
 
 msgid "Both"
 msgstr "Ambos"
@@ -1533,3 +1531,111 @@ msgstr "tok"
 
 msgid "user"
 msgstr "usuario"
+
+msgid "A longer paragraph to show the box model measuring wrapped lines before painting them onto the canvas."
+msgstr "Un párrafo más largo para mostrar el modelo de cajas midiendo las líneas ajustadas antes de pintarlas en el lienzo."
+
+msgid "Active"
+msgstr "Activo"
+
+msgid "CSS Test"
+msgstr "Prueba de CSS"
+
+msgid "CSS problems:"
+msgstr "Problemas de CSS:"
+
+msgid "CSS theme"
+msgstr "Tema CSS"
+
+msgid "Card A: paragraphs"
+msgstr "Tarjeta A: párrafos"
+
+msgid "Card B: alignment"
+msgstr "Tarjeta B: alineación"
+
+msgid "Card C: image node"
+msgstr "Tarjeta C: nodo de imagen"
+
+msgid "Could not save the screenshot"
+msgstr "No se pudo guardar la captura de pantalla"
+
+msgid "Could not write the theme file"
+msgstr "No se pudo escribir el archivo de tema"
+
+msgid "Danger zone"
+msgstr "Zona de peligro"
+
+msgid "Debug"
+msgstr "Debug"
+
+msgid "Debug Mode"
+msgstr "Modo Debug"
+
+msgid "Debug Mode activated"
+msgstr "Modo Debug activado"
+
+msgid "Debug Mode active - experimental features enabled."
+msgstr "Modo Debug activo: funciones experimentales habilitadas."
+
+msgid "Debug Mode: CSS sandbox"
+msgstr "Modo Debug: sandbox de CSS"
+
+msgid "Declarative nodes painted by the UI DSL engine. Pick a theme in Debug settings; Reload re-reads the CSS."
+msgstr "Nodos declarativos pintados por el motor UI DSL. Elige un tema en los ajustes de Debug; Recargar relee el CSS."
+
+msgid "Default theme (built-in)"
+msgstr "Tema predeterminado (integrado)"
+
+msgid "Experimental"
+msgstr "Experimental"
+
+msgid "Install default CSS"
+msgstr "Instalar CSS predeterminado"
+
+msgid "KOTavern UI DSL - debug build"
+msgstr "KOTavern UI DSL - build de debug"
+
+msgid "None (built-in)"
+msgstr "Ninguno (integrado)"
+
+msgid "Reload"
+msgstr "Recargar"
+
+msgid "Sandbox page painted by the UI DSL engine"
+msgstr "Página sandbox pintada por el motor UI DSL"
+
+msgid "Shot"
+msgstr "Captura"
+
+msgid "Shot captures this page into the Data folder."
+msgstr "Captura guarda esta página en la carpeta de datos."
+
+msgid "Test CSS"
+msgstr "Probar CSS"
+
+msgid "Turning it off hides this category and the CSS overlay."
+msgstr "Apagarlo oculta esta categoría y la superposición de CSS."
+
+msgid "Write sandbox.css into the themes folder"
+msgstr "Escribe sandbox.css en la carpeta de temas"
+
+msgid "You are in Debug Mode!"
+msgstr "¡Estás en modo Debug!"
+
+msgid "centered text"
+msgstr "texto centrado"
+
+msgid "right text"
+msgstr "texto a la derecha"
+
+msgid "sandbox.css created in the themes folder"
+msgstr "sandbox.css creado en la carpeta de temas"
+
+msgid "CSS reloaded"
+msgstr "CSS recargado"
+
+msgid "Debug Mode disabled"
+msgstr "Modo Debug desactivado"
+
+msgid "Screenshot saved"
+msgstr "Captura guardada"

@@ -6,7 +6,6 @@
 --   "flat" (ST DEFAULT): same column layout, no panels; the user's message
 --        sits on a subtle soft band. Densest option for e-ink.
 --   "st" (legacy boxed): max-width bubbles, user right / char left.
---   "book" (ST DOCUMENT): document flow, no boxes, no dividers.
 --   "rounded"/"square": legacy aliases of st with their corner radius.
 --   "none": alias of flat.
 -- Extras: optional ~N tok estimate in the name row (ST tokenCounter), an
@@ -39,7 +38,7 @@ end
 local STYLE_RADIUS = { st = 12, rounded = 6, square = 0 }
 
 local function effective_style(style)
-    if style == "flat" or style == "book" or style == "none" then
+    if style == "flat" or style == "none" then
         return (style == "none") and "flat" or style
     end
     if style == "bubbles" then
@@ -314,12 +313,12 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local inner_left = panel_mode and (panel_x + pn_pad) or (x + pad)
     local inner_right = panel_mode and (panel_right - pn_pad) or (content_right - pad)
     local area = math.max(8, inner_right - inner_left)
-    -- ST bubbles cap at 78% of the area; flat/book use the full area.
+    -- ST bubbles cap at 78% of the area; flat uses the full area.
     local max_bubble_w = math.floor(area * 0.78)
 
     -- Flat ST-DEFAULT geometry: the avatar is a COLUMN; all text (name row +
     -- content) starts right of it and uses the full remaining width.
-    local flat = panel_mode or (style == "flat" or style == "book")
+    local flat = panel_mode or (style == "flat")
     local av_col_w = 0
     local col_text_x = inner_left
     local col_text_w = area
@@ -331,6 +330,47 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local text_w = boxed and math.max(1, math.min(area, max_bubble_w) - pad * 2)
         or (panel_mode and math.max(1, col_text_w) or math.max(1, col_text_w - pad * 2))
     local bubble_w = text_w + pad * 2
+
+    -- === Incremental measure cache (perf P1) ===
+    -- Pass 1 used to re-measure EVERY message on EVERY repaint (~0.29ms per
+    -- message on the bench, including off-screen ones). Layouts are cached
+    -- per message key and re-measured only when their validity signature
+    -- changes; y positions are recomputed every paint from cached heights.
+    local layout_cache = rawget(view, "_chat_layout_cache")
+    -- Chat-level inputs shared by every entry: style, metrics, settings and
+    -- the chat itself. Any change rebuilds the cache from scratch.
+    local chat_sig = table.concat({
+        style, tostring(dens), tostring(pad), tostring(gap),
+        tostring(avatar_size), tostring(show_avatars), tostring(show_inline),
+        tostring(outline_user), tostring(show_timestamps), tostring(show_tokens),
+        tostring(boxed), tostring(panel_mode), tostring(radius),
+        tostring(w), tostring(text_w), tostring(bubble_w),
+        tostring(settings.avatar_size),
+        tostring(settings.reasoning_prefix), tostring(settings.reasoning_suffix),
+        tostring(view.app and view.app.state and view.app.state.current_chat_path),
+    }, "|")
+    if not layout_cache or chat_sig ~= rawget(view, "_chat_layout_sig") then
+        layout_cache = {}
+        view._chat_layout_cache = layout_cache
+        view._chat_layout_sig = chat_sig
+        view._chat_reasoning_cache = nil
+    end
+    -- Display-side regex scripts signature (busts per-msg parse caches when
+    -- scripts are added/edited/disabled).
+    local regex_sig = ""
+    do
+        local scripts = settings.regex_scripts
+        if type(scripts) == "table" and #scripts > 0 then
+            local parts = {}
+            for _rs, sc in ipairs(scripts) do
+                if type(sc) == "table" and not sc.disabled then
+                    table.insert(parts, tostring(sc.scriptName) .. "\1" .. tostring(sc.find)
+                        .. "\1" .. tostring(sc.replace) .. "\1" .. tostring(sc.placement))
+                end
+            end
+            regex_sig = table.concat(parts, "\2")
+        end
+    end
 
     local name_row_h = (flat and show_avatars) and math.max(name_h, avatar_size)
         or (show_avatars and math.max(name_h, avatar_size) or name_h)
@@ -346,12 +386,62 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local total_h = 0
     local cy = y + gap
 
-    for i, msg in ipairs(messages or {}) do
+    -- Expanded reasoning blocks are measured at their own width; cached per
+    -- (text, width, inline) so open/collapse repaints skip the re-parse.
+    local reasoning_cache = rawget(view, "_chat_reasoning_cache")
+    if not reasoning_cache then
+        reasoning_cache = {}
+        view._chat_reasoning_cache = reasoning_cache
+    end
+    local function measure_reasoning(reasoning, rtw, inline)
+        local rkey = #reasoning .. ":" .. rtw .. ":" .. tostring(inline)
+        local hit = reasoning_cache[rkey]
+        if not hit then
+            local rentries, rh = block_entries(Md.parse(reasoning), rtw, view.app, inline)
+            hit = { entries = rentries, h = rh }
+            reasoning_cache[rkey] = hit
+        end
+        return hit.entries, hit.h
+    end
+
+    -- Per-message validity signature: cache identity + content length +
+    -- everything the measure pass consumed (reasoning text, parse toggles,
+    -- stream state, swipe row status, reasoning open/full flags keyed by the
+    -- original msg_key identity).
+    local function sig_msg(msg, key, msg_key, content_text, reasoning, is_last)
+        return key .. "#" .. #content_text .. ":" ..
+            (reasoning and (#reasoning .. ":y") or "n") .. ":" ..
+            tostring(settings.reasoning_auto_parse ~= false) .. ":" ..
+            tostring(msg.is_streaming == true) .. ":" ..
+            tostring(is_last == true) .. ":" ..
+            -- The swipe row only exists on the last message while idle, so
+            -- generation start/end must invalidate exactly that one.
+            (is_last and (tostring(is_generating == true) .. ":") or "") ..
+            tostring(reasoning_open[msg_key] == true) .. ":" ..
+            tostring(reasoning_full[msg_key] == true)
+    end
+    -- Regex scripts participate in every message's signature: an edited
+    -- script changes rendered text (and often heights) without touching the
+    -- raw content identity.
+    local function full_sig(msg, key, msg_key, content_text, reasoning, is_last)
+        return sig_msg(msg, key, msg_key, content_text, reasoning, is_last) .. ":" .. regex_sig
+    end
+
+    -- Re-measure one message into a fresh layout (the slow path; unchanged
+    -- messages take the cache fast path in the loop below).
+    local function measure_msg(msg, i)
         local is_user = (msg.role == "user")
         local is_system = (msg.role == "system") or (msg.hidden == true)
         local is_streaming = msg.is_streaming
         local display_name = is_user and user or (msg.name or char_name or "?")
         local content_text = msg.content or ""
+        -- UI-state identity (reasoning_open/full maps, hitbox labels): the
+        -- original msg_key format. The layout CACHE key extends it with
+        -- samples of BOTH ends of the content: same-second messages with
+        -- same-length bodies must never share a layout slot (a shared slot
+        -- would repaint one message's row at another's position).
+        local msg_key = tostring(msg.send_date) .. ":" .. tostring(msg.name) .. ":" .. #content_text
+        local key = msg_key .. ":" .. content_text:sub(1, 48) .. ":" .. content_text:sub(-48)
         local reasoning = message_reasoning(msg)
 
         -- Auto-parse inline reasoning tags (configurable prefix/suffix).
@@ -367,12 +457,33 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             end
         end
 
+        -- FAST PATH: an unchanged message reuses its measured layout; only
+        -- positions (y/bubble_y/idx) are refreshed. Content, reasoning,
+        -- stream state, last-message status, reasoning toggles or parse
+        -- settings changes fall through to the full measure.
+        local cached = layout_cache[key]
+        if cached and cached._sig == full_sig(msg, key, msg_key, content_text, reasoning,
+                i == #(messages or {})) then
+            local rh = cached.row_h or cached.h or 0
+            local dy = cy - (cached.y or cy)
+            cached.y = cy
+            if dy ~= 0 and cached.bubble_y then
+                cached.bubble_y = cached.bubble_y + dy
+            end
+            cached.idx = i
+            cy = cy + rh
+            total_h = total_h + rh
+            layouts[i] = cached
+            return cached
+        end
+
         local layout = {
             idx = i,
             -- Stable per-message identity for UI state (reasoning open flag):
             -- keying by array index reattaches state to the wrong message
-            -- after delete/move.
-            msg_key = tostring(msg.send_date) .. ":" .. tostring(msg.name) .. ":" .. #content_text,
+            -- after delete/move. The layout cache keys on `key` (content-
+            -- sampled) while UI state keeps this original identity.
+            msg_key = msg_key,
             is_user = is_user,
             is_system = is_system,
             is_streaming = is_streaming,
@@ -403,14 +514,17 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 blocks = { { kind = "paragraph", text = content_text .. " ▌" } }
             else
                 -- Display-side regex scripts, then cache parse per message
-                -- (content identity, not repaint count)
+                -- (content identity, not repaint count). regex_sig busts the
+                -- per-msg caches when scripts change.
                 local scripts = settings.regex_scripts
-                if type(scripts) == "table" and #scripts > 0 then
+                if type(scripts) == "table" and #scripts > 0
+                    and msg._md_regex_sig ~= regex_sig then
                     content_text = require("kt_regex_engine").apply(content_text, scripts, "display")
                 end
-                if msg._md_sig ~= content_text then
+                if msg._md_sig ~= content_text or msg._md_regex_sig ~= regex_sig then
                     msg._md_sig = content_text
                     msg._md_blocks = Md.parse(content_text)
+                    msg._md_regex_sig = regex_sig
                 end
                 blocks = msg._md_blocks
             end
@@ -430,7 +544,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- width it is drawn at (text column minus the rule gutter).
                 if reasoning_open[layout.msg_key] then
                     local rtw = math.max(8, text_w - Theme.scale(8))
-                    local rentries, rh = block_entries(Md.parse(reasoning), rtw, view.app, show_inline)
+                    local rentries, rh = measure_reasoning(reasoning, rtw, show_inline)
                     layout.reasoning_entries = rentries
                     layout.reasoning_tw = rtw
                     local head_pad = Theme.line_h("tiny") + Theme.scale(4) + Theme.scale(8)
@@ -487,7 +601,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     layout.bx = is_user and (content_right - pad - bubble_w) or (x + pad)
                     layout.cx = layout.bx + pad
                 else
-                    -- Flat/book: content column starts right of the avatar column.
+                    -- Flat: content column starts right of the avatar column.
                     layout.bx = col_text_x - (is_user and Theme.scale(6) or 0)
                     layout.cx = col_text_x
                 end
@@ -497,25 +611,30 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             end
             layouts[i] = layout
         end
+
+        layout._sig = full_sig(msg, key, msg_key, content_text, reasoning, i == #(messages or {}))
+        -- Store under the SAME key the fast path looks up (content-sampled);
+        -- msg_key (plain identity) remains the UI-state identity only.
+        layout_cache[key] = layout
+        return layout
     end
 
-    -- Thinking bubble (non-streaming generation indicator)
+    for i, msg in ipairs(messages or {}) do
+        measure_msg(msg, i)
+    end
+
+    -- Thinking bubble (non-streaming generation indicator): a synthetic
+    -- streaming message through the same measure path (cached on its own
+    -- frame-varying content, so it re-measures per pulse frame).
     if thinking_text then
-        local entries, content_h = block_entries(Md.parse(thinking_text), text_w, view.app, show_inline)
-        local bubble_h = content_h + pad * 2
-        local row_h = bubble_h + gap
-        local layout = {
-            kind = boxed and "boxed" or "flat", is_user = false, is_thinking = true,
-            is_streaming = true, display_name = nil,
-            -- y is REQUIRED: the paint pass computes top = l.y - scroll for
-            -- every layout (its absence crashed the first thinking repaint).
-            y = cy,
-            entries = entries, content_h = content_h, text_w = text_w,
-            bubble_y = cy + pad, bubble_w = bubble_w, bubble_h = bubble_h,
-            bx = boxed and (x + pad) or col_text_x, cx = (boxed and (x + pad) or col_text_x) + pad, row_h = row_h,
-        }
-        layouts[#layouts + 1] = layout
-        total_h = total_h + row_h
+        local tl = measure_msg({
+            role = "assistant", name = nil, send_date = nil,
+            content = thinking_text, is_streaming = true,
+        }, #layouts + 1)
+        if tl then
+            tl.is_thinking = true
+            tl.display_name = nil
+        end
     end
 
     -- Bottom breathing room: the fully-scrolled view must always show a

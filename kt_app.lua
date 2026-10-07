@@ -20,8 +20,12 @@ local SETTINGS_DEFAULTS = {
     theme = "light",
     base_font_size = 22,
     density = "normal",        -- compact | normal | spacious
-    bubble_style = "bubbles",  -- ST chat_styles: bubbles (BUBBLES, default) | flat (DEFAULT) | st (legacy boxed) | book (DOCUMENT) | rounded | square | none
+    bubble_style = "bubbles",  -- ST chat_styles: bubbles (BUBBLES, default) | flat (DEFAULT) | st (legacy boxed) | rounded | square | none
     chat_bg = "paper",         -- chat surface tint: paper | gray | none
+    -- Debug Mode (hidden until triple-tapping "Installed" on the Updates
+    -- page; experimental features, CSS sandbox). Not exposed in pickers.
+    debug_mode = false,
+    debug_theme_css = "",      -- CSS file name (no path) from <data>/themes/
     show_inline_images = true, -- render message images inline (ST media)
     show_avatars = true,
     show_covers = true,
@@ -164,6 +168,18 @@ end
 function App:apply_settings()
     local Theme = require("ktui/theme")
     local s = self.state.settings
+    -- Visual identity signature: when one of the palette/metrics keys changes,
+    -- the next full refresh upgrades to a real flash exactly once (see
+    -- App:refresh). Everything else repaints flash-free.
+    local vsig = table.concat({
+        tostring(s.theme), tostring(s.base_font_size), tostring(s.density),
+        tostring(s.bubble_style), tostring(s.chat_bg),
+        (s.debug_mode == true) and tostring(s.debug_theme_css or "") or "",
+    }, "|")
+    if self._visual_sig and self._visual_sig ~= vsig then
+        self._flash_pending = true
+    end
+    self._visual_sig = vsig
     -- One-time migration: ST-DEFAULT (flat) is the new default chat style.
     -- Old installs carry the pre-v0.4 default ("st"); move them over unless
     -- they explicitly picked a style other than that old default.
@@ -184,11 +200,22 @@ function App:apply_settings()
         s.migrated_bubbles_style = true
         Storage.save_settings(s)
     end
+    -- One-time migration: the book (ST DOCUMENT) chat style was removed.
+    -- Anyone still carrying it lands on the app default (bubbles).
+    if s.bubble_style == "book" then
+        s.bubble_style = "bubbles"
+        Storage.save_settings(s)
+    end
     Theme.set_theme(s.theme)
     Theme.set_base_font_size(s.base_font_size)
     Theme.set_density(s.density)
     Theme.set_bubble_style(s.bubble_style)
     Theme.set_chat_bg(s.chat_bg)
+    -- Debug Mode CSS overlay (experimental): re-bakes the palette with the
+    -- selected theme file when debug mode is on; no-op otherwise.
+    if s.debug_mode == true then
+        require("ktui/uidsl").apply_theme_to_app(self)
+    end
 end
 
 function App:_active_persona()
@@ -266,7 +293,8 @@ function App:apply_language(lang)
     if ok and gettext and gettext.changeLang and gettext.current_lang ~= lang then
         gettext.changeLang(lang)
     end
-    self:refresh(true)
+    -- Full text swap everywhere: a real flash reads as intentional here.
+    self:refresh_flash()
 end
 
 function App:choose_language()
@@ -400,6 +428,143 @@ function App:scroll_key()
     return self.state.page .. "_" .. tostring(self.state.current_chat_id or "")
 end
 
+-- === Debug Mode ============================================================
+-- Hidden developer mode: triple-tap "Installed" on Updates to arm it. Adds a
+-- Debug category in Settings (experimental/dangerous options + the CSS
+-- sandbox). The setting persists; the toast + the Settings badge remind it's
+-- active. Turning it off hides everything.
+function App:enable_debug_mode()
+    self.state.settings.debug_mode = true
+    Storage.save_settings(self.state.settings)
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+    UIManager:show(InfoMessage:new{
+        text = _("Debug Mode activated"),
+        timeout = 3,
+    })
+    self:refresh(true)
+end
+
+-- Triple-tap detector: three taps on the "Installed" row within a ~4s
+-- window each (e-ink taps are deliberate; os.time has 1s resolution).
+function App:_debug_triple_tap()
+    local now = os.time()
+    if (now - (self._debug_last_tap or 0)) <= 4 then
+        self._debug_tap_count = (self._debug_tap_count or 0) + 1
+    else
+        self._debug_tap_count = 1
+    end
+    self._debug_last_tap = now
+    if (self._debug_tap_count or 0) >= 3 then
+        self._debug_tap_count = 0
+        self:enable_debug_mode()
+    end
+end
+
+-- Toggle from the Debug settings row. Both directions give VISIBLE feedback
+-- (the sandbox previously "disabled silently", which read as a dead button).
+function App:toggle_debug_mode()
+    if self.state.settings.debug_mode == true then
+        self:disable_debug_mode()
+        local InfoMessage = require("ui/widget/infomessage")
+        local _ = require("gettext")
+        UIManager:show(InfoMessage:new{
+            text = _("Debug Mode disabled"), timeout = 3 })
+    else
+        self:enable_debug_mode()
+    end
+end
+
+function App:disable_debug_mode()
+    self.state.settings.debug_mode = false
+    self.state.settings.debug_theme_css = ""
+    Storage.save_settings(self.state.settings)
+    self:apply_settings()
+    self.state.debug_theme_errors = nil
+    -- Leaving a debug page? Back to Settings so the (now hidden) category
+    -- change is visible instead of a silent no-op.
+    if self.state.page == "settings_debug" or self.state.page == "css_test" then
+        self:navigate("settings")
+    else
+        self:refresh(true)
+    end
+end
+
+function App:show_debug_actions()
+    local Sheets = require("ktui/sheets")
+    local _ = require("gettext")
+    local actions = {}
+    for _i, file in ipairs(require("ktui/uidsl").list_theme_files()) do
+        actions[#actions + 1] = {
+            label = file.name,
+            icon = "magic",
+            on_tap = function()
+                self:save_setting("debug_theme_css", file.name)
+                self:navigate("css_test")
+            end,
+        }
+    end
+    if #actions == 0 then
+        actions[#actions + 1] = {
+            label = _("Default theme (built-in)"),
+            icon = "magic",
+            on_tap = function()
+                self:save_setting("debug_theme_css", "")
+                self:navigate("css_test")
+            end,
+        }
+    end
+    Sheets.show(self, { title = _("Test CSS"), actions = actions })
+end
+
+-- Write the sandbox demo CSS to <data>/themes so users have a starting file.
+function App:install_demo_theme()
+    local Storage = require("kt_storage")
+    local dir = Storage.data_dir() .. "/themes"
+    local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if not lfs_ok or not lfs then
+        local ok2, lfs2 = pcall(require, "lfs")
+        lfs = ok2 and lfs2 or nil
+    end
+    pcall(function()
+        if lfs and lfs.mkdir then lfs.mkdir(dir) end
+    end)
+    local path = dir .. "/sandbox.css"
+    local f = io.open(path, "w")
+    if not f then
+        local InfoMessage = require("ui/widget/infomessage")
+        UIManager:show(InfoMessage:new{
+            text = _("Could not write the theme file"), timeout = 3 })
+        return
+    end
+    f:write(require("ktui/uidsl").DEMO_CSS)
+    f:close()
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+    UIManager:show(InfoMessage:new{
+        text = _("sandbox.css created in the themes folder"), timeout = 3 })
+end
+
+-- Dump the current page viewport to the Data folder (Debug evidence).
+function App:debug_page_shot()
+    local Storage = require("kt_storage")
+    local bb = require("device").screen.bb
+    if not bb then return end
+    local path = Storage.data_dir() .. "/kotavern_css_test.png"
+    local ok = pcall(function() bb:writeToFile(path, "PNG") end)
+    if ok then
+        self:refresh(true)
+        local InfoMessage = require("ui/widget/infomessage")
+        local _ = require("gettext")
+        UIManager:show(InfoMessage:new{
+            text = _("Screenshot saved"), timeout = 2 })
+    else
+        local InfoMessage = require("ui/widget/infomessage")
+        UIManager:show(InfoMessage:new{
+            text = _("Could not save the screenshot"), timeout = 3 })
+    end
+end
+
 -- Stream repaint pacing labels (settings.stream_refresh, e-ink flicker).
 function App:stream_refresh_label()
     local _ = require("gettext")
@@ -477,9 +642,41 @@ function App:close()
     I18n.uninstall()
 end
 
-function App:refresh(full)
+function App:refresh(full, region)
+    if not self.view then
+        return
+    end
+    if region then
+        -- Regional updates never flash: they are incremental repaints
+        -- (scrolling, streaming) where a waveform flash would be jarring.
+        UIManager:setDirty(self.view, "ui", Geom:new(region))
+        return
+    end
+    local mode = "ui"
+    if full then
+        if self._flash_pending then
+            -- One real flash after a visual identity change (theme, font,
+            -- density, chat style): the palette swap deserves a clean wave.
+            self._flash_pending = nil
+            mode = "full"
+        else
+            -- E-ink policy: routine "full" requests (navigate, toggle, save)
+            -- ride on a no-flash "partial" refresh. KOReader itself promotes
+            -- "partial" to a real flash every FULL_REFRESH_COUNT screen
+            -- updates, so ghosting stays bounded without paying a flash on
+            -- every tap (the flash was the single biggest latency source on
+            -- real devices).
+            mode = "partial"
+        end
+    end
+    UIManager:setDirty(self.view, mode)
+end
+
+-- Forced flash: theme/font/language changes and explicit deep cleans.
+function App:refresh_flash()
+    self._flash_pending = nil
     if self.view then
-        UIManager:setDirty(self.view, full and "full" or "ui")
+        UIManager:setDirty(self.view, "full")
     end
 end
 
@@ -4361,7 +4558,9 @@ function App:_refresh_streaming()
     self._stream_partial_count = (self._stream_partial_count or 0) + 1
     if self._stream_partial_count >= STREAM_PARTIALS_PER_FLASH then
         self._stream_partial_count = 0
-        self:refresh(true)
+        -- Periodic deep clean during long generations: real flash, not a
+        -- policy "partial" (which would only promote eventually).
+        self:refresh_flash()
         return
     end
     local view = self.view
@@ -5658,6 +5857,7 @@ function App:show_chats()
     self:navigate("chats")
 end
 
+-- Debug Mode gate: triple-tapping "Installed" on Updates arms debug mode.
 function App:show_settings()
     self:navigate("settings")
 end

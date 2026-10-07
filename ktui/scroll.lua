@@ -21,12 +21,6 @@ function Scroll.set_list_bounds(view, x, y, w, h, step)
 end
 
 function Scroll.draw_scrollbar(view, bb, max_scroll, scroll)
-    -- Book style paginates like the KOReader reader: no scrollbar at all -
-    -- the page counter drawn by Pages.chat is the only position affordance.
-    if view.app and view.app.state and view.app.state.page == "chat"
-        and Theme.get_bubble_style() == "book" then
-        return
-    end
     if not view.list_bounds or not max_scroll or max_scroll <= 0 then
         return
     end
@@ -86,7 +80,12 @@ function Scroll.draw_scrollbar(view, bb, max_scroll, scroll)
         if view._note_manual_scroll then
             view:_note_manual_scroll()
         end
-        view:refresh()
+        -- Regional commit: only the list area changed (same as drag end).
+        if view._render_scroll_list then
+            view:_render_scroll_list()
+        else
+            view:refresh()
+        end
     end, "scrollbar")
 end
 

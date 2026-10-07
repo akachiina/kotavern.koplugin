@@ -116,7 +116,7 @@ function Theme.get_density()
 end
 
 function Theme.set_bubble_style(value)
-    if value == "st" or value == "flat" or value == "book"
+    if value == "st" or value == "flat"
         or value == "square" or value == "none" or value == "bubbles" then
         bubble_style = value
     else

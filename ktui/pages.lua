@@ -14,6 +14,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local Blitbuffer = require("ffi/blitbuffer")
 local Util = require("kotaven_util")
+local Constants = require("kt_constants")
 local _ = require("gettext")
 
 local Pages = {}
@@ -265,7 +266,43 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
         { text = _("Data"), icon = "folder", callback = function() app:navigate("settings_data") end },
         { text = _("Updates"), icon = "download", callback = function() app:navigate("settings_updates") end },
     }
-    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+    -- Debug Mode category: only exists while the mode is armed (triple-tap
+    -- "Installed" on Updates). Holds the experimental/dangerous options.
+    if app.state.settings.debug_mode then
+        rows[#rows + 1] = {
+            text = _("Debug"), icon = "wrench",
+            callback = function() app:navigate("settings_debug") end,
+        }
+    end
+
+    local max_scroll = Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+
+    -- Easter egg (debug builds): a small memento pinned under the settings
+    -- categories - image in one corner, the Debug Mode note beside it; the
+    -- whole block sits centered at the bottom of the page.
+    if app.state.settings.debug_mode then
+        local m = Theme.metrics()
+        local pad = m.pad
+        -- Sonic debug memento: 640x640 square GIF (painted from its first
+        -- frame; animated e-ink is a no-go) sized 2× the old PNG strip.
+        local img_w, img_h = Theme.scale(112), Theme.scale(112)
+        local gap = Theme.scale(12)
+        local tiny_lh = Theme.line_h("tiny")
+        local t1 = _("You are in Debug Mode!")
+        local t2 = _("Debug Mode active - experimental features enabled.")
+        local t1_w = P.text_size(t1, nil, "tiny", { bold = true }).w
+        local t2_w = P.text_size(t2, nil, "tiny", { color = Theme.muted }).w
+        local block_w = img_w + gap + math.max(t1_w, t2_w)
+        local block_h = math.max(img_h, tiny_lh * 2 + Theme.scale(3))
+        local bx = x + math.max(pad, math.floor((w - block_w) / 2))
+        local by = y + h - block_h - pad
+        local note_w = block_w - img_w - gap
+        P.image(bb, Constants.PLUGIN_DIR .. "/assets/sonic_debug.gif", bx, by, img_w, img_h, { cover = true })
+        P.vcenter_text(bb, t1, bx + img_w + gap, by, note_w + 2, tiny_lh, "tiny", { bold = true })
+        P.text(bb, t2, bx + img_w + gap, by + tiny_lh + Theme.scale(3), note_w + 2, "tiny",
+            { color = Theme.muted })
+    end
+    return max_scroll
 end
 
 function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
@@ -279,7 +316,6 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
         bubbles = _("Bubbles (ST)"),
         st = _("SillyTavern"),
         flat = _("Flat"),
-        book = _("Book"),
         rounded = _("Rounded"),
         square = _("Square"),
         none = _("None"),
@@ -320,7 +356,6 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
                 app:choose_setting("bubble_style", _("Chat style"), {
                     { label = _("Bubbles (ST)"), value = "bubbles" },
                     { label = _("Flat"), value = "flat" },
-                    { label = _("Book"), value = "book" },
                 })
             end,
         },
@@ -728,24 +763,6 @@ end
 
 -- Storage usage: per-category bars (bytes + share + file count) plus
 -- backup export/import and data-folder actions.
--- Book style page math (pure): current page + total from scroll position.
--- Returns nil when there is nothing to paginate.
-function Pages.chat_page(scroll, max_scroll, content_h, step)
-    if not max_scroll or max_scroll <= 0 then
-        return nil
-    end
-    local page_h = math.max(1, step or content_h or 1)
-    local total_pages = math.max(1, math.ceil(((max_scroll or 0) + (content_h or 0)) / page_h))
-    local page = math.floor((scroll or 0) / page_h) + 1
-    if page > total_pages then
-        page = total_pages
-    end
-    if page < 1 then
-        page = 1
-    end
-    return page, total_pages
-end
-
 function Pages.data_storage(view, bb, x, y, w, h, scroll)
     local app = view.app
     local Storage = require("kt_storage")
@@ -814,6 +831,121 @@ function Pages.data_storage(view, bb, x, y, w, h, scroll)
     end)
 end
 
+-- === Debug Mode ===
+-- Experimental options + the CSS sandbox. Only reachable with debug_mode.
+function Pages.settings_debug(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local current_css = app.state.settings.debug_theme_css or ""
+    local rows = {
+        { section = true, text = _("Experimental") },
+        { text = _("Test CSS"), icon = "magic",
+          subtext = _("Sandbox page painted by the UI DSL engine"),
+          callback = function() app:navigate("css_test") end },
+        { text = _("CSS theme"), icon = "file",
+          value = function()
+              return current_css ~= "" and current_css or _("None (built-in)")
+          end,
+          callback = function() app:show_debug_actions() end },
+        { text = _("Install default CSS"), icon = "download",
+          subtext = _("Write sandbox.css into the themes folder"),
+          callback = function() app:install_demo_theme() end },
+        { section = true, text = _("Danger zone") },
+        { text = _("Debug Mode"), icon = "wrench", toggle = true,
+          subtext = _("Turning it off hides this category and the CSS overlay."),
+          value = function() return app.state.settings.debug_mode == true end,
+          callback = function() app:toggle_debug_mode() end },
+    }
+    -- One row per theme file; a tap activates it and jumps to the sandbox.
+    local themes = require("ktui/uidsl").list_theme_files()
+    for _i, t in ipairs(themes) do
+        table.insert(rows, #rows + 1, { text = t.name, icon = "eye",
+            value = function()
+                return t.name == current_css and _("Active") or nil
+            end,
+            callback = function()
+                app:save_setting("debug_theme_css", t.name)
+                app:apply_settings()
+                app:navigate("css_test")
+            end })
+    end
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+-- CSS sandbox: a page painted entirely by the UI DSL node engine. The body
+-- is a REAL HTML string converted to nodes and decorated by the stylesheet
+-- (the "conversion" layer - the canvas UI stays the only renderer). Reload
+-- re-applies settings (mtime cache busts the CSS); Shot dumps a viewport PNG.
+function Pages.css_test(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local UiDSL = require("ktui/uidsl")
+    local max_scroll = 0
+
+    -- Reload/Shot toolbar under the header.
+    local btn_h = Theme.btn_h()
+    local m = Theme.metrics()
+    local pad = m.pad
+    local list_y = y + btn_h + Theme.scale(8)
+    local list_h = h - btn_h - Theme.scale(8)
+    local btn_w = math.floor((w - pad * 2 - Theme.scale(12)) / 2)
+    Widgets.button(view, bb, { x = x + pad, y = y + Theme.scale(4), w = btn_w, h = btn_h,
+        icon = "refresh", label = _("Reload"),
+        on_tap = function()
+            app:apply_settings()
+            app:refresh(true)
+            UIManager:show(InfoMessage:new{
+                text = _("CSS reloaded"), timeout = 2 })
+        end })
+    Widgets.button(view, bb, { x = x + pad + btn_w + Theme.scale(12), y = y + Theme.scale(4), w = btn_w, h = btn_h,
+        icon = "camera", label = _("Shot"),
+        on_tap = function() app:debug_page_shot() end })
+
+    -- Sandbox body: HTML string -> node tree -> decorated by the sheet ->
+    -- painted with the canvas primitives. Actions come from the app.
+    local sheet = UiDSL.current_sheet(app)
+    local actions = {
+        reload = function()
+            app:apply_settings()
+            app:refresh(true)
+            UIManager:show(InfoMessage:new{
+                text = _("CSS reloaded"), timeout = 2 })
+        end,
+        shot = function()
+            app:debug_page_shot()
+        end,
+    }
+    local tree = UiDSL.demo_page(sheet, actions)
+    local node_h = {}
+    local gap = Theme.scale(10)
+    local total_h = 0
+    local inner_w = w - pad * 2 - Theme.scrollbar_w()
+    for i = 1, #tree.children do
+        node_h[i] = UiDSL.measure(tree.children[i], inner_w)
+        total_h = total_h + node_h[i] + ((i > 1) and gap or 0)
+    end
+    max_scroll = math.max(0, total_h - list_h)
+    local inner_scroll = math.max(0, math.min(scroll or 0, max_scroll))
+    if app.state.scroll and app.scroll_key then
+        app.state.scroll[app:scroll_key()] = inner_scroll
+    end
+    Scroll.set_list_bounds(view, x, list_y, w, list_h, nil)
+    local cy = list_y - inner_scroll
+    for i = 1, #tree.children do
+        local node = tree.children[i]
+        if cy + node_h[i] > list_y and cy < list_y + list_h then
+            UiDSL.paint(node, bb, x + pad, cy, inner_w, view)
+        end
+        cy = cy + node_h[i] + gap
+    end
+    -- CSS parse errors surface right here (sandbox = error surface too).
+    local errors = app.state.debug_theme_errors
+    if errors and #errors > 0 then
+        P.text(bb, _("CSS problems:") .. " " .. table.concat(errors, "; "),
+            x + pad, list_y + list_h - Theme.line_h("tiny"),
+            w - pad * 2, "tiny", { color = Theme.muted })
+    end
+    return max_scroll
+end
+
 function Pages.settings_updates(view, bb, x, y, w, h, scroll)
     local app = view.app
     local Update = require("kt_update")
@@ -829,7 +961,10 @@ function Pages.settings_updates(view, bb, x, y, w, h, scroll)
             callback = function() app:prompt_update_repo() end },
         { text = _("Installed"), icon = "info-circle",
             value = function() return Update.about_title(installed) end,
-            callback = function() end },
+            callback = function()
+                -- Triple-tap arms Debug Mode (1.5s window, see kt_app).
+                app:_debug_triple_tap()
+            end },
         { text = _("Status"), icon = "bolt",
             value = function() return tostring(view.app.state.update_status or "-") end,
             callback = function() end },
@@ -2452,16 +2587,10 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     local content_h = h - action_bar_h
     local action_y = y + content_h
     local pad = Theme.scale(10)
-    -- Swipe step by chat style: book turns whole pages (content height
-    -- snapped to whole text lines, so no line is ever cut mid-glyph);
-    -- every other style steps a few lines (zenpm row parity).
+    -- Swipe step (a few text lines - zenpm row parity).
     local ChatBubblesHead = require("ktui/chat_bubbles")
     local line_step = ChatBubblesHead.line_step()
-    if Theme.get_bubble_style() == "book" then
-        view.swipe_step = math.max(line_step, math.floor(content_h / math.max(1, line_step)) * line_step)
-    else
-        view.swipe_step = line_step * 8
-    end
+    view.swipe_step = line_step * 8
 
     -- Message area - drawn BEFORE the action bar. The blitbuffer has no
     -- clipping, so paint order is the only guarantee that long messages can
@@ -2498,21 +2627,6 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
         -- Snap the scrollbar to whole lines so it never sits between rows
         Scroll.set_list_bounds(view, x, y, w, content_h, ChatBubbles.line_step())
         max_scroll = math.max(0, total_h - content_h)
-    end
-
-    -- Book style: page indicator (N / total), KOReader-footer style -
-    -- centered at the bottom edge of the message area (the scrollbar is
-    -- hidden in this style). No hitbox: taps there keep the edge-tap
-    -- paging semantics.
-    if Theme.get_bubble_style() == "book" and max_scroll > 0 then
-        local page, total_pages = Pages.chat_page(scroll, max_scroll, content_h,
-            math.max(1, view.swipe_step or content_h))
-        if page then
-            local indicator = tostring(page) .. " / " .. tostring(total_pages)
-            local isz = P.text_size(indicator, nil, "tiny")
-            P.text(bb, indicator, x + math.floor((w - isz.w) / 2),
-                action_y - isz.h - Theme.scale(3), isz.w + 2, "tiny", { color = Theme.muted })
-        end
     end
 
     -- Bottom action bar - drawn after the message area so it always paints
