@@ -1258,7 +1258,6 @@ do
     ok(GifAnim.ensure(app2, view2, "banner", "/tmp/nope.gif", { w = 64, h = 64 }) == nil,
         "gif: missing file plays nothing")
     GifAnim.stop_all(app2)
-    -- Full settings page with the debug banner (visual inspection).
     do
         local a3 = fake_app({ page = "settings",
             settings = { debug_mode = true } })
@@ -1270,6 +1269,65 @@ do
         dump(b3, "settings_debug")
     end
     GifAnim.stop_all(app)
+end
+
+-- === 4x. Cover thumbnails: generate once, paint small ============================
+do
+    local Thumbs = require("ktui/thumbs")
+    local lfs = require("libs/libkoreader-lfs")
+    -- Synthetic noisy card (~1200px, PNG-hostile pixels like real art).
+    local big = Blitbuffer.new(1200, 1200, Blitbuffer.TYPE_BB8)
+    big:fill(Blitbuffer.COLOR_WHITE)
+    math.randomseed(1234)
+    for i = 1, 2500 do
+        big:paintRect(math.random(0, 1180), math.random(0, 1180), 20, 20,
+            Blitbuffer.gray(math.random()))
+    end
+    big:writePNG("/tmp/thumb_src.png")
+    local P = require("ktui/primitives")
+    local tp = Thumbs.generate("/tmp/thumb_src.png")
+    ok(tp ~= nil, "thumbs: big card generates a thumb")
+    local iw, ih = P.image_dims(tp)
+    ok(iw ~= nil and math.max(iw, ih) <= Thumbs.LONG_SIDE,
+        "thumbs: long side capped at 480 (got " .. tostring(iw) .. "x" .. tostring(ih) .. ")")
+    ok(Thumbs.cached("/tmp/thumb_src.png") == tp, "thumbs: second call hits the cache")
+    -- Edited file (new size) misses and regenerates under a new key.
+    os.execute("cp /tmp/thumb_src.png /tmp/thumb_src2.png && echo x >> /tmp/thumb_src2.png")
+    ok(Thumbs.key_for("/tmp/thumb_src2.png") ~= Thumbs.key_for("/tmp/thumb_src.png"),
+        "thumbs: mtime/size change invalidates")
+    os.remove("/tmp/thumb_src.png")
+    os.remove("/tmp/thumb_src2.png")
+    -- ensure() on a cold path enqueues without painting-time generation.
+    local before = Thumbs.pending_count()
+    Thumbs.ensure("/tmp/nope-missing.png", nil)
+    ok(Thumbs.pending_count() == before, "thumbs: missing file never queues")
+    -- Sweep caps the dir (limits shrunk for the test, then restored).
+    local real_max, real_keep = Thumbs.MAX_FILES, Thumbs.SWEEP_KEEP
+    Thumbs.MAX_FILES, Thumbs.SWEEP_KEEP = 5, 2
+    local Store2 = require("kt_storage")
+    local dir = Store2.data_dir() .. "/chat_thumbs"
+    os.execute("mkdir -p " .. dir)
+    for i = 1, 7 do
+        local f = io.open(dir .. "/sweep" .. i .. ".png", "w")
+        f:write("x")
+        f:close()
+    end
+    Thumbs.sweep()
+    local left = 0
+    for name in lfs.dir(dir) do
+        if name:match("^sweep%d+%.png$") then left = left + 1 end
+    end
+    for i = 1, 7 do os.remove(dir .. "/sweep" .. i .. ".png") end
+    Thumbs.MAX_FILES, Thumbs.SWEEP_KEEP = real_max, real_keep
+    ok(left <= 2, "thumbs: sweep keeps the cap (left " .. left .. ")")
+    -- Grid card paints from the thumb (or placeholder) without the original.
+    local Cards = require("ktui/cards")
+    local app = fake_app({ page = "dashboard", settings = { show_covers = true } })
+    local view = { app = app, hitboxes = {} }
+    local bb = new_bb()
+    Cards.character(view, bb, { path = "/tmp/nope-missing.png", name = "Z",
+        tags = {}, tokens = 0 }, 0, 0, 200, 200)
+    ok(true, "thumbs: missing cover paints the fallback, no crash")
 end
 
 -- === 4q. Plugin language choice persists and drives the UI ======================

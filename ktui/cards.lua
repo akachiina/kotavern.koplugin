@@ -6,6 +6,7 @@ local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
 local Widgets = require("ktui/widgets")
+local Thumbs = require("ktui/thumbs")
 local _ = require("gettext")
 
 local Cards = {}
@@ -67,10 +68,14 @@ function Cards.character(view, bb, item, x, y, w, h)
 
     -- Full-bleed cover: cover-fit (fills the whole card, cropping the
     -- overflow - no white bars), rounded fallback with the initial when
-    -- there is no image (or covers are disabled).
+    -- there is no image (or covers are disabled). Covers paint from the
+    -- on-disk thumb cache (480px); the original PNG is never decoded here.
     local has_image = false
     if show_covers and item.path and item.path:lower():match("%.png$") then
-        has_image = P.image(bb, item.path, x, y, w, h, { cover = true })
+        local thumb = Thumbs.ensure(item.path, view.app)
+        if thumb then
+            has_image = P.image(bb, thumb, x, y, w, h, { cover = true })
+        end
     end
     if not has_image then
         P.rounded_rect(bb, x, y, w, h, Theme.soft, math.floor(Theme.metrics().radius))
@@ -166,7 +171,10 @@ function Cards.list_item(view, bb, item, x, y, w, h, actions)
     local pad = Theme.scale(8)
     local has_image = false
     if item.path and item.path:lower():match("%.png$") then
-        has_image = P.image(bb, item.path, x + pad, y + math.floor((h - thumb) / 2), thumb, thumb)
+        local tp = Thumbs.ensure(item.path, view.app)
+        if tp then
+            has_image = P.image(bb, tp, x + pad, y + math.floor((h - thumb) / 2), thumb, thumb)
+        end
     end
     if not has_image then
         local initial = Widgets.first_glyph(item.name or "?"):upper()
