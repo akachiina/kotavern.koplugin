@@ -1222,8 +1222,10 @@ do
     local gif = PLUGIN .. "/assets/sonic_debug.gif"
     local app = fake_app({ page = "settings" })
     local view = { app = app, hitboxes = {} }
-    function view:refresh() end
-    local player = GifAnim.ensure(app, view, "banner", gif, { w = 64, h = 64 })
+    local refresh_args = nil
+    function view:refresh(...) refresh_args = { ... } end
+    local player = GifAnim.ensure(app, view, "banner", gif,
+        { w = 64, h = 64, rect = { x = 10, y = 10, w = 64, h = 64 } })
     ok(player ~= nil and player.n >= 2, "gif: sonic decodes to 2+ frames")
     local f1 = GifAnim.frame(player)
     ok(type(f1) == "cdata", "gif: current frame is a blitbuffer")
@@ -1236,6 +1238,11 @@ do
         return false
     end
     ok(player.tick ~= nil and queued_tick(), "gif: tick scheduled while playing")
+    player.tick()
+    -- NOTE: colon-call self is NOT in ... — args here are (nil, rect).
+    local rrect = refresh_args and refresh_args[2]
+    ok(rrect ~= nil and rrect.x == 10 and rrect.w == 64,
+        "gif: tick repaints the gif rect only")
     -- Paint one frame like the banner does (exercises the blit path).
     local bb = new_bb()
     bb:fill(Blitbuffer.COLOR_WHITE)

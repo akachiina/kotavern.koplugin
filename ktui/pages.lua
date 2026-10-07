@@ -304,7 +304,7 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
         local by = y + h - block_h - pad
         local gif_path = Constants.PLUGIN_DIR .. "/assets/sonic_debug.gif"
         local player = GifAnim.ensure(app, view, "debug_banner", gif_path,
-            { w = img_s, h = img_s })
+            { w = img_s, h = img_s, rect = { x = bx, y = by, w = img_s, h = img_s } })
         local frame = GifAnim.frame(player)
         if frame then
             local fw = math.min(img_s, frame:getWidth())

@@ -63,7 +63,9 @@ function GifAnim.frame(player)
 end
 
 -- Ensure a player for key (one per key); starts the tick on creation.
--- opts: { w, h } target frame size in px.
+-- opts: { w, h } target frame size in px, { rect } repaint region
+-- ({x,y,w,h}) for the tick. Without rect the tick repaints whole
+-- (fallback for callers that don't track geometry).
 function GifAnim.ensure(app, view, key, path, opts)
     opts = opts or {}
     if not app or not app.state or not path or path == "" then
@@ -73,6 +75,9 @@ function GifAnim.ensure(app, view, key, path, opts)
     local player = app.state.gif_players[key]
     if player and not player.stopped then
         player.view = view
+        if opts.rect then
+            player.rect = opts.rect
+        end
         return player
     end
     local w = math.max(1, math.floor(opts.w or 100))
@@ -97,6 +102,7 @@ function GifAnim.ensure(app, view, key, path, opts)
         n = math.min(count, GifAnim.MAX_FRAMES),
         idx = 1,
         view = view,
+        rect = opts.rect,
         tick = nil,
         stopped = false,
         bbs = {},
@@ -112,7 +118,10 @@ function GifAnim.ensure(app, view, key, path, opts)
         end
         player.idx = player.idx % player.n + 1
         if player.view and player.view.refresh then
-            player.view:refresh()
+            -- Regional repaint only: a full-dim refresh at 8fps visibly
+            -- flashes e-ink and repaints the whole page per frame. Ghost
+            -- residue is bounded by the periodic full flashes elsewhere.
+            player.view:refresh(nil, player.rect)
         end
         UIManager:scheduleIn(GifAnim.INTERVAL, tick)
     end
