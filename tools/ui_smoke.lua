@@ -1265,6 +1265,29 @@ do
     ok(GifAnim.ensure(app2, view2, "banner", "/tmp/nope.gif", { w = 64, h = 64 }) == nil,
         "gif: missing file plays nothing")
     GifAnim.stop_all(app2)
+    -- Leaked timer self-stops on page change (the dashboard freeze class).
+    local app3 = fake_app({ page = "settings" })
+    local view3 = { app = app3, hitboxes = {} }
+    local refreshed = 0
+    function view3:refresh(...) refreshed = refreshed + 1 end
+    local pl3 = GifAnim.ensure(app3, view3, "banner", gif, { w = 64, h = 64 })
+    ok(pl3 ~= nil, "gif: player for the leak test")
+    app3.state.page = "dashboard" -- any path that forgot stop_all
+    pl3.tick()
+    ok(pl3.stopped == true and refreshed == 0
+        and (app3.state.gif_players == nil or app3.state.gif_players["banner"] == nil),
+        "gif: tick self-stops off-page without repainting")
+    -- show_dashboard (the Home tab) stops players explicitly.
+    local App = require("kt_app")
+    local app4 = setmetatable({
+        state = { settings = {}, scroll = {}, page = "settings" },
+    }, { __index = App })
+    local view4 = { app = app4, hitboxes = {} }
+    function view4:refresh(...) end
+    local pl4 = GifAnim.ensure(app4, view4, "banner", gif, { w = 64, h = 64 })
+    ok(pl4 ~= nil, "gif: player for the dashboard test")
+    app4:show_dashboard()
+    ok(app4.state.gif_players == nil, "gif: Home tab stops the animation")
     do
         local a3 = fake_app({ page = "settings",
             settings = { debug_mode = true } })

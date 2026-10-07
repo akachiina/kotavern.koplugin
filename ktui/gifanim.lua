@@ -103,6 +103,9 @@ function GifAnim.ensure(app, view, key, path, opts)
         idx = 1,
         view = view,
         rect = opts.rect,
+        app = app,
+        key = key,
+        page = app.state and app.state.page,
         tick = nil,
         stopped = false,
         bbs = {},
@@ -114,6 +117,19 @@ function GifAnim.ensure(app, view, key, path, opts)
     app.state.gif_players[key] = player
     local function tick()
         if player.stopped then
+            return
+        end
+        -- Self-healing: any navigation path that forgot stop_all still
+        -- kills this timer on its next fire (<=120ms leak). The entry is
+        -- removed too, so a later ensure() starts clean.
+        local cur_page = player.app and player.app.state and player.app.state.page
+        if cur_page ~= player.page then
+            if player.app and player.app.state and player.key then
+                if player.app.state.gif_players then
+                    player.app.state.gif_players[player.key] = nil
+                end
+            end
+            GifAnim.stop(player)
             return
         end
         player.idx = player.idx % player.n + 1

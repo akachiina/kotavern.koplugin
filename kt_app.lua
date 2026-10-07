@@ -5846,6 +5846,7 @@ end
 -- === Navigation Shortcuts ===
 
 function App:show_dashboard()
+    require("ktui/gifanim").stop_all(self)
     self.state.page = "dashboard"
     self:refresh_characters()
     self:refresh_chats_index()
