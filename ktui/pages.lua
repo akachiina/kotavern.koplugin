@@ -275,49 +275,68 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
         }
     end
 
-    local max_scroll = Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
-
     -- Easter egg (debug builds): animated memento pinned under the
     -- settings categories - image left, two-line note vertically centered
-    -- beside it, the whole block centered on the page.
+    -- beside it, the whole block centered on the page. The block reserves
+    -- its own band at the bottom of the viewport, so scrolling rows always
+    -- stop above it instead of sliding underneath the GIF (the old layout
+    -- let rows overlap the banner on short screens).
+    local band_h = 0
+    local banner = nil
     if app.state.settings.debug_mode then
+        local m0 = Theme.metrics()
+        local pad0 = m0.pad
+        local img_s0 = Theme.scale(150)
+        local gap0 = Theme.scale(12)
+        local tiny_lh0 = Theme.line_h("tiny")
+        local t1 = _("You are in Debug Mode!")
+        local t2 = _("Debug Mode active - experimental features enabled.")
+        local note_w0 = math.max(8, w - pad0 * 2 - img_s0 - gap0)
+        local fit1 = Widgets.fit_text(t1, note_w0, "tiny", { bold = true })
+        local sub_lines = math.max(1, P.paragraph_line_count(t2, note_w0, "tiny"))
+        local text_h0 = tiny_lh0 + Theme.scale(3) + sub_lines * tiny_lh0
+        local block_h = math.max(img_s0, text_h0)
+        band_h = block_h + pad0 * 2
+        banner = { img_s = img_s0, gap = gap0, tiny_lh = tiny_lh0,
+            fit1 = fit1, sub_lines = sub_lines, t2 = t2,
+            note_w = note_w0, text_h = text_h0, block_h = block_h }
+    end
+
+    local max_scroll = Pages.settings_section(view, bb, x, y, w, h - band_h, scroll, rows)
+
+    if banner then
         local GifAnim = require("ktui/gifanim")
         local m = Theme.metrics()
         local pad = m.pad
-        local img_s = Theme.scale(150)
-        local gap = Theme.scale(12)
-        local tiny_lh = Theme.line_h("tiny")
-        local t1 = _("You are in Debug Mode!")
-        local t2 = _("Debug Mode active - experimental features enabled.")
-        -- Constrain the text column to the real space so the block truly
-        -- centers (unbounded measuring broke the centering before). The
-        -- subtitle wraps instead of ellipsizing.
-        local note_w = math.max(8, w - pad * 2 - img_s - gap)
-        local fit1 = Widgets.fit_text(t1, note_w, "tiny", { bold = true })
-        local sub_lines = math.max(1, P.paragraph_line_count(t2, note_w, "tiny"))
-        local text1_w = P.text_size(fit1, note_w, "tiny", { bold = true }).w
-        local col_w = note_w
+        local img_s = banner.img_s
+        local gap = banner.gap
+        local tiny_lh = banner.tiny_lh
+        local col_w = banner.note_w
         local block_w = img_s + gap + col_w
-        local text_h = tiny_lh + Theme.scale(3) + sub_lines * tiny_lh
-        local block_h = math.max(img_s, text_h)
+        local block_h = banner.block_h
+        -- Centered inside the reserved band (band_h = block_h + pad*2).
+        local band_y = y + h - band_h
         local bx = x + math.max(pad, math.floor((w - block_w) / 2))
-        local by = y + h - block_h - pad
-        local gif_path = Constants.PLUGIN_DIR .. "/assets/sonic_debug.gif"
-        local player = GifAnim.ensure(app, view, "debug_banner", gif_path,
+        local by = band_y + pad
+        -- Pre-composited full frames (tools/gen_debug_banner.py): the raw
+        -- GIF's delta sub-rects cannot play through KOReader's giflib (only
+        -- frame 0 shows the body, the rest render as white boxes).
+        local gif_dir = Constants.PLUGIN_DIR .. "/assets/debug_banner"
+        local player = GifAnim.ensure(app, view, "debug_banner", gif_dir,
             { w = img_s, h = img_s, rect = { x = bx, y = by, w = img_s, h = img_s } })
-        local frame = GifAnim.frame(player)
-        if frame then
-            local fw = math.min(img_s, frame:getWidth())
-            local fh = math.min(img_s, frame:getHeight())
-            bb:blitFrom(frame, bx + math.floor((img_s - fw) / 2),
-                by + math.floor((img_s - fh) / 2), 0, 0, fw, fh)
-        else
-            P.image(bb, gif_path, bx, by, img_s, img_s, { cover = true })
+        -- The GIF paints through the shared frame painter (bg clear kills
+        -- the trail the raw blit used to leave between frames) and marks the
+        -- view for a dithered refresh - bitmaps under a no-dither waveform
+        -- are the classic gray-ghosting source.
+        if not (player and GifAnim.draw(player, bb, bx, by, img_s, img_s)) then
+            P.image(bb, gif_dir .. "/frame_1.png", bx, by, img_s, img_s, { cover = true })
         end
+        view.dithered = true
+        local text_h = banner.text_h
         local ty = by + math.floor((block_h - text_h) / 2)
-        P.text(bb, fit1, bx + img_s + gap, ty, col_w + 2, "tiny", { bold = true })
-        P.paragraph(bb, t2, bx + img_s + gap, ty + tiny_lh + Theme.scale(3), col_w,
-            sub_lines * tiny_lh, "tiny", { color = Theme.muted })
+        P.text(bb, banner.fit1, bx + img_s + gap, ty, col_w + 2, "tiny", { bold = true })
+        P.paragraph(bb, banner.t2, bx + img_s + gap, ty + tiny_lh + Theme.scale(3), col_w,
+            banner.sub_lines * tiny_lh, "tiny", { color = Theme.muted })
     end
     return max_scroll
 end
@@ -930,7 +949,16 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
             app:debug_page_shot()
         end,
     }
-    local tree = UiDSL.demo_page(sheet, actions)
+    -- Build the tree once per sheet identity: demo_page re-parses the HTML
+    -- and re-measures every node on each paint otherwise (scroll = repaint).
+    -- The sheet TABLE changes identity when the theme file is reloaded
+    -- (load_theme_file caches by mtime) or when switching to the demo sheet,
+    -- which is exactly the invalidation the cache needs.
+    if view._uidsl_sheet ~= sheet or not view._uidsl_tree then
+        view._uidsl_sheet = sheet
+        view._uidsl_tree = UiDSL.demo_page(sheet, actions)
+    end
+    local tree = view._uidsl_tree
     local node_h = {}
     local gap = Theme.scale(10)
     local total_h = 0

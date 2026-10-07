@@ -83,15 +83,28 @@ function UiDSL.parse(css_text)
                     local ncls = 0
                     for _ in pairs(classes) do ncls = ncls + 1 end
                     table.insert(rules, {
-                        spec = (id and 100 or 0) + ncls * 10,
+                        -- CSS-ish specificity: id (100) > class (10) > tag
+                        -- (1). The tag point matters: `div.foo` now outranks
+                        -- plain `.foo` instead of tying with it.
+                        spec = (id and 100 or 0) + ncls * 10 + (tag and 1 or 0),
                         tag = tag, id = id, classes = classes,
                         decls = parse_declarations(block),
+                        seq = #rules + 1, -- source order, for the stable sort
                     })
                 end
             end
         end
     end
-    table.sort(rules, function(a, b) return a.spec < b.spec end)
+    -- Stable cascade order: by specificity, ties broken by source order.
+    -- Lua's table.sort is NOT stable, so without the explicit seq tie-break
+    -- equal-specificity rules could shuffle between runs and flip which one
+    -- wins the overwrite in style_for.
+    table.sort(rules, function(a, b)
+        if a.spec ~= b.spec then
+            return a.spec < b.spec
+        end
+        return (a.seq or 0) < (b.seq or 0)
+    end)
     return { rules = rules, errors = {} }
 end
 
@@ -225,9 +238,13 @@ end
 function UiDSL.theme_overrides(sheet, tag)
     local overrides, errors = {}, {}
     for _i, r in ipairs((sheet and sheet.rules) or {}) do
-        local hit = r.tag == nil or r.tag == tag or r.tag == "page"
-        -- classes/ids don't gate theme application: they still carry palette
-        -- overrides (tolerant mode for hand-written themes).
+        -- Palette layer accepts ONLY global rules: `page { ... }`, or an
+        -- unscoped rule with no tag, classes or id. The old tolerant mode
+        -- ("classes/ids don't gate theme application") made any node-scoped
+        -- rule leak into the WHOLE app palette: one `.card { background: }`
+        -- repainted every screen black. Node rules decorate nodes only.
+        local hit = r.tag == "page" or r.tag == tag
+            or (r.tag == nil and next(r.classes) == nil and r.id == nil)
         if hit then
             for prop, value in pairs(r.decls) do
                 local spec = PROPS[prop]
@@ -339,6 +356,20 @@ local function text_role(n)
     return n.role or "default"
 end
 
+-- Options shared by measure and paint for text/para nodes: bold, color and
+-- an optional CSS font-size face (Theme.face is a fixed role ladder; an
+-- explicit px size builds its own face so authors can tune text freely).
+local function text_opts(n)
+    local opts = { bold = n.bold, color = n.color }
+    if n.font_size then
+        local family = (n.role == "tiny" or n.role == "small")
+            and "smallinfofont" or "cfont"
+        local ok, face = pcall(require("ui/font").getFace, require("ui/font"), family, n.font_size)
+        if ok and face then opts.face = face end
+    end
+    return opts
+end
+
 local function px(n, fallback)
     if n == nil then return fallback end
     if type(n) == "number" then return n end
@@ -360,9 +391,9 @@ function UiDSL.measure(node, w)
     if node._h_cache and node._h_w == w then return node._h_cache end
     local h
     if node.tag == "text" then
-        h = P.text_size(node.text or "", px(node.w, w), text_role(node), { bold = node.bold }).h
+        h = P.text_size(node.text or "", px(node.w, w), text_role(node), text_opts(node)).h
     elseif node.tag == "para" then
-        local lines, line_h = P.paragraph_metrics(node.text or "", px(node.w, w), text_role(node), { bold = node.bold })
+        local lines, line_h = P.paragraph_metrics(node.text or "", px(node.w, w), text_role(node), text_opts(node))
         h = lines * line_h
     elseif node.tag == "image" then
         h = px(node.h, Theme.scale(80))
@@ -400,7 +431,7 @@ function UiDSL.paint(node, bb, x, y, w, view)
     local cy = y + pad
     local inner_w = w - pad * 2
     if node.tag == "text" then
-        local opts = { bold = node.bold, color = node.color }
+        local opts = text_opts(node)
         local tw = math.min(inner_w, px(node.w, inner_w))
         local s = P.text_size(node.text or "", tw, text_role(node), opts)
         local tx = cx
@@ -412,10 +443,14 @@ function UiDSL.paint(node, bb, x, y, w, view)
         P.text(bb, node.text or "", tx, cy, tw, text_role(node), opts)
     elseif node.tag == "para" then
         P.paragraph(bb, node.text or "", cx, cy, inner_w, h - node_inset(node),
-            text_role(node), { bold = node.bold, color = node.color })
+            text_role(node), text_opts(node))
     elseif node.tag == "image" then
         if node.src then
             P.image(bb, node.src, cx, cy, inner_w, h - node_inset(node), { cover = node.cover })
+            if view then
+                -- Bitmap content: hint the next refresh for hardware dithering.
+                view.dithered = true
+            end
         end
     elseif node.tag == "spacer" then
         -- nothing to paint
@@ -493,7 +528,22 @@ function UiDSL.from_html(html, actions, vars)
         end
     end
 
+    -- Inline tags inside a text host (p/span/h*) have no block semantics:
+    -- the para/text painters only render the host's own text, so a child
+    -- node's words used to VANISH (<p>a <b>b</b></p> painted just "a ").
+    -- These tags now merge into the host's text (formatting dropped - full
+    -- inline runs are a future step) and their close tag is consumed.
+    local INLINE_TAGS = {
+        b = true, strong = true, i = true, em = true, u = true, s = true,
+        code = true, small = true, big = true, mark = true, span = true, a = true,
+    }
+    local skipped_inline = {}
+
     local function open(name, attrs, selfclose)
+        if top().text_host and INLINE_TAGS[name] then
+            table.insert(skipped_inline, name)
+            return
+        end
         local n
         if name == "img" then
             n = UiDSL.node({ tag = "image", src = attrs.src,
@@ -552,11 +602,18 @@ function UiDSL.from_html(html, actions, vars)
         pos = gt + 1
         if inner:sub(1, 1) == "/" then
             local name = inner:match("^/%s*([%w%-]+)")
-            -- Tolerant close: pop until the matching open tag.
-            while #stack > 1 and top().html_tag ~= name do
-                table.remove(stack)
+            -- Consume the close of an inline tag we merged into a text host
+            -- (it was never pushed onto the stack).
+            if #skipped_inline > 0 and skipped_inline[#skipped_inline] == name
+                and top() and top().text_host then
+                table.remove(skipped_inline)
+            else
+                -- Tolerant close: pop until the matching open tag.
+                while #stack > 1 and top().html_tag ~= name do
+                    table.remove(stack)
+                end
+                if #stack > 1 then table.remove(stack) end
             end
-            if #stack > 1 then table.remove(stack) end
         else
             local selfclose = inner:sub(-1) == "/"
             if selfclose then inner = inner:sub(1, -2) end
@@ -596,6 +653,8 @@ function UiDSL.apply_styles(node, sheet)
         if g then node.gap = g end
         local bs = resolve_length(st["border-size"])
         if bs then node.border_size = bs end
+        local fs = resolve_length(st["font-size"])
+        if fs then node.font_size = fs end
         local hh = resolve_length(st["h"] or st["height"])
         if hh then node.h = hh end
         local mh = resolve_length(st["min-h"])
@@ -629,6 +688,16 @@ end
 
 -- The sheet the sandbox paints with: the debug theme file when one is armed,
 -- otherwise the built-in demo stylesheet.
+-- The built-in demo sheet is parsed once per session (css_test rebuilds
+-- its tree per paint otherwise).
+local _demo_sheet = nil
+function UiDSL.demo_sheet()
+    if not _demo_sheet then
+        _demo_sheet = UiDSL.parse(UiDSL.DEMO_CSS)
+    end
+    return _demo_sheet
+end
+
 function UiDSL.current_sheet(app)
     local name = app and app.state and app.state.settings
         and app.state.settings.debug_theme_css or nil
@@ -639,7 +708,7 @@ function UiDSL.current_sheet(app)
             if ok and sheet then return sheet end
         end
     end
-    return UiDSL.parse(UiDSL.DEMO_CSS)
+    return UiDSL.demo_sheet()
 end
 
 -- ======================================================== demo page (css_test) ===

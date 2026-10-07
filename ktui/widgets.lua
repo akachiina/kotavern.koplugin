@@ -128,11 +128,39 @@ end
 
 -- === Button ===
 
+-- Round avatar disc (ST round avatar, same look as the chat bubbles):
+-- square cover-fit image with its corners carved back to the surface color
+-- plus a 1px muted ring; text fallback is a soft disc with the bold initial.
+-- Shared by chat bubbles and list rows (dashboard list mode, chats page) so
+-- every character image in the app renders through the same circle treatment
+-- instead of a whole shrunken image.
+-- Returns true when an image was painted (callers flip dither hints on it).
+function W.avatar(bb, x, y, size, image_file, name, carve_color)
+    local drawn = false
+    if image_file and image_file ~= "" then
+        drawn = P.image(bb, image_file, x, y, size, size, { cover = true })
+    end
+    if drawn then
+        P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
+        P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
+    else
+        -- Fallback: filled circle with the initial (ST missing-avatar).
+        P.rect(bb, x, y, size, size, Theme.soft)
+        P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
+        P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
+        local initial = W.first_glyph(name or "?"):upper()
+        P.center_text_box(bb, initial, x, y, size, size, "small", { bold = true })
+    end
+    return drawn
+end
+
 -- Pill button. opts:
 --   x, y, w (nil = measured), h (default Theme.btn_h())
 --   label, icon, icon_size
 --   kind: "primary" (solid) | "secondary" (bordered) | "ghost" (no bg)
 --   enabled (default true), on_tap
+--   hit_label: overrides the hitbox label (sheets tag their buttons
+--     "sheet:*" so the modal tap policy can tell them apart from page hits).
 -- Returns the drawn width.
 function W.button(view, bb, o)
     local h = o.h or Theme.btn_h()
@@ -180,7 +208,8 @@ function W.button(view, bb, o)
     if o.label and o.label ~= "" then
         P.vcenter_text(bb, o.label, tx, o.y, w - (tx - o.x) - Theme.scale(14), h, "small", { bold = true, color = text_color })
     end
-    P.hit(view, o.x, o.y, w, h, o.on_tap, "btn:" .. tostring(o.label or o.icon))
+    local hit_label = o.hit_label or ("btn:" .. tostring(o.label or o.icon))
+    P.hit(view, o.x, o.y, w, h, o.on_tap, hit_label)
     return w
 end
 

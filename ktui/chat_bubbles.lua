@@ -47,23 +47,13 @@ local function effective_style(style)
     return "st" -- st / rounded / square / unknown
 end
 
--- ST round avatar: square cover-fit image, corners carved back to the
--- surface color, 1px ring on top (see primitives P.circle_carve/ring).
-local function draw_avatar(bb, x, y, size, image_file, name, carve_color)
-    local drawn = false
-    if image_file and image_file ~= "" then
-        drawn = P.image(bb, image_file, x, y, size, size, { cover = true })
-    end
-    if drawn then
-        P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
-        P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
-    else
-        -- Fallback: filled circle with the initial (ST missing-avatar).
-        P.rect(bb, x, y, size, size, Theme.soft)
-        P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
-        P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
-        local initial = Widgets.first_glyph(name or "?"):upper()
-        P.center_text_box(bb, initial, x, y, size, size, "small", { bold = true })
+-- ST round avatar: the shared Widgets.avatar circle (square cover-fit
+-- image, corners carved back to the surface color, 1px ring). Keeping the
+-- local wrapper so the three call sites below stay one-liners; the view
+-- gets the dither hint whenever a bitmap actually painted.
+local function draw_avatar(view, bb, x, y, size, image_file, name, carve_color)
+    if Widgets.avatar(bb, x, y, size, image_file, name, carve_color) then
+        view.dithered = true
     end
 end
 
@@ -709,7 +699,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         -- fallback (draw_avatar handles nil), never char_image.
                         local av_img = l.is_user and user_image or nil
                         if not l.is_user then av_img = char_image end
-                        draw_avatar(bb, inner_left, srow_y + name_off, avatar_size,
+                        draw_avatar(view, bb, inner_left, srow_y + name_off, avatar_size,
                             av_img,
                             l.is_user and user or char_name, carve)
                         local ny = srow_y + name_off + math.floor((name_row_h - name_h) / 2)
@@ -730,7 +720,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local boxed_str = sender_str .. (timestamp and ((sender_str ~= "" and "  " or "") .. timestamp) or "")
                         local av_x = content_right - pad - avatar_size
                         if show_avatars then
-                            draw_avatar(bb, av_x, srow_y + av_dy, avatar_size, user_image, user, Theme.bg)
+                            draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, user_image, user, Theme.bg)
                         end
                         local name_right = av_x - Theme.scale(4)
                         local name_w = math.max(1, name_right - (x + pad))
@@ -743,7 +733,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local boxed_str = sender_str .. (timestamp and ((sender_str ~= "" and "  " or "") .. timestamp) or "")
                         local av_x = x + pad
                         if show_avatars and not l.is_thinking then
-                            draw_avatar(bb, av_x, srow_y + av_dy, avatar_size, char_image, char_name, Theme.bg)
+                            draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, char_image, char_name, Theme.bg)
                         end
                         local name_x = show_avatars and (av_x + avatar_size + Theme.scale(4)) or av_x
                         local name_w = math.max(1, content_right - pad - name_x)

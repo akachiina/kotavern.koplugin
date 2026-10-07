@@ -75,6 +75,8 @@ function Cards.character(view, bb, item, x, y, w, h)
         local thumb = Thumbs.ensure(item.path, view.app)
         if thumb then
             has_image = P.image(bb, thumb, x, y, w, h, { cover = true })
+            -- Bitmap content: hint the next refresh for hardware dithering.
+            view.dithered = true
         end
     end
     if not has_image then
@@ -167,19 +169,28 @@ function Cards.list_item(view, bb, item, x, y, w, h, actions)
         background = Theme.panel,
     })
 
-    local thumb = Theme.scale(40)
     local pad = Theme.scale(8)
+    -- Round avatar (same circle treatment as the chat bubbles) instead of the
+    -- whole image squeezed into the square slot. Cover-fit paints the square,
+    -- then the corners are carved back to the row surface and a muted ring
+    -- finishes the disc. Fallback: soft disc with the bold initial.
+    local thumb = Theme.scale(40)
     local has_image = false
-    if item.path and item.path:lower():match("%.png$") then
-        local tp = Thumbs.ensure(item.path, view.app)
+    -- Chats rows point path at the chat file; the character PNG travels in
+    -- item.avatar (set by App:refresh_chats_index). Character rows use path.
+    local avatar_path = item.avatar or (item.path and item.path:lower():match("%.png$") and item.path) or nil
+    if avatar_path then
+        local tp = Thumbs.ensure(avatar_path, view.app)
         if tp then
-            has_image = P.image(bb, tp, x + pad, y + math.floor((h - thumb) / 2), thumb, thumb)
+            has_image = Widgets.avatar(bb, x + pad, y + math.floor((h - thumb) / 2),
+                thumb, tp, item.display_name or item.name, Theme.panel)
+            -- Bitmap content: hint the next refresh for hardware dithering.
+            view.dithered = true
         end
     end
     if not has_image then
-        local initial = Widgets.first_glyph(item.name or "?"):upper()
-        P.rounded_rect(bb, x + pad, y + math.floor((h - thumb) / 2), thumb, thumb, Theme.soft, math.floor(thumb / 2))
-        P.center_text_box(bb, initial, x + pad, y + math.floor((h - thumb) / 2), thumb, thumb, "small", { bold = true })
+        Widgets.avatar(bb, x + pad, y + math.floor((h - thumb) / 2),
+            thumb, nil, item.display_name or item.name, Theme.panel)
     end
 
     local actions_w = actions and #actions * Theme.scale(36) or 0

@@ -1219,7 +1219,7 @@ end
 -- === 4w. GIF player lifecycle (frames, stop frees, no leak) =======================
 do
     local GifAnim = require("ktui/gifanim")
-    local gif = PLUGIN .. "/assets/sonic_debug.gif"
+    local gif = PLUGIN .. "/assets/debug_banner" -- pre-composited full frames
     local app = fake_app({ page = "settings" })
     local view = { app = app, hitboxes = {} }
     local refresh_args = nil
@@ -1229,6 +1229,24 @@ do
     ok(player ~= nil and player.n >= 2, "gif: sonic decodes to 2+ frames")
     local f1 = GifAnim.frame(player)
     ok(type(f1) == "cdata", "gif: current frame is a blitbuffer")
+    -- Every pre-composited frame is a COMPLETE picture: ink must not be
+    -- exclusive to frame 1 (that was the raw GIF's delta-frames bug).
+    local frame_ink = {}
+    for i = 1, player.n do
+        local b = player.bbs[i]
+        local ink = 0
+        if b then
+            for y = 0, b:getHeight() - 1, 3 do
+                for x = 0, b:getWidth() - 1, 3 do
+                    if b:getPixel(x, y):getR() < 200 then ink = ink + 1 end
+                end
+            end
+        end
+        frame_ink[i] = ink
+    end
+    ok(frame_ink[2] > 20 and frame_ink[player.n] > 20,
+        "gif: every frame is a complete picture (ink f2=" .. frame_ink[2] ..
+        " last=" .. frame_ink[player.n] .. ")")
     local function queued_tick()
         for _, t in ipairs(UIManager._task_queue or {}) do
             if t.action == player.tick then
@@ -1238,23 +1256,55 @@ do
         return false
     end
     ok(player.tick ~= nil and queued_tick(), "gif: tick scheduled while playing")
+
+    -- Fallback path (DIRECT off): the classic widget repaint that lands in
+    -- view:refresh(nil, rect) — the contract the banner always had.
+    GifAnim.DIRECT = false
     player.tick()
     -- NOTE: colon-call self is NOT in ... — args here are (nil, rect).
     local rrect = refresh_args and refresh_args[2]
     ok(rrect ~= nil and rrect.x == 10 and rrect.w == 64,
-        "gif: tick repaints the gif rect only")
-    -- Paint one frame like the banner does (exercises the blit path).
-    local bb = new_bb()
-    bb:fill(Blitbuffer.COLOR_WHITE)
-    bb:blitFrom(f1, 10, 10, 0, 0,
-        math.min(64, f1:getWidth()), math.min(64, f1:getHeight()))
-    local ink = 0
-    for yy = 10, 74 do
+        "gif: fallback tick repaints the gif rect only")
+
+    -- DIRECT path: the frame goes straight into the compositor buffer and
+    -- only the banner region is queued for refresh — no widget repaint.
+    GifAnim.DIRECT = true
+    refresh_args = nil
+    local dirty_args = nil
+    local real_setdirty = UIManager.setDirty
+    UIManager.setDirty = function(_, ...) dirty_args = { ... }; return true end
+    local screen_bb = Screen.bb
+    screen_bb:fill(Blitbuffer.COLOR_WHITE)
+    player.idx = 0 -- tick advances first (idx % n + 1), so this lands on frame 1
+    player.tick()
+    UIManager.setDirty = real_setdirty
+    local dnil, dmode, dregion = dirty_args and dirty_args[1],
+        dirty_args and dirty_args[2], dirty_args and dirty_args[3]
+    ok(dirty_args ~= nil and dnil == nil and dmode == "ui"
+        and dregion ~= nil and dregion.x == 10 and dregion.w == 64,
+        "gif: direct tick refreshes only the banner region (no widget repaint)")
+    ok(refresh_args == nil, "gif: direct tick bypasses view:refresh entirely")
+    local direct_ink = 0
+    for yy = 10, 74, 2 do
         for xx = 10, 74, 2 do
-            if bb:getPixel(xx, yy):getR() < 128 then ink = ink + 1 end
+            if screen_bb:getPixel(xx, yy):getR() < 128 then direct_ink = direct_ink + 1 end
         end
     end
-    ok(ink > 20, "gif: frame paints ink")
+    ok(direct_ink > 20, "gif: direct tick paints the frame into Screen.bb")
+
+    -- The shared painter clears the box with the page background first:
+    -- a smaller synthetic frame in a bigger box proves the margins come back
+    -- as bg (white), not as the previous frame's ink (the trail bug).
+    local tiny = Blitbuffer.new(32, 32, Blitbuffer.TYPE_BB8)
+    tiny:fill(Blitbuffer.COLOR_WHITE)
+    local fake_player = { stopped = false, bbs = { tiny }, idx = 1, n = 1 }
+    local bb = new_bb()
+    bb:fill(Blitbuffer.COLOR_WHITE)
+    bb:paintRect(10, 10, 64, 64, Blitbuffer.COLOR_BLACK) -- fake "previous frame"
+    ok(GifAnim.draw(fake_player, bb, 10, 10, 64, 64) == true, "gif: draw paints a frame")
+    local corner = bb:getPixel(11, 11)
+    ok(corner:getR() > 200, "gif: draw clears the box before blitting (no trail band)")
+    ok(bb:getPixel(26, 26):getR() > 200, "gif: frame ink lands centered")
     GifAnim.stop_all(app)
     ok(app.state.gif_players == nil and not queued_tick(),
         "gif: stop_all clears players and the tick")
@@ -2915,6 +2965,206 @@ do
     ok(not app5._debug_armed, "debug: two taps do not arm Debug Mode")
     App._debug_triple_tap(app5)
     ok(app5._debug_armed == true, "debug: three rapid taps arm Debug Mode")
+end
+
+-- === 8. Ghost-healing: no-flash repaints escalate to flashui periodically ====
+do
+    local App = require("kt_app")
+    local app = setmetatable({
+        state = { settings = {}, scroll = {} },
+        view = {},
+    }, { __index = App })
+    local modes = {}
+    local real_setdirty = UIManager.setDirty
+    UIManager.setDirty = function(_, widget, mode, region)
+        modes[#modes + 1] = { mode = mode, region = region }
+        return true
+    end
+    local Geom = require("ui/geometry")
+    local region = Geom:new{ x = 0, y = 0, w = 100, h = 50 }
+    local N = App.REGIONAL_PER_FLASH
+    for _ = 1, N - 1 do
+        app:refresh(nil, region)
+    end
+    ok(#modes == N - 1 and modes[1].mode == "ui" and modes[#modes].mode == "ui",
+        "ghost: regional refreshes stay 'ui' below the threshold")
+    app:refresh(nil, region)
+    ok(modes[N] ~= nil and modes[N].mode == "flashui" and modes[N].region == region,
+        "ghost: the Nth no-flash regional escalates to flashui")
+    -- Rate limit: an immediate burst after the escalation stays flash-free.
+    for _ = 1, N do
+        app:refresh(nil, region)
+    end
+    ok(modes[#modes].mode == "ui",
+        "ghost: rate limit keeps bursts flash-free right after an escalation")
+    -- Full-dimen no-flash refreshes count toward the same escalation.
+    app:refresh(nil)
+    ok(modes[#modes].mode == "ui", "ghost: full-dimen 'ui' refresh counts")
+    -- Routine full requests ride 'partial'; identity changes flash once.
+    app:refresh(true)
+    ok(modes[#modes].mode == "partial", "ghost: routine full rides partial (no flash)")
+    app._flash_pending = true
+    app:refresh(true)
+    ok(modes[#modes].mode == "full", "ghost: pending identity change flashes once")
+    ok(app._flash_pending == nil, "ghost: flash_pending consumed")
+    UIManager.setDirty = real_setdirty
+end
+
+-- === 9. UIDSL: stable cascade, tag specificity, palette scoping, inline text ==
+do
+    local UiDSL = require("ktui/uidsl")
+    -- Specificity ladder: #id.class > tag.class > class.
+    local sheet = UiDSL.parse([[
+        div.box { color: gray(0.9); }
+        .box { color: gray(0.1); }
+        #hero.box { color: gray(0.5); }
+    ]])
+    -- style_for returns the winning RAW declaration strings; the last
+    -- overwrite in cascade order is the winner.
+    local hero = UiDSL.style_for(sheet, "div", { id = "hero", classes = { box = true } })
+    ok(hero.color == "gray(0.5)", "uidsl: #id.class beats class and tag rules")
+    local divbox = UiDSL.style_for(sheet, "div", { classes = { box = true } })
+    ok(divbox.color == "gray(0.9)", "uidsl: div.box (tag+class) beats plain .box")
+    local pbox = UiDSL.style_for(sheet, "p", { classes = { box = true } })
+    ok(pbox.color == "gray(0.1)", "uidsl: .box applies to non-div nodes")
+    -- Equal specificity keeps SOURCE order (Lua's sort is unstable; the seq
+    -- tie-break is what makes the cascade deterministic).
+    local sheet2 = UiDSL.parse([[
+        .a { color: gray(0.9); }
+        .b { color: gray(0.1); }
+        .a { color: gray(0.5); }
+    ]])
+    local sa = UiDSL.style_for(sheet2, "div", { classes = { a = true } })
+    ok(sa.color == "gray(0.5)", "uidsl: equal-specificity ties keep source order")
+    -- Palette layer: only page/global rules; node rules cannot leak.
+    local sheet3 = UiDSL.parse([[
+        page { background: gray(0.04); color: gray(0.1); }
+        .hero { background: gray(0.5); }
+        div { color: gray(0.3); }
+    ]])
+    local overrides, oerr = UiDSL.theme_overrides(sheet3, "page")
+    -- NOTE: never compare a Blitbuffer color with ~= nil: LuaJIT invokes
+    -- ColorRGB32:__eq(nil) and the metamethod crashes on the nil operand.
+    ok(type(overrides.bg) == "cdata" and type(overrides.ink) == "cdata"
+        and #oerr == 0, "uidsl: page rules feed the palette")
+    local bgv = overrides.bg and overrides.bg:getR() or 0
+    ok(bgv > 200, "uidsl: page background is the near-white gray (got " ..
+        tostring(bgv) .. ")")
+    -- The node-scoped rules must NOT recolor the global palette: bg stayed
+    -- the page gray instead of .hero's gray(0.5) or div's gray(0.3).
+    ok(bgv > 200, "uidsl: .hero/div rules do not leak into the palette")
+    -- Inline tags inside a text host merge their text (no word loss).
+    local tree = UiDSL.from_html("<div><p>a <b>b</b> c</p></div>", {})
+    local para = tree.children[1] and tree.children[1].children[1]
+    ok(para ~= nil and para.tag == "para", "uidsl: p becomes para")
+    ok(para ~= nil and para.text == "a b c", "uidsl: inline tags inside p merge their text (got \"" ..
+        tostring(para and para.text) .. "\")")
+    -- font-size resolves onto the node and paints through a custom face.
+    local sheet4 = UiDSL.parse([[ p.big { font-size: 30px; } ]])
+    local tree4 = UiDSL.from_html("<p class=\"big\">Grande</p>", {})
+    UiDSL.apply_styles(tree4, sheet4)
+    local para4 = tree4.children[1]
+    ok(para4.font_size ~= nil and para4.font_size >= 20,
+        "uidsl: font-size resolves to a scaled px on the node")
+    local okp, err = pcall(function()
+        UiDSL.paint(para4, new_bb(), 0, 0, VW)
+    end)
+    ok(okp, "uidsl: font-size node paints (" .. tostring(err) .. ")")
+end
+
+-- === 10. List rows use the round avatar treatment =============================
+do
+    local Cards = require("ktui/cards")
+    local Thumbs = require("ktui/thumbs")
+    -- All-black source: without the circle carve the corners would paint ink.
+    local dark = "/tmp/avatar_dark.png"
+    local db = Blitbuffer.new(60, 60, Blitbuffer.TYPE_BB8)
+    db:fill(Blitbuffer.COLOR_BLACK)
+    db:writePNG(dark)
+    ok(Thumbs.generate(dark) ~= nil, "avatar: dark source generates a thumb")
+    local app = fake_app({})
+    local pad = Theme.scale(8)
+    local d = Theme.scale(40)
+    local ax, ay = pad, math.floor((120 - d) / 2)
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    local bb = new_bb()
+    bb:fill(Blitbuffer.COLOR_WHITE)
+    Cards.list_item(view, bb, { name = "Aria", path = dark, tags = {}, tokens = 5 },
+        0, 0, VW, 120, nil)
+    local corner = bb:getPixel(ax + 1, ay + 1)
+    ok(corner:getR() > 200,
+        "avatar: square image corners carved back to the row surface")
+    local center_ink = 0
+    for yy = ay + 6, ay + d - 6, 4 do
+        for xx = ax + 6, ax + d - 6, 4 do
+            if bb:getPixel(xx, yy):getR() < 100 then center_ink = center_ink + 1 end
+        end
+    end
+    ok(center_ink > 10, "avatar: cover-fit image paints inside the disc")
+    -- Fallback (no image): soft disc + muted ring + bold initial.
+    local view3 = { app = app, hitboxes = {} }
+    function view3:refresh() end
+    local bb3 = new_bb()
+    bb3:fill(Blitbuffer.COLOR_WHITE)
+    Cards.list_item(view3, bb3, { name = "Aria", tags = {}, tokens = 5 },
+        0, 0, VW, 120, nil)
+    local cx, cy = ax + math.floor(d / 2), ay + math.floor(d / 2)
+    local ring_ink = 0
+    for a = 0, 359, 3 do
+        local rx = cx + math.floor(math.cos(math.rad(a)) * (d / 2))
+        local ry = cy + math.floor(math.sin(math.rad(a)) * (d / 2))
+        local c = bb3:getPixel(rx, ry)
+        if c and c:getR() < 200 then ring_ink = ring_ink + 1 end
+    end
+    ok(ring_ink > 30, "avatar: fallback disc carries the ring (ring_ink=" ..
+        tostring(ring_ink) .. ")")
+    local initial_ink = 0
+    for yy = cy - 8, cy + 8, 2 do
+        for xx = cx - 8, cx + 8, 2 do
+            if bb3:getPixel(xx, yy):getR() < 100 then initial_ink = initial_ink + 1 end
+        end
+    end
+    ok(initial_ink > 2, "avatar: initial glyph paints on the fallback disc")
+    os.remove(dark)
+end
+
+-- === 7c. Confirm sheet buttons are reachable under the modal tap policy =======
+do
+    local Sheets = require("ktui/sheets")
+    local AppView = require("ktui/app_view")
+    local app = fake_app({ page = "settings" })
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    app.view = view
+    local confirmed = false
+    Sheets.confirm(app, {
+        title = "Apagar?", text = "Tem certeza?",
+        ok_label = "Apagar", danger = true,
+        on_ok = function() confirmed = true end,
+    })
+    Sheets.draw(view, new_bb())
+    local ok_btn, cancel_btn
+    for _, b in ipairs(view.hitboxes) do
+        if b.label == "sheet:ok" then ok_btn = b end
+        if b.label == "sheet:cancel" then cancel_btn = b end
+    end
+    ok(ok_btn ~= nil and cancel_btn ~= nil,
+        "sheets: confirm buttons register sheet:* hits (modal policy can see them)")
+    AppView.onTapKotavern(view, nil, {
+        pos = { x = ok_btn.x + ok_btn.w / 2, y = ok_btn.y + ok_btn.h / 2 },
+    })
+    ok(confirmed == true and app.state.sheet == nil,
+        "sheets: OK tap fires under the modal tap policy")
+    -- A tap on dimmed page content (outside the panel) closes, never acts.
+    Sheets.show(app, { title = "Menu", actions = { { label = "Um" } } })
+    Sheets.draw(view, new_bb())
+    local page_hit_fired = false
+    require("ktui/primitives").hit(view, 10, 10, 60, 30,
+        function() page_hit_fired = true end, "stale_page_hit")
+    AppView.onTapKotavern(view, nil, { pos = { x = 20, y = 20 } })
+    ok(page_hit_fired == false and app.state.sheet == nil,
+        "sheets: tap on dimmed page content closes the sheet without firing page hits")
 end
 
 print(string.format("\n%d checks, %d failures", checks, fails))

@@ -165,6 +165,12 @@ function Theme.set_base_font_size(value)
     for k in pairs(line_h_cache) do
         line_h_cache[k] = nil
     end
+    -- The icon size cache is font-size independent, but the glyph fallback
+    -- metrics feed chrome_bar_h(); clearing here is one cheap sweep that
+    -- keeps a single invalidation point for anything measuring text.
+    pcall(function()
+        require("ktui/icons").invalidate_size_cache()
+    end)
     return base_font_size
 end
 

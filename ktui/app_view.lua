@@ -76,6 +76,34 @@ end
 
 function AppView:onTapKotavern(_, ges)
     local x, y = ges.pos.x, ges.pos.y
+    -- Sheets are modal: only the sheet's own panel content is tappable while
+    -- one is open. Sheet hits must be filtered BEFORE the generic hitbox loop
+    -- because page hitboxes are still registered from the last paint; without
+    -- this, a tap on dimmed page content under the sheet fired that stale
+    -- page action and left the sheet open on top of the changed page.
+    if Sheets.active(self.app) then
+        local panel = Sheets.panel_rect(self.app)
+        if panel and P.contains(panel, x, y) then
+            -- Sheet-owned hits register with "sheet:*" labels (rows, the
+            -- dismiss backdrop and confirm buttons), so they are the only
+            -- ones allowed through the panel.
+            for i = #self.hitboxes, 1, -1 do
+                local box = self.hitboxes[i]
+                if box.label and box.label:sub(1, 6) == "sheet:"
+                    and P.contains(box, x, y) then
+                    box.callback(x, y)
+                    return true
+                end
+            end
+            -- Inside the panel but off any control (title, padding): same
+            -- outcome the full-screen dismiss hitbox always had.
+            Sheets.close(self.app)
+            return true
+        end
+        -- Tap-anywhere-to-dismiss (outside the panel).
+        Sheets.close(self.app)
+        return true
+    end
     for i = #self.hitboxes, 1, -1 do
         local box = self.hitboxes[i]
         if P.contains(box, x, y) then
@@ -98,7 +126,11 @@ end
 
 -- Long-press: only hitboxes that declare on_hold react (message bubbles);
 -- everything else keeps today's fallthrough behavior (return false).
+-- While a sheet is open nothing underneath reacts (modal).
 function AppView:onHoldKotavern(_, ges)
+    if Sheets.active(self.app) then
+        return true
+    end
     local x, y = ges.pos.x, ges.pos.y
     for i = #self.hitboxes, 1, -1 do
         local box = self.hitboxes[i]
@@ -395,7 +427,8 @@ function AppView:_end_list_drag(_, was_flick)
         -- concerned: re-evaluate the follow flag against the restored offset
         -- (back at the bottom mid-generation -> follow resumes).
         self:_note_manual_scroll()
-    end    self._list_drag_start_scroll = nil
+    end
+    self._list_drag_start_scroll = nil
     self._list_drag_start_y = nil
 
     -- Commit repaint: only the list area changed.
@@ -430,7 +463,10 @@ function AppView:_scroll_list(steps, page_sized)
 end
 
 function AppView:_render_scroll_list()
-    local region = self.scrollbar and self.scrollbar.region or self.dimen
+    -- Scope to the list itself; the scrollbar region and the page's list
+    -- bounds are the same rectangle. self.dimen is the last-resort fallback.
+    local region = (self.scrollbar and self.scrollbar.region)
+        or self.list_bounds or self.dimen
     UIManager:setDirty(self, "ui", Geom:new(region))
 end
 
@@ -479,6 +515,14 @@ function AppView:paintTo(bb, x, y)
     self.scroll_step = nil
     self.swipe_step = nil
     self.scrollbar = nil
+    -- Reset per-paint: pages that paint bitmaps (cards, avatars, the GIF
+    -- banner) set this back to true so UIManager dithers the next refresh
+    -- (SimpleUI's page_has_covers hint - avoids gray ghosting on e-ink).
+    self.dithered = nil
+    -- Dither hint resets every paint: pages flip it back on when they paint
+    -- a bitmap (cards, avatars, GIF banner). UIManager reads widget.dithered
+    -- on setDirty to request a hardware-dithered refresh (SimpleUI pattern).
+    self.dithered = nil
 
     local m = Theme.metrics()
     self.dimen = Geom:new{ x = x, y = y, w = m.screen_w, h = m.screen_h }
@@ -493,6 +537,14 @@ function AppView:paintTo(bb, x, y)
     -- Header.height accounts for the dashboard's contextual pill toolbar.
     local content_top = y + Header.height(self)
 
+    -- Everything under the header (content + nav). Async repaints — the
+    -- thumbnail queue and image decoders — scope their refresh to this region
+    -- instead of repainting the full screen over unchanged chrome.
+    self.content_region = Geom:new{
+        x = x, y = content_top,
+        w = m.screen_w, h = m.screen_h - (content_top - y),
+    }
+
     local is_chat = self.app.state.page == "chat"
 
     if is_chat then
@@ -502,12 +554,17 @@ function AppView:paintTo(bb, x, y)
         -- header. Repainting only this avoids per-chunk shimmer over the
         -- status/header chrome on e-ink.
         self.chat_region = Geom:new{ x = x, y = content_top, w = m.screen_w, h = content_h }
+        self.content_region = self.chat_region
         self:draw_content(bb, x, content_top, m.screen_w, content_h)
     else
         -- Normal pages: nav bar at bottom
         local nav_h = m.nav_h
         local nav_top = y + m.screen_h - nav_h
         local content_h = nav_top - content_top
+        -- Content-only region for async content repaints (thumbnails, image
+        -- loads): chrome (header/nav) never changes from those, so it stays
+        -- out of the e-ink waveform.
+        self.content_region = Geom:new{ x = x, y = content_top, w = m.screen_w, h = content_h }
         self:draw_content(bb, x, content_top, m.screen_w, content_h)
         Nav.draw(self, bb, x, nav_top, m.screen_w, nav_h)
     end

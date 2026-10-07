@@ -194,13 +194,34 @@ function Icons.draw(bb, name, x, y, size, opts)
 end
 
 -- Measure an icon at the given font size.
+-- Memoized: text_size builds and frees a TextWidget per call, and hot paths
+-- (Theme.chrome_bar_h via metrics(), sheet rows, buttons) call it several
+-- times per paint. Icon metrics depend only on (name, size) — never on the
+-- base font size — so the cache lives until invalidate_size_cache().
+local size_cache = {}
+
 function Icons.text_size(name, size)
-    if asset_path(name) then
-        return { w = size * ICON_SCALE, h = size * ICON_SCALE }
+    local key = name .. "|" .. size
+    local hit = size_cache[key]
+    if hit then
+        return hit
     end
-    return P.text_size(Icons.glyph(name), size * 2, nil, {
-        face = face(size),
-    })
+    local result
+    if asset_path(name) then
+        result = { w = size * ICON_SCALE, h = size * ICON_SCALE }
+    else
+        result = P.text_size(Icons.glyph(name), size * 2, nil, {
+            face = face(size),
+        })
+    end
+    size_cache[key] = result
+    return result
+end
+
+function Icons.invalidate_size_cache()
+    for k in pairs(size_cache) do
+        size_cache[k] = nil
+    end
 end
 
 -- Draw an icon centered inside a w×h box at (x, y).

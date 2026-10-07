@@ -156,7 +156,15 @@ local function repaint_once()
     local UIManager = require("ui/uimanager")
     for app in pairs(refresh_apps) do
         if app.view and app.view.refresh then
-            pcall(function() app.view:refresh() end)
+            -- Scoped to the content area under the header: one batch of new
+            -- thumbnails used to re-waveform the entire screen (header, nav
+            -- and all) for pixels that did not change.
+            local region = app.view.content_region
+            if region then
+                pcall(function() app.view:refresh(nil, region) end)
+            else
+                pcall(function() app.view:refresh() end)
+            end
         end
     end
     refresh_apps = {}

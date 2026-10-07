@@ -238,10 +238,17 @@ local function pump()
                     pcall(task.on_done, done and res or nil, res_err)
                 end
                 -- One repaint after the attempt settles (success or failure).
+                -- Scoped to the content area under the header (a full-dim
+                -- repaint per image would re-waveform the whole screen).
                 local UIManager3 = require("ui/uimanager")
                 UIManager3:scheduleIn(0.05, function()
                     if task.app and task.app.view and task.app.view.refresh then
-                        pcall(function() task.app.view:refresh() end)
+                        local region = task.app.view.content_region
+                        if region then
+                            pcall(function() task.app.view:refresh(nil, region) end)
+                        else
+                            pcall(function() task.app.view:refresh() end)
+                        end
                     end
                 end)
                 pump()

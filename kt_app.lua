@@ -631,7 +631,10 @@ function App:show()
     self:refresh_characters()
     self:refresh_chats_index()
     UIManager:show(self.view)
-    UIManager:setDirty(self.view, "full")
+    -- Same flash policy as every other refresh: rides a no-flash "partial"
+    -- (the core promotes it to a real flash every FULL_REFRESH_COUNT), so
+    -- re-opening the plugin no longer pays a full-screen flash every time.
+    self:refresh(true)
 end
 
 function App:close()
@@ -643,14 +646,30 @@ function App:close()
     I18n.uninstall()
 end
 
+-- Ghost-healing for our own no-flash repaints. The core only promotes
+-- "partial" (full-screen, no region) to a flash every FULL_REFRESH_COUNT
+-- updates; plain "ui" refreshes — regional or full-dimen — NEVER flash, so
+-- repeated ones accumulate e-ink ghosting (SimpleUI's _bookModRefreshType
+-- notes this and promotes its surgical refreshes to "flashui" every N).
+-- We do the same at the policy funnel: every REGIONAL_PER_FLASH no-flash
+-- refreshes, escalate THAT refresh to "flashui" — rate-limited so animation
+-- ticks and fast drag bursts never strobe the panel.
+App.REGIONAL_PER_FLASH = 12
+App.GHOST_FLASH_MIN_INTERVAL = 8 -- seconds between escalations
+
 function App:refresh(full, region)
     if not self.view then
         return
     end
     if region then
-        -- Regional updates never flash: they are incremental repaints
-        -- (scrolling, streaming) where a waveform flash would be jarring.
-        UIManager:setDirty(self.view, "ui", Geom:new(region))
+        -- Regional updates never flash by default: they are incremental
+        -- repaints (scrolling, streaming) where a waveform flash would be
+        -- jarring — except for the periodic ghost-healing escalation.
+        if self:_ghost_flash_due() then
+            UIManager:setDirty(self.view, "flashui", Geom:new(region))
+        else
+            UIManager:setDirty(self.view, "ui", Geom:new(region))
+        end
         return
     end
     local mode = "ui"
@@ -670,7 +689,29 @@ function App:refresh(full, region)
             mode = "partial"
         end
     end
+    -- Full-dimen no-flash refreshes (toggles, saves, open/close panes)
+    -- accumulate ghosting over the whole screen: same periodic escalation.
+    if mode == "ui" and self:_ghost_flash_due() then
+        mode = "flashui"
+    end
     UIManager:setDirty(self.view, mode)
+end
+
+-- True once every REGIONAL_PER_FLASH no-flash repaints, but never twice
+-- within GHOST_FLASH_MIN_INTERVAL seconds (bursts keep counting; the next
+-- calm refresh fires the healing flash).
+function App:_ghost_flash_due()
+    self._noflash_count = (self._noflash_count or 0) + 1
+    if self._noflash_count < self.REGIONAL_PER_FLASH then
+        return false
+    end
+    local now = os.time()
+    if now - (self._last_ghost_flash or 0) < self.GHOST_FLASH_MIN_INTERVAL then
+        return false
+    end
+    self._noflash_count = 0
+    self._last_ghost_flash = now
+    return true
 end
 
 -- Forced flash: theme/font/language changes and explicit deep cleans.

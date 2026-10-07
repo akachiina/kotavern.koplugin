@@ -89,7 +89,14 @@ function Sheets.scroll_by(app, delta)
     local new = math.max(0, math.min((sheet.scroll or 0) + delta, max))
     if new == (sheet.scroll or 0) then return false end
     sheet.scroll = new
-    app.view:refresh()
+    -- Regional repaint: only the panel's rows moved; the page and scrim are
+    -- untouched, so a full-dim refresh would repaint identical pixels.
+    local rect = Sheets.panel_rect(app)
+    if rect then
+        app.view:refresh(nil, rect)
+    else
+        app.view:refresh()
+    end
     return true
 end
 
@@ -145,6 +152,16 @@ function Sheets.panel_top(app)
     return py
 end
 
+-- Full panel rectangle: the modal tap policy in AppView:onTapKotavern only
+-- lets taps inside this rect reach sheet controls, and scroll_by scopes its
+-- regional repaint to it.
+function Sheets.panel_rect(app)
+    local view = app.view
+    if not view then return nil end
+    local px, py, pw, ph = panel_geom(view)
+    return { x = px, y = py, w = pw, h = ph }
+end
+
 function Sheets.draw(view, bb)
     local app = view.app
     local sheet = app.state.sheet
@@ -188,12 +205,13 @@ function Sheets.draw(view, bb)
         Widgets.button(view, bb, {
             x = px + pad, y = cy, w = bw, h = Theme.btn_h(),
             label = sheet.cancel_label, kind = "secondary",
+            hit_label = "sheet:cancel",
             on_tap = function() Sheets.close(app) end,
         })
         Widgets.button(view, bb, {
             x = px + pad + bw + gap, y = cy, w = bw, h = Theme.btn_h(),
             label = sheet.ok_label, icon = sheet.danger and "trash" or "check",
-            kind = "primary", on_tap = function()
+            kind = "primary", hit_label = "sheet:ok", on_tap = function()
                 app.state.sheet = nil
                 if sheet.on_ok then sheet.on_ok() end
                 app.view:refresh()
