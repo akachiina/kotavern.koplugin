@@ -1216,6 +1216,62 @@ do
     os.execute("rm -rf /tmp/bkfix")
 end
 
+-- === 4w. GIF player lifecycle (frames, stop frees, no leak) =======================
+do
+    local GifAnim = require("ktui/gifanim")
+    local gif = PLUGIN .. "/assets/sonic_debug.gif"
+    local app = fake_app({ page = "settings" })
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    local player = GifAnim.ensure(app, view, "banner", gif, { w = 64, h = 64 })
+    ok(player ~= nil and player.n >= 2, "gif: sonic decodes to 2+ frames")
+    local f1 = GifAnim.frame(player)
+    ok(type(f1) == "cdata", "gif: current frame is a blitbuffer")
+    local function queued_tick()
+        for _, t in ipairs(UIManager._task_queue or {}) do
+            if t.action == player.tick then
+                return true
+            end
+        end
+        return false
+    end
+    ok(player.tick ~= nil and queued_tick(), "gif: tick scheduled while playing")
+    -- Paint one frame like the banner does (exercises the blit path).
+    local bb = new_bb()
+    bb:fill(Blitbuffer.COLOR_WHITE)
+    bb:blitFrom(f1, 10, 10, 0, 0,
+        math.min(64, f1:getWidth()), math.min(64, f1:getHeight()))
+    local ink = 0
+    for yy = 10, 74 do
+        for xx = 10, 74, 2 do
+            if bb:getPixel(xx, yy):getR() < 128 then ink = ink + 1 end
+        end
+    end
+    ok(ink > 20, "gif: frame paints ink")
+    GifAnim.stop_all(app)
+    ok(app.state.gif_players == nil and not queued_tick(),
+        "gif: stop_all clears players and the tick")
+    -- Missing file degrades to nil (caller falls back to first frame).
+    local app2 = fake_app({ page = "settings" })
+    local view2 = { app = app2, hitboxes = {} }
+    function view2:refresh() end
+    ok(GifAnim.ensure(app2, view2, "banner", "/tmp/nope.gif", { w = 64, h = 64 }) == nil,
+        "gif: missing file plays nothing")
+    GifAnim.stop_all(app2)
+    -- Full settings page with the debug banner (visual inspection).
+    do
+        local a3 = fake_app({ page = "settings",
+            settings = { debug_mode = true } })
+        local v3 = { app = a3, hitboxes = {} }
+        function v3:refresh() end
+        local b3 = new_bb()
+        local Pt = require("ktui/pages")
+        Pt.settings(v3, b3, 0, 0, VW, VH, 0)
+        dump(b3, "settings_debug")
+    end
+    GifAnim.stop_all(app)
+end
+
 -- === 4q. Plugin language choice persists and drives the UI ======================
 do
     local I18n = require("kt_i18n")

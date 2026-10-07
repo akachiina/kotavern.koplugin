@@ -277,30 +277,47 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
 
     local max_scroll = Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 
-    -- Easter egg (debug builds): a small memento pinned under the settings
-    -- categories - image in one corner, the Debug Mode note beside it; the
-    -- whole block sits centered at the bottom of the page.
+    -- Easter egg (debug builds): animated memento pinned under the
+    -- settings categories - image left, two-line note vertically centered
+    -- beside it, the whole block centered on the page.
     if app.state.settings.debug_mode then
+        local GifAnim = require("ktui/gifanim")
         local m = Theme.metrics()
         local pad = m.pad
-        -- Sonic debug memento: 640x640 square GIF (painted from its first
-        -- frame; animated e-ink is a no-go) sized 2× the old PNG strip.
-        local img_w, img_h = Theme.scale(112), Theme.scale(112)
+        local img_s = Theme.scale(150)
         local gap = Theme.scale(12)
         local tiny_lh = Theme.line_h("tiny")
         local t1 = _("You are in Debug Mode!")
         local t2 = _("Debug Mode active - experimental features enabled.")
-        local t1_w = P.text_size(t1, nil, "tiny", { bold = true }).w
-        local t2_w = P.text_size(t2, nil, "tiny", { color = Theme.muted }).w
-        local block_w = img_w + gap + math.max(t1_w, t2_w)
-        local block_h = math.max(img_h, tiny_lh * 2 + Theme.scale(3))
+        -- Constrain the text column to the real space so the block truly
+        -- centers (unbounded measuring broke the centering before). The
+        -- subtitle wraps instead of ellipsizing.
+        local note_w = math.max(8, w - pad * 2 - img_s - gap)
+        local fit1 = Widgets.fit_text(t1, note_w, "tiny", { bold = true })
+        local sub_lines = math.max(1, P.paragraph_line_count(t2, note_w, "tiny"))
+        local text1_w = P.text_size(fit1, note_w, "tiny", { bold = true }).w
+        local col_w = note_w
+        local block_w = img_s + gap + col_w
+        local text_h = tiny_lh + Theme.scale(3) + sub_lines * tiny_lh
+        local block_h = math.max(img_s, text_h)
         local bx = x + math.max(pad, math.floor((w - block_w) / 2))
         local by = y + h - block_h - pad
-        local note_w = block_w - img_w - gap
-        P.image(bb, Constants.PLUGIN_DIR .. "/assets/sonic_debug.gif", bx, by, img_w, img_h, { cover = true })
-        P.vcenter_text(bb, t1, bx + img_w + gap, by, note_w + 2, tiny_lh, "tiny", { bold = true })
-        P.text(bb, t2, bx + img_w + gap, by + tiny_lh + Theme.scale(3), note_w + 2, "tiny",
-            { color = Theme.muted })
+        local gif_path = Constants.PLUGIN_DIR .. "/assets/sonic_debug.gif"
+        local player = GifAnim.ensure(app, view, "debug_banner", gif_path,
+            { w = img_s, h = img_s })
+        local frame = GifAnim.frame(player)
+        if frame then
+            local fw = math.min(img_s, frame:getWidth())
+            local fh = math.min(img_s, frame:getHeight())
+            bb:blitFrom(frame, bx + math.floor((img_s - fw) / 2),
+                by + math.floor((img_s - fh) / 2), 0, 0, fw, fh)
+        else
+            P.image(bb, gif_path, bx, by, img_s, img_s, { cover = true })
+        end
+        local ty = by + math.floor((block_h - text_h) / 2)
+        P.text(bb, fit1, bx + img_s + gap, ty, col_w + 2, "tiny", { bold = true })
+        P.paragraph(bb, t2, bx + img_s + gap, ty + tiny_lh + Theme.scale(3), col_w,
+            sub_lines * tiny_lh, "tiny", { color = Theme.muted })
     end
     return max_scroll
 end

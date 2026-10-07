@@ -636,6 +636,7 @@ end
 
 function App:close()
     self:_cancel_generation()
+    require("ktui/gifanim").stop_all(self)
     if self.view then
         UIManager:close(self.view)
     end
@@ -687,6 +688,7 @@ end
 
 -- Navigation
 function App:navigate(page, extra)
+    require("ktui/gifanim").stop_all(self)
     self.state.previous_page = self.state.page
     self.state.page = page
     if extra then
@@ -698,6 +700,7 @@ function App:navigate(page, extra)
 end
 
 function App:go_back()
+    require("ktui/gifanim").stop_all(self)
     local prev = self.state.previous_page or "dashboard"
     self.state.page = prev
     self.state.previous_page = nil
