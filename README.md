@@ -4,6 +4,10 @@
 
 KOTavern is a SillyTavern "clone" for e-ink: manage characters and personas, then chat with any OpenAI-compatible API, straight from your reader. It aims for SillyTavern parity where it makes sense on a KOReader device (card format, samplers, World Info, regex, swipes, reasoning blocks), so your existing characters and habits carry over.
 
+<p align="center">
+  <img src="assets/screenshot-home.png" alt="KOTavern Home screen" />
+</p>
+
 ---
 
 ## 📋 Requirements
@@ -45,7 +49,7 @@ Copy the cloned folder into KOReader's `plugins/` directory (the folder name mus
 3. Create or import a **character**, and optionally a **persona** or/and **preset**.
 4. Start chatting! 💬
 
-> 💡 The base URL can be given with or without `/chat/completions`. KOTavern adds it when needed.
+> The base URL can be given with or without `/chat/completions`. KOTavern adds it when needed.
 
 ## 🔄 Updating
 
