@@ -199,6 +199,7 @@ function P.paragraph(bb, text, x, y, width, height, role, opts)
         bold = opts.bold,
         fgcolor = opts.color or Theme.ink,
         bgcolor = opts.bgcolor,
+        alignment = opts.align or opts.alignment or "left",
         width = width,
         height = height,
         height_adjust = true,
@@ -262,6 +263,7 @@ function P.paragraph_metrics(text, width, role, opts)
         face = opts.face or Theme.face(role),
         bold = opts.bold,
         fgcolor = opts.color or Theme.ink,
+        alignment = opts.align or opts.alignment or "left",
         width = width,
         height = 1,
         height_adjust = true,
@@ -409,16 +411,84 @@ function P.image(bb, file, x, y, w, h, opts)
         return false
     end
     opts = opts or {}
-    -- cover: fill the container, cropping the overflow (scale to the larger
-    -- ratio; ImageWidget centers the crop). Falls back to contain (scale to
-    -- fit) when the dimensions can't be read.
-    local scale_factor = 0
-    if opts.cover then
-        local iw, ih = P.image_dims(file)
-        if iw and ih then
-            scale_factor = math.max(w / iw, h / ih)
+    -- Cover mode: fill the box, cropping the overflow (like CSS object-fit:
+    -- cover). Built from primitives we verified, NOT ImageWidget paint modes:
+    -- a paint with scale_factor ignores our box (it paints the full scaled
+    -- bitmap from (x,y) with no clip) and center_x/y_ratio only apply to some
+    -- render branches - the mix produced oversized/zoomed crops. Instead:
+    -- decode at NATIVE size (the decoded buffer, not image_dims, is the truth
+    -- for delta-encoded GIFs whose frame 0 differs from the canvas), scale it
+    -- EXACTLY to the cover dims via ImageWidget{image=bb, width, height}
+    -- (verified: scales to exactly WxH), then blit the CENTER w×h window onto
+    -- the target ourselves. Nothing can overflow the box.
+    if opts.cover and w > 0 and h > 0 then
+        local ok1, base = pcall(function()
+            return ImageWidget:new{ file = file, alpha = opts.alpha ~= false,
+                file_do_cache = true }
+        end)
+        if ok1 and base then
+            local success = false
+            pcall(function()
+                local size = base:getSize()
+                local src = base._bb
+                if size and size.w > 0 and size.h > 0 and src then
+                    local scale = math.max(w / size.w, h / size.h)
+                    local sw = math.max(w, math.ceil(size.w * scale))
+                    local sh = math.max(h, math.ceil(size.h * scale))
+                    local scaled = ImageWidget:new{
+                        image = src, image_disposable = false,
+                        width = sw, height = sh,
+                        alpha = opts.alpha ~= false,
+                    }
+                    pcall(function()
+                        local ss = scaled:getSize()
+                        local sbb = scaled._bb
+                        if ss and sbb then
+                            local bw, bh = sbb:getWidth(), sbb:getHeight()
+                            if bw > 0 and bh > 0 then
+                                local fw = math.min(w, bw)
+                                local fh = math.min(h, bh)
+                                local sx = math.floor((bw - fw) / 2)
+                                local sy = math.floor((bh - fh) / 2)
+                                -- Alpha-carrying sources blend; raw blit as
+                                -- the fallback (opaque covers look identical).
+                                local okb = pcall(function()
+                                    bb:alphablitFrom(sbb, x, y, sx, sy, fw, fh)
+                                end)
+                                if not okb then
+                                    bb:blitFrom(sbb, x, y, sx, sy, fw, fh)
+                                end
+                                -- Carve rounded corners over the blit
+                                -- (page background over the corner overflow).
+                                if opts.radius and opts.radius > 0 then
+                                    local r = math.min(opts.radius,
+                                        math.floor(math.min(fw, fh) / 2))
+                                    local corner_bg = opts.corner_color or Theme.bg
+                                    for row = 0, r - 1 do
+                                        local dy = (row + 0.5) - r
+                                        local half = math.sqrt(math.max(0, r * r - dy * dy))
+                                        local inset = math.floor(r - half + 0.5)
+                                        if inset > 0 then
+                                            bb:paintRect(x, y + row, inset, 1, corner_bg)
+                                            bb:paintRect(x + fw - inset, y + row, inset, 1, corner_bg)
+                                            bb:paintRect(x, y + fh - r + row, inset, 1, corner_bg)
+                                            bb:paintRect(x + fw - inset, y + fh - r + row, inset, 1, corner_bg)
+                                        end
+                                    end
+                                end
+                                success = true
+                            end
+                        end
+                    end)
+                    if scaled.free then scaled:free() end
+                end
+            end)
+            if base.free then base:free() end
+            if success then return true end
         end
+        -- Decode failed: fall through to contain mode
     end
+    -- Contain / icon mode (scale_factor=0 auto-fits within bounds).
     local ok, widget = pcall(function()
         local image_opts = {
             file = file,
@@ -429,7 +499,7 @@ function P.image(bb, file, x, y, w, h, opts)
             file_do_cache = true,
         }
         if not exact_size_svg_icon(file, opts) then
-            image_opts.scale_factor = opts.scale_factor or scale_factor
+            image_opts.scale_factor = opts.scale_factor or 0
         end
         return ImageWidget:new(image_opts)
     end)
@@ -453,6 +523,27 @@ function P.image(bb, file, x, y, w, h, opts)
     end
     if widget.free then
         widget:free()
+    end
+    -- Rounded corners (cover path carves them too, see above): paint the
+    -- page background over the corner overflow. Cheap, deterministic.
+    if opts.radius and opts.radius > 0 and painted then
+        local r = math.min(opts.radius, math.floor(math.min(w, h) / 2))
+        if r > 0 then
+            pcall(function()
+                local corner_bg = opts.corner_color or Theme.bg
+                for row = 0, r - 1 do
+                    local dy = (row + 0.5) - r
+                    local half = math.sqrt(math.max(0, r * r - dy * dy))
+                    local inset = math.floor(r - half + 0.5)
+                    if inset > 0 then
+                        bb:paintRect(x, y + row, inset, 1, corner_bg)
+                        bb:paintRect(x + w - inset, y + row, inset, 1, corner_bg)
+                        bb:paintRect(x, y + h - r + row, inset, 1, corner_bg)
+                        bb:paintRect(x + w - inset, y + h - r + row, inset, 1, corner_bg)
+                    end
+                end
+            end)
+        end
     end
     return painted
 end

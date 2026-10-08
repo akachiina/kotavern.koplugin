@@ -517,6 +517,50 @@ function App:show_debug_actions()
     Sheets.show(self, { title = _("Test CSS"), actions = actions })
 end
 
+-- Write the sandbox demo screen to <data>/themes/pages/sandbox.html so users
+-- have a starting file. Tapping again resets it to the current skeleton:
+-- the old file is kept as sandbox.html.bak first (user-owned, never lost).
+function App:install_sandbox_file()
+    local UiDSL = require("ktui/uidsl")
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+    if UiDSL.sandbox_exists() then
+        -- Backup first, then force-overwrite with the current skeleton.
+        pcall(function()
+            local path = UiDSL.sandbox_path()
+            local src = io.open(path, "r")
+            if src then
+                local body = src:read("*a")
+                src:close()
+                local dst = io.open(path .. ".bak", "w")
+                if dst then dst:write(body) dst:close() end
+            end
+        end)
+        local ok = UiDSL.install_sandbox(true)
+        if ok then
+            UIManager:show(InfoMessage:new{
+                text = _("sandbox.html reset (backup kept)"), timeout = 3 })
+            self:navigate("css_test")
+        else
+            UIManager:show(InfoMessage:new{
+                text = _("Could not write sandbox.html"), timeout = 3 })
+        end
+        return
+    end
+    local ok, errcode = UiDSL.install_sandbox()
+    if ok then
+        UIManager:show(InfoMessage:new{
+            text = _("sandbox.html created in themes/pages/"), timeout = 3 })
+        self:navigate("css_test")
+    elseif errcode == "exists" then
+        UIManager:show(InfoMessage:new{
+            text = _("sandbox.html already exists"), timeout = 3 })
+    else
+        UIManager:show(InfoMessage:new{
+            text = _("Could not write sandbox.html"), timeout = 3 })
+    end
+end
+
 -- Write the sandbox demo CSS to <data>/themes so users have a starting file.
 function App:install_demo_theme()
     local Storage = require("kt_storage")

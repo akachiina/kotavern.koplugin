@@ -90,9 +90,23 @@ end
 -- trail behind the transparent parts of the next one. Alpha-carrying frames
 -- blend via alphablitFrom (raw blit on fallback). Returns false when there
 -- is no frame (the caller paints its static fallback).
-function GifAnim.draw(player, bb, x, y, w, h)
+-- clip (optional {x,y,w,h}): only the intersection is drawn - used by the
+-- tick to keep DIRECT blits inside the view's content region (a rect
+-- registered while the node was partially visible must never spill onto
+-- the nav bar or the error strip).
+function GifAnim.draw(player, bb, x, y, w, h, clip)
     if not player or not bb or not w or w <= 0 or not h or h <= 0 then
         return false
+    end
+    if clip then
+        local x2 = math.max(x, clip.x)
+        local y2 = math.max(y, clip.y)
+        local x3 = math.min(x + w, clip.x + (clip.w or 0))
+        local y3 = math.min(y + h, clip.y + (clip.h or 0))
+        if x2 >= x3 or y2 >= y3 then
+            return false
+        end
+        return GifAnim.draw(player, bb, x2, y2, x3 - x2, y3 - y2)
     end
     local frame = GifAnim.frame(player)
     if not frame then
@@ -131,25 +145,104 @@ function GifAnim._obscured(view)
     return true -- our view is not on the stack at all: not being displayed
 end
 
+-- Rect guard: a tick may only paint where the page actually shows the
+-- animation. Without this, a rect captured while the node was visible (then
+-- scrolled out / clipped by the page) keeps blitting frames straight into
+-- the compositor buffer OVER whatever is there now - nav bar, error strip,
+-- other pages' chrome - because nothing repaints a direct blit afterwards.
+-- No content_region on the view (fake views in tests, plain widgets) means
+-- "no clip info": assume visible, as before.
+local function rects_intersect(a, b)
+    return a and b
+        and (a.w or 0) > 0 and (a.h or 0) > 0
+        and a.x < b.x + (b.w or 0) and b.x < a.x + (a.w or 0)
+        and a.y < b.y + (b.h or 0) and b.y < a.y + (a.h or 0)
+end
+
+function GifAnim._rect_visible(view, rect)
+    if not rect then return false end
+    local cr = view and view.content_region
+    if not cr then return true end
+    return rects_intersect(rect, cr)
+end
+
+-- Rects are only valid for the paint that registered them: AppView:paintTo
+-- calls this BEFORE painting, so any rect a tick still holds from a previous
+-- paint is stale (the page scrolled/moved) and stops animating. Each paint
+-- re-registers the current positions (see ensure()). Without this, a drag
+-- would leave every passed position animating - the "sonic multiplies" bug.
+function GifAnim.invalidate_rects(view)
+    local players = view and view.app and view.app.state
+        and view.app.state.gif_players
+    if type(players) ~= "table" then return end
+    for _, player in pairs(players) do
+        if not player.stopped and player.view == view then
+            player.rects = nil
+            player.rect = nil
+        end
+    end
+end
+
 -- Advance one frame onto the screen. DIRECT: paint Screen.bb and refresh
--- only the banner region (no widget repaint). Fallback: the widget-repaint
--- path (rect-less callers, tests, odd compositors).
+-- only each animation region (no widget repaint). Fallback: the
+-- widget-repaint path (rect-less callers, tests, odd compositors).
+-- One player may drive several on-screen instances of the same source
+-- (same src + height -> same key): every painted instance registers its
+-- rect via ensure(), and the tick pushes the frame to each visible one.
 local function push_frame(player)
     local view = player.view
     if not view then
         return
     end
-    local rect = player.rect
-    if GifAnim.DIRECT and rect and rect.w and rect.w > 0
-        and not GifAnim._obscured(view) then
+    -- The content region is the clip for EVERY blit: rects registered while
+    -- a node was partially visible (scroll edge) paint only their visible
+    -- part, never the chrome below/around (nav bar, error strip).
+    local clip = view.content_region
+    if GifAnim.DIRECT and not GifAnim._obscured(view) then
         local ok, bb = pcall(function() return Screen.bb end)
-        if ok and bb and GifAnim.draw(player, bb, rect.x, rect.y, rect.w, rect.h) then
-            UIManager:setDirty(nil, "ui", Geom:new(rect))
-            return
+        if ok and bb then
+            local pushed = false
+            for _, rect in ipairs(player.rects or {}) do
+                if rect.w and rect.w > 0 then
+                    local vis = rect
+                    if clip then
+                        local x2 = math.max(rect.x, clip.x)
+                        local y2 = math.max(rect.y, clip.y)
+                        local x3 = math.min(rect.x + rect.w, clip.x + (clip.w or 0))
+                        local y3 = math.min(rect.y + rect.h, clip.y + (clip.h or 0))
+                        if x2 >= x3 or y2 >= y3 then
+                            -- Fully outside the content region right now:
+                            -- nothing to animate (no nav-bar spills).
+                            vis = nil
+                        else
+                            vis = { x = x2, y = y2, w = x3 - x2, h = y3 - y2 }
+                        end
+                    end
+                    if vis then
+                        local okd = pcall(function()
+                            GifAnim.draw(player, bb, vis.x, vis.y, vis.w, vis.h)
+                        end)
+                        if okd then
+                            UIManager:setDirty(nil, "ui", Geom:new(vis))
+                            pushed = true
+                        end
+                    end
+                end
+            end
+            if pushed then
+                return
+            end
         end
     end
-    if view.refresh then
-        view:refresh(nil, rect)
+    -- Widget-repaint fallback: only while some instance is actually shown,
+    -- otherwise this would be a full-widget refresh every 120ms.
+    for _, rect in ipairs(player.rects or {}) do
+        if GifAnim._rect_visible(view, rect) then
+            if view.refresh then
+                view:refresh(nil, rect)
+            end
+            return
+        end
     end
 end
 
@@ -227,7 +320,25 @@ function GifAnim.ensure(app, view, key, path, opts)
     if player and not player.stopped then
         player.view = view
         if opts.rect then
-            player.rect = opts.rect
+            -- Every paint invalidates the rect list first (AppView:paintTo),
+            -- then re-registers the CURRENT on-screen instances. Same key +
+            -- several visible nodes (e.g. 5 sonics side by side share nothing
+            -- here: key includes node.h) - one key, several rects, capped.
+            local rects = player.rects or {}
+            local found = false
+            for _, r in ipairs(rects) do
+                if r.x == opts.rect.x and r.y == opts.rect.y
+                    and r.w == opts.rect.w and r.h == opts.rect.h then
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                if #rects >= 8 then table.remove(rects, 1) end
+                rects[#rects + 1] = opts.rect
+            end
+            player.rects = rects
+            player.rect = rects[1]
         end
         return player
     end
@@ -255,6 +366,7 @@ function GifAnim.ensure(app, view, key, path, opts)
         idx = 1,
         view = view,
         rect = opts.rect,
+        rects = opts.rect and { opts.rect } or {},
         app = app,
         key = key,
         page = app.state and app.state.page,

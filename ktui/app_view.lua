@@ -519,10 +519,12 @@ function AppView:paintTo(bb, x, y)
     -- banner) set this back to true so UIManager dithers the next refresh
     -- (SimpleUI's page_has_covers hint - avoids gray ghosting on e-ink).
     self.dithered = nil
-    -- Dither hint resets every paint: pages flip it back on when they paint
-    -- a bitmap (cards, avatars, GIF banner). UIManager reads widget.dithered
-    -- on setDirty to request a hardware-dithered refresh (SimpleUI pattern).
-    self.dithered = nil
+    -- GIF players re-register their on-screen rects every paint (a full
+    -- paintTo means the old rects are stale: the page scrolled, moved or
+    -- changed). Without the invalidation a drag would accumulate every
+    -- passed position and the tick would keep blitting frames into ALL of
+    -- them - the "sonic multiplies" bug.
+    require("ktui/gifanim").invalidate_rects(self)
 
     local m = Theme.metrics()
     self.dimen = Geom:new{ x = x, y = y, w = m.screen_w, h = m.screen_h }

@@ -885,6 +885,15 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
         { text = _("Install default CSS"), icon = "download",
           subtext = _("Write sandbox.css into the themes folder"),
           callback = function() app:install_demo_theme() end },
+        { text = _("Install sandbox.html"), icon = "file",
+          subtext = _("Write the demo screen into themes/pages/ (tap again to reset)"),
+          value = function()
+              if require("ktui/uidsl").sandbox_exists() then
+                  return _("Installed")
+              end
+              return nil
+          end,
+          callback = function() app:install_sandbox_file() end },
         { section = true, text = _("Danger zone") },
         { text = _("Debug Mode"), icon = "wrench", toggle = true,
           subtext = _("Turning it off hides this category and the CSS overlay."),
@@ -908,57 +917,79 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
 end
 
 -- CSS sandbox: a page painted entirely by the UI DSL node engine. The body
--- is a REAL HTML string converted to nodes and decorated by the stylesheet
--- (the "conversion" layer - the canvas UI stays the only renderer). Reload
--- re-applies settings (mtime cache busts the CSS); Shot dumps a viewport PNG.
+-- is the USER file themes/pages/sandbox.html (HTML + optional <style>)
+-- converted to nodes and decorated by theme sheet + inline style (the
+-- "conversion" layer - the canvas UI stays the only renderer). Reload
+-- re-applies settings (mtime cache busts file + CSS); Shot dumps a viewport
+-- PNG. Errors (missing file, bad values, unknown props/actions) surface on
+-- the page itself - there is no silent fallback.
 function Pages.css_test(view, bb, x, y, w, h, scroll)
     local app = view.app
     local UiDSL = require("ktui/uidsl")
     local max_scroll = 0
 
-    -- Reload/Shot toolbar under the header.
+    -- Reload/Shot toolbar under the header. Painted AFTER the list (see
+    -- below): the list allows partially-visible head items for smooth
+    -- scrolling and UiDSL.paint has no clip rect, so a head item painted at
+    -- cy < list_y would otherwise bleed over the buttons and a full refresh
+    -- (e.g. Shot) would push that bleed to the screen. The opaque strip
+    -- plus last-painted order matches the header/nav chrome convention.
     local btn_h = Theme.btn_h()
     local m = Theme.metrics()
     local pad = m.pad
     local list_y = y + btn_h + Theme.scale(8)
     local list_h = h - btn_h - Theme.scale(8)
     local btn_w = math.floor((w - pad * 2 - Theme.scale(12)) / 2)
-    Widgets.button(view, bb, { x = x + pad, y = y + Theme.scale(4), w = btn_w, h = btn_h,
-        icon = "refresh", label = _("Reload"),
-        on_tap = function()
-            app:apply_settings()
-            app:refresh(true)
-            UIManager:show(InfoMessage:new{
-                text = _("CSS reloaded"), timeout = 2 })
-        end })
-    Widgets.button(view, bb, { x = x + pad + btn_w + Theme.scale(12), y = y + Theme.scale(4), w = btn_w, h = btn_h,
-        icon = "camera", label = _("Shot"),
-        on_tap = function() app:debug_page_shot() end })
+    local reload_cb = function()
+        app:apply_settings()
+        app:refresh(true)
+        UIManager:show(InfoMessage:new{
+            text = _("CSS reloaded"), timeout = 2 })
+    end
+    local shot_cb = function() app:debug_page_shot() end
 
-    -- Sandbox body: HTML string -> node tree -> decorated by the sheet ->
-    -- painted with the canvas primitives. Actions come from the app.
-    local sheet = UiDSL.current_sheet(app)
+    -- Sandbox body: themes/pages/sandbox.html (user file) -> node tree ->
+    -- decorated by theme sheet + inline <style> -> painted with the canvas
+    -- primitives. Actions come from the app (Lua is the "JS" here).
     local actions = {
-        reload = function()
+        reload = function(id)
             app:apply_settings()
             app:refresh(true)
             UIManager:show(InfoMessage:new{
                 text = _("CSS reloaded"), timeout = 2 })
         end,
-        shot = function()
+        shot = function(id)
             app:debug_page_shot()
         end,
     }
-    -- Build the tree once per sheet identity: demo_page re-parses the HTML
-    -- and re-measures every node on each paint otherwise (scroll = repaint).
-    -- The sheet TABLE changes identity when the theme file is reloaded
-    -- (load_theme_file caches by mtime) or when switching to the demo sheet,
-    -- which is exactly the invalidation the cache needs.
-    if view._uidsl_sheet ~= sheet or not view._uidsl_tree then
-        view._uidsl_sheet = sheet
-        view._uidsl_tree = UiDSL.demo_page(sheet, actions)
+    local Storage = require("kt_storage")
+    local vars = {
+        shot = Storage.data_dir() .. "/kotavern_css_test.png",
+        sonic = Constants.PLUGIN_DIR .. "/assets/sonic_debug.gif",
+        sonic_frames = Constants.PLUGIN_DIR .. "/assets/debug_banner",
+    }
+    -- sandbox_tree caches by file mtime + theme sheet identity: edits land
+    -- on Reload without re-parsing on every scroll repaint.
+    local tree, merged, sandbox_errors = UiDSL.sandbox_tree(app, actions, vars)
+    
+    -- Errors surface right here (sandbox = error surface too): theme
+    -- palette problems first, then sandbox.html ones (missing file, bad
+    -- values, unknown props/actions). No silent fallbacks.
+    local errors = {}
+    for _, e in ipairs(app.state.debug_theme_errors or {}) do
+        errors[#errors + 1] = e
     end
-    local tree = view._uidsl_tree
+    for _, e in ipairs(sandbox_errors or {}) do
+        errors[#errors + 1] = e
+    end
+
+    -- Reserve space for errors at the bottom if any exist.
+    local err_h = 0
+    if #errors > 0 then
+        err_h = Theme.line_h("tiny") + Theme.scale(8)
+        list_h = list_h - err_h
+    end
+
     local node_h = {}
     local gap = Theme.scale(10)
     local total_h = 0
@@ -973,6 +1004,10 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
         app.state.scroll[app:scroll_key()] = inner_scroll
     end
     Scroll.set_list_bounds(view, x, list_y, w, list_h, nil)
+    
+    -- Clear the list background FIRST to wipe old scrolled content
+    P.rect(bb, x, list_y, w, list_h, Theme.bg)
+
     local cy = list_y - inner_scroll
     for i = 1, #tree.children do
         local node = tree.children[i]
@@ -981,11 +1016,21 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
         end
         cy = cy + node_h[i] + gap
     end
-    -- CSS parse errors surface right here (sandbox = error surface too).
-    local errors = app.state.debug_theme_errors
-    if errors and #errors > 0 then
+    -- Fixed toolbar on top of the list: opaque strip erases any head-item
+    -- bleed, buttons register their hitboxes last so they win the reverse
+    -- hit test in AppView:onTapKotavern.
+    P.rect(bb, x, y, w, list_y - y, Theme.bg)
+    Widgets.button(view, bb, { x = x + pad, y = y + Theme.scale(4), w = btn_w, h = btn_h,
+        icon = "refresh", label = _("Reload"), on_tap = reload_cb })
+    Widgets.button(view, bb, { x = x + pad + btn_w + Theme.scale(12), y = y + Theme.scale(4), w = btn_w, h = btn_h,
+        icon = "camera", label = _("Shot"), on_tap = shot_cb })
+
+    -- Paint errors in their reserved bottom strip with a solid background.
+    if #errors > 0 then
+        local err_y = list_y + list_h
+        P.rect(bb, x, err_y, w, err_h, Theme.bg)
         P.text(bb, _("CSS problems:") .. " " .. table.concat(errors, "; "),
-            x + pad, list_y + list_h - Theme.line_h("tiny"),
+            x + pad, err_y + Theme.scale(4),
             w - pad * 2, "tiny", { color = Theme.muted })
     end
     return max_scroll

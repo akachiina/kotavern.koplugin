@@ -1639,3 +1639,24 @@ msgstr "Modo Debug desactivado"
 
 msgid "Screenshot saved"
 msgstr "Captura guardada"
+
+msgid "Install sandbox.html"
+msgstr "Instalar sandbox.html"
+
+msgid "Write the demo screen into themes/pages/"
+msgstr "Escribir la pantalla demo en themes/pages/"
+
+msgid "Write the demo screen into themes/pages/ (tap again to reset)"
+msgstr "Escribir la pantalla demo en themes/pages/ (toca de nuevo para restablecer)"
+
+msgid "sandbox.html reset (backup kept)"
+msgstr "sandbox.html restablecido (copia guardada)"
+
+msgid "sandbox.html created in themes/pages/"
+msgstr "sandbox.html creado en themes/pages/"
+
+msgid "sandbox.html already exists"
+msgstr "sandbox.html ya existe"
+
+msgid "Could not write sandbox.html"
+msgstr "No se pudo escribir sandbox.html"

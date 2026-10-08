@@ -2906,6 +2906,540 @@ do
     ok(dp.children and #dp.children >= 6, "uidsl: demo page converts the HTML body")
     ok(dp.children[1].bg, "uidsl: demo hero got its CSS background")
 
+    -- <style>/<script> extraction: style becomes css_text (never nodes),
+    -- script bodies are discarded, unknown actions surface as errors and
+    -- data-id reaches the callback.
+    do
+        local got_id, got_node = nil, nil
+        local tree2, css2, err2 = UiDSL.from_html(
+            '<style>.a { color: #111111; }</style>' ..
+            '<div class="a"><p>Hi</p></div>' ..
+            '<script>alert(1)</script>' ..
+            '<div class="btn" data-action="go" data-id="7"><span>X</span></div>' ..
+            '<div class="btn" data-action="nope"><span>Y</span></div>',
+            { go = function(id, node) got_id, got_node = id, node end })
+        ok(css2 and css2:find(".a", 1, true) ~= nil,
+            "uidsl: <style> extracted as css_text")
+        ok(tree2.children and #tree2.children == 3,
+            "uidsl: style/script leave no nodes (got " .. tostring(tree2.children and #tree2.children) .. ")")
+        local btn = tree2.children[2]
+        ok(btn.on_tap ~= nil, "uidsl: data-action still wires")
+        btn.on_tap()
+        ok(got_id == "7" and got_node == btn,
+            "uidsl: data-id + node reach the action")
+        ok(tree2.children[3].on_tap == nil, "uidsl: unknown action wires nothing")
+        local saw_unknown = false
+        for _, e in ipairs(err2 or {}) do
+            if tostring(e):find("unknown action: nope", 1, true) then saw_unknown = true end
+        end
+        ok(saw_unknown, "uidsl: unknown action is a visible error")
+        -- data-fit cover flag + img height passthrough.
+        local imgtree = UiDSL.from_html('<img src="a.png" data-h="120px" data-fit="cover"/>', {})
+        ok(imgtree.children[1].cover == true and imgtree.children[1].h == "120px",
+            "uidsl: data-fit cover + data-h land on the image node")
+    end
+
+    -- para alignment: text-align must reach the paragraph painter, and a
+    -- centered short para must leave the left margin empty.
+    do
+        local sheet3 = UiDSL.parse(".c { text-align: center; }")
+        local ptree = UiDSL.from_html('<p class="c">Oi</p>', {})
+        UiDSL.apply_styles(ptree, sheet3)
+        local para = ptree.children[1]
+        ok(para.align == "center", "uidsl: text-align decorates para nodes")
+        local pw = 300
+        local ph = UiDSL.measure(para, pw)
+        local bb3 = Blitbuffer.new(pw, ph + 4, Blitbuffer.TYPE_BB8)
+        bb3:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(para, bb3, 0, 0, pw)
+        ok(dark_in(bb3, 0, 0, 30, ph) == 0 and dark_in(bb3, 0, 0, pw, ph) > 0,
+            "uidsl: centered para leaves the left margin empty")
+    end
+
+    -- Missing image placeholder: unreadable src paints a labeled box.
+    do
+        local im = UiDSL.node({ tag = "image", src = "/no/such/file.png", h = "60px" })
+        local iw = 300
+        local ih = UiDSL.measure(im, iw)
+        local bb4 = Blitbuffer.new(iw, ih + 4, Blitbuffer.TYPE_BB8)
+        bb4:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(im, bb4, 0, 0, iw)
+        ok(dark_in(bb4, 0, 0, iw, ih) > 20,
+            "uidsl: missing image paints the placeholder")
+    end
+
+    -- validate_sheet + merge_sheets: node-layer errors surface, inline wins.
+    do
+        local verr = UiDSL.validate_sheet(UiDSL.parse(".x { color: banana; foo: 1; pad: 8px; }"))
+        ok(#verr == 2, "uidsl: validate flags bad color + unknown prop (got " .. tostring(#verr) .. ")")
+        local base = UiDSL.parse(".x { color: #111111; }")
+        local top = UiDSL.parse(".x { color: #222222; }")
+        local m = UiDSL.merge_sheets(base, top)
+        local st = UiDSL.style_for(m, "div", { classes = { x = true } })
+        ok(st.color == "#222222", "uidsl: inline sheet wins ties")
+        -- New layout props validate clean (no "unknown property" noise).
+        local lerr = UiDSL.validate_sheet(UiDSL.parse(
+            ".r { width: 50%; flex: 2; display: none; vertical-align: center; kind: primary; icon-size: 20px; }"))
+        ok(#lerr == 0, "uidsl: width/flex/display/valign/kind validate (got " .. tostring(#lerr) .. ")")
+    end
+
+    -- Row layout: <row> flows children horizontally; fixed width wins,
+    -- flex children split the remainder; height = tallest child.
+    do
+        local rtree = UiDSL.from_html(
+            '<row><div width="50%"><p>A</p></div><div><p>B</p></div></row>', {})
+        local row = rtree.children[1]
+        ok(row.tag == "row" and #row.children == 2, "uidsl: row parses with two children")
+        ok(row.children[1].width == "50%", "uidsl: width attribute lands on the node")
+        local rw = 300
+        local rh = UiDSL.measure(row, rw)
+        ok(rh > 0, "uidsl: row measures the tallest child")
+        local rbb = Blitbuffer.new(rw, rh + 4, Blitbuffer.TYPE_BB8)
+        rbb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(row, rbb, 0, 0, rw)
+        ok(dark_in(rbb, 0, 0, rw, rh) > 0, "uidsl: row paints both children")
+        -- display:none collapses the node entirely.
+        local htree = UiDSL.from_html('<div><p>Vis</p></div>', {})
+        local hid = UiDSL.node({ tag = "text", text = "Gone", display = "none" })
+        table.insert(htree.children[1].children, hid)
+        local sheet_h = UiDSL.parse(".gone { display: none; }")
+        hid.class, hid.classes = "gone", { gone = true }
+        UiDSL.apply_styles(htree, sheet_h)
+        ok(hid.display == "none" and UiDSL.measure(hid, 200) == 0,
+            "uidsl: display:none measures zero")
+    end
+
+    -- Native components: button/icon/toggle/avatar parse, measure, paint.
+    do
+        local ctree = UiDSL.from_html(
+            '<button kind="primary" icon="camera">Salvar</button>' ..
+            '<icon name="search" size="20"/>' ..
+            '<toggle data-bind="settings.debug_mode"/>' ..
+            '<avatar name="Luna" size="48"/>', {})
+        ok(#ctree.children == 4, "uidsl: four component nodes (got " ..
+            tostring(ctree.children and #ctree.children) .. ")")
+        local btn, icn, tog, av = ctree.children[1], ctree.children[2],
+            ctree.children[3], ctree.children[4]
+        ok(btn.tag == "button" and btn.kind == "primary"
+            and btn.icon_name == "camera" and btn.text == "Salvar",
+            "uidsl: button carries kind/icon/label")
+        ok(icn.tag == "icon" and icn.icon_name == "search",
+            "uidsl: icon carries its name")
+        ok(tog.tag == "toggle" and tog.bind_key == "settings.debug_mode",
+            "uidsl: toggle carries its bind path")
+        ok(av.tag == "avatar" and av.avatar_name == "Luna",
+            "uidsl: avatar carries its name")
+        for i, nd in ipairs(ctree.children) do
+            local hh = UiDSL.measure(nd, 300)
+            ok(hh > 0, "uidsl: component " .. tostring(i) .. " measures positive")
+        end
+        local cbb = Blitbuffer.new(300, 400, Blitbuffer.TYPE_BB8)
+        cbb:fill(Blitbuffer.COLOR_WHITE)
+        local cy = 0
+        local cview = { hitboxes = {} }
+        for _, nd in ipairs(ctree.children) do
+            local hh = UiDSL.measure(nd, 300)
+            UiDSL.paint(nd, cbb, 0, cy, 300, cview)
+            cy = cy + hh + 8
+        end
+        ok(dark_in(cbb, 0, 0, 300, cy) > 100, "uidsl: components leave ink")
+        -- data-bind: toggle reads live state and flips it on tap.
+        local bapp = fake_app({ settings = { debug_mode = false } })
+        bapp.refresh = function() end
+        local btree = UiDSL.from_html('<toggle data-bind="settings.debug_mode"/>', {})
+        UiDSL.apply_styles(btree, UiDSL.parse(""))
+        -- sandbox_tree path needs a file; exercise resolve via paint-time
+        -- nodes instead: emulate what resolve_binds does through the
+        -- public sandbox flow below (see sandbox bind test).
+        ok(btree.children[1].bind_key == "settings.debug_mode",
+            "uidsl: bind path survives style pass")
+    end
+
+    -- data-bind end-to-end through the real sandbox file flow.
+    do
+        local bapp = fake_app({ page = "css_test",
+            settings = { debug_mode = false } })
+        function bapp:refresh() end
+        local html = '<toggle data-bind="settings.debug_mode"/>' ..
+            '<toggle data-bind="settings.debug_mode"/>'
+        local bt, _, berr = UiDSL.from_html(html, {}, {})
+        ok(#berr == 0, "uidsl: bind-only html has no errors")
+        -- Drive the internal binder by round-tripping through a temp file.
+        local tmppath = os.tmpname()
+        local f = io.open(tmppath, "w")
+        f:write(html)
+        f:close()
+        -- Temporarily point sandbox_path at the temp file.
+        local real_path = UiDSL.sandbox_path
+        UiDSL.sandbox_path = function() return tmppath end
+        local btree = UiDSL.sandbox_tree(bapp, {}, {})
+        UiDSL.sandbox_path = real_path
+        os.remove(tmppath)
+        local t1 = btree.children[1]
+        ok(t1.toggle_value == false and t1.on_tap ~= nil,
+            "uidsl: bind resolves false + auto on_tap")
+        t1.on_tap()
+        ok(bapp.state.settings.debug_mode == true,
+            "uidsl: toggle tap flips the bound state")
+    end
+
+    -- Playground binds: color-flip button, stepper with clamp, live value,
+    -- walking spacer. resolve_binds is public so no temp files are needed.
+    do
+        local papp = fake_app({ settings = {} })
+        function papp:refresh() end
+        local pt = UiDSL.from_html(
+            '<button data-bind="sandbox.ligado">Lampada</button>' ..
+            '<row><button data-bind="sandbox.conta" data-step="-1" data-min="0">-1</button>' ..
+            '<value data-bind="sandbox.conta" class="center"/>' ..
+            '<button data-bind="sandbox.conta" data-step="1" data-max="9">+1</button></row>' ..
+            '<row><spacer data-bind-width="sandbox.pos"/>' ..
+            '<icon name="star" size="20"/></row>', {})
+        UiDSL.apply_styles(pt, UiDSL.parse(".center { text-align: center; }"))
+        UiDSL.resolve_binds(pt, papp)
+        local lamp, rown, walk = pt.children[1], pt.children[2], pt.children[3]
+        local minus, val, plus = rown.children[1], rown.children[2], rown.children[3]
+        ok(lamp.tag == "button" and lamp.text == "Lampada"
+            and lamp.kind == "secondary",
+            "uidsl: bound button starts off (secondary)")
+        ok(val.tag == "value" and val.text == "",
+            "uidsl: value starts empty on a fresh path")
+        lamp.on_tap()
+        UiDSL.resolve_binds(pt, papp)
+        ok(papp.state.sandbox.ligado == true and lamp.kind == "primary",
+            "uidsl: bound button flips color off -> primary")
+        lamp.on_tap()
+        UiDSL.resolve_binds(pt, papp)
+        ok(papp.state.sandbox.ligado == false and lamp.kind == "secondary",
+            "uidsl: second tap flips back to secondary")
+        plus.on_tap()
+        plus.on_tap()
+        minus.on_tap()
+        UiDSL.resolve_binds(pt, papp)
+        ok(papp.state.sandbox.conta == 1 and val.text == "1",
+            "uidsl: stepper counts + live value tracks")
+        for _i = 1, 20 do plus.on_tap() end
+        ok(papp.state.sandbox.conta == 9,
+            "uidsl: stepper clamps at data-max")
+        for _i = 1, 20 do minus.on_tap() end
+        ok(papp.state.sandbox.conta == 0,
+            "uidsl: stepper clamps at data-min")
+        local sp = walk.children[1]
+        ok(sp.tag == "spacer" and sp.width == 0,
+            "uidsl: walking spacer starts at zero width")
+        papp.state.sandbox.pos = 4
+        UiDSL.resolve_binds(pt, papp)
+        ok(sp.width == 4 * Theme.scale(24),
+            "uidsl: spacer width tracks pos x scale")
+        local wh = UiDSL.measure(walk, 300)
+        local wbb = Blitbuffer.new(300, wh + 4, Blitbuffer.TYPE_BB8)
+        wbb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(walk, wbb, 0, 0, 300, { hitboxes = {} })
+        ok(dark_in(wbb, 0, 0, 300, wh) > 0,
+            "uidsl: walking row paints the star")
+        -- Fresh paths materialize on write (no pre-existing state needed).
+        ok(papp.state.sandbox ~= nil,
+            "uidsl: bind writes create the state tables")
+    end
+
+    -- Input + value: field parses, paints placeholder, tap opens the
+    -- dialog hook, save writes back, value echoes (data-empty fallback).
+    do
+        local iapp = fake_app({ settings = {} })
+        local refreshes = 0
+        function iapp:refresh() refreshes = refreshes + 1 end
+        local it = UiDSL.from_html(
+            '<input data-bind="sandbox.nome" title="Seu nome" placeholder="digite"/>' ..
+            '<value data-bind="sandbox.nome" data-empty="(nada ainda)"/>', {})
+        UiDSL.apply_styles(it, UiDSL.parse(""))
+        UiDSL.resolve_binds(it, iapp)
+        local field, echo = it.children[1], it.children[2]
+        ok(field.tag == "input" and field.bind_key == "sandbox.nome"
+            and field.input_title == "Seu nome" and field.input_hint == "digite",
+            "uidsl: input carries bind + title + placeholder")
+        ok(field.input_text == "" and echo.text == "(nada ainda)",
+            "uidsl: empty state shows placeholder + data-empty")
+        local ih = UiDSL.measure(field, 300)
+        ok(ih >= Theme.btn_h(), "uidsl: input measures a touch-sized field")
+        local ibb = Blitbuffer.new(300, ih + 4, Blitbuffer.TYPE_BB8)
+        ibb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(field, ibb, 0, 0, 300, { hitboxes = {} })
+        ok(dark_in(ibb, 0, 0, 300, ih) > 0,
+            "uidsl: input paints the field box")
+        -- Tap routes to the overridable dialog hook (no UI in tests).
+        local real_open = UiDSL.open_input
+        local got_node = nil
+        UiDSL.open_input = function(app, node) got_node = node end
+        field.on_tap()
+        ok(got_node == field, "uidsl: input tap opens the dialog hook")
+        UiDSL.open_input = real_open
+        -- Save path writes state + refreshes; value echoes on re-resolve.
+        UiDSL.save_input(iapp, field, "Luna")
+        ok(iapp.state.sandbox.nome == "Luna" and refreshes == 1,
+            "uidsl: save_input writes the bind path")
+        UiDSL.resolve_binds(it, iapp)
+        ok(field.input_text == "Luna" and echo.text == "Luna",
+            "uidsl: field + value echo the saved text")
+        local ibb2 = Blitbuffer.new(300, ih + 4, Blitbuffer.TYPE_BB8)
+        ibb2:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(field, ibb2, 0, 0, 300)
+        ok(dark_in(ibb2, 0, 0, 300, ih) > 0,
+            "uidsl: filled input paints its text")
+        -- Explicit data-action wins over the dialog.
+        local fired = false
+        local at = UiDSL.from_html('<input data-bind="sandbox.x" data-action="go"/>',
+            { go = function() fired = true end })
+        UiDSL.resolve_binds(at, iapp)
+        at.children[1].on_tap()
+        ok(fired == true and iapp.state.sandbox.x == nil,
+            "uidsl: input data-action wins, no dialog state written")
+    end
+
+    -- Sonic GIF at several sizes: the real asset measures + paints ink
+    -- (contain shows all, cover fills + crops, missing file placeholders).
+    do
+        local gif = PLUGIN .. "/assets/sonic_debug.gif"
+        local gt = UiDSL.from_html(
+            '<img src="' .. gif .. '" data-h="40px"/>' ..
+            '<img src="' .. gif .. '" data-h="80px"/>' ..
+            '<img src="' .. gif .. '" data-h="120px" data-fit="cover"/>', {})
+        UiDSL.apply_styles(gt, UiDSL.parse(""))
+        local prev = 0
+        local gy = 0
+        local gbb = Blitbuffer.new(300, 300, Blitbuffer.TYPE_BB8)
+        gbb:fill(Blitbuffer.COLOR_WHITE)
+        for i, nd in ipairs(gt.children) do
+            local hh = UiDSL.measure(nd, 300)
+            ok(hh > prev, "uidsl: sonic " .. tostring(i) .. " grows with data-h")
+            prev = hh
+            UiDSL.paint(nd, gbb, 0, gy, 300)
+            gy = gy + hh + 8
+        end
+        ok(dark_in(gbb, 0, 0, 300, gy) > 100,
+            "uidsl: sonic gif leaves ink (no silent blank)")
+    end
+
+    -- Animated img: data-anim flag parses, headless player draws frames,
+    -- static frame_1 fallback covers no-app, bad dir placeholders.
+    do
+        local GifAnim = require("ktui/gifanim")
+        local frames = PLUGIN .. "/assets/debug_banner"
+        local at2 = UiDSL.from_html(
+            '<img src="' .. frames .. '" data-anim="true" data-h="64px"/>', {})
+        local anim = at2.children[1]
+        ok(anim.tag == "image" and anim.anim == true,
+            "uidsl: data-anim flag lands on the image node")
+        local aapp = fake_app({ page = "css_test", settings = {} })
+        local aview = { app = aapp, hitboxes = {} }
+        function aview:refresh() end
+        local ah = UiDSL.measure(anim, 300)
+        ok(ah > 0, "uidsl: animated image measures its data-h")
+        local abb = Blitbuffer.new(300, ah + 4, Blitbuffer.TYPE_BB8)
+        abb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(anim, abb, 0, 0, 300, aview)
+        ok(dark_in(abb, 0, 0, 300, ah) > 20,
+            "uidsl: animated image paints a frame headless")
+        ok(aview.dithered == true,
+            "uidsl: animated paint hints dithering")
+        local players = aapp.state.gif_players
+        ok(players ~= nil and next(players) ~= nil,
+            "uidsl: paint ensures a frame player")
+        GifAnim.stop_all(aapp)
+        ok(aapp.state.gif_players == nil,
+            "uidsl: players stop cleanly")
+        -- "Sonic multiplies" regression: rects belong to the paint that
+        -- registered them. invalidate_rects (called by AppView:paintTo)
+        -- drops them; a tick between paints must NOT blit anywhere; the
+        -- next paint re-registers only the current position.
+        do
+            local Geom = require("ui/geometry")
+            local mgif = PLUGIN .. "/assets/debug_banner"
+            local mapp = fake_app({ settings = {} })
+            local mview = { app = mapp, hitboxes = {} }
+            mview.content_region = Geom:new{ x = 0, y = 0, w = 600, h = 700 }
+            local mkey = "uidsl:multiply"
+            local r1 = { x = 10, y = 10, w = 60, h = 60 }
+            GifAnim.ensure(mapp, mview, mkey, mgif, { w = 60, h = 60, rect = r1 })
+            local mpl = mapp.state.gif_players[mkey]
+            ok(mpl and mpl.rects and #mpl.rects == 1, "gif: paint registers its rect")
+            -- Full paint pass: invalidate + re-register at a NEW position.
+            GifAnim.invalidate_rects(mview)
+            ok(mpl.rects == nil, "gif: invalidate_rects drops stale rects")
+            local dirty_now = nil
+            local real_sd = UIManager.setDirty
+            UIManager.setDirty = function(_, ...) dirty_now = { ... }; return true end
+            mpl.tick() -- between paints: nothing to animate
+            UIManager.setDirty = real_sd
+            ok(dirty_now == nil,
+                "gif: tick after invalidate paints NOTHING (no multiplication)")
+            GifAnim.ensure(mapp, mview, mkey, mgif, { w = 60, h = 60,
+                rect = { x = 10, y = 200, w = 60, h = 60 } })
+            ok(mpl.rects and #mpl.rects == 1 and mpl.rects[1].y == 200,
+                "gif: next paint re-registers only the current position")
+            -- Off-content rects never register (nav-bar overlap guard).
+            local rview = { app = mapp, hitboxes = {} }
+            rview.content_region = Geom:new{ x = 0, y = 0, w = 600, h = 700 }
+            local off = { x = 10, y = 750, w = 60, h = 60 }
+            ok(not GifAnim._rect_visible(rview, off),
+                "gif: rect below content_region is invisible")
+            GifAnim.stop_all(mapp)
+        end
+        -- No app in view: static frame_1 fallback still inks.
+        local napp_view = { hitboxes = {} }
+        local fbb = Blitbuffer.new(300, ah + 4, Blitbuffer.TYPE_BB8)
+        fbb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(anim, fbb, 0, 0, 300, napp_view)
+        ok(dark_in(fbb, 0, 0, 300, ah) > 20,
+            "uidsl: anim fallback paints frame_1 without app")
+        -- Unknown dir: the missing placeholder, never a crash.
+        local badt = UiDSL.from_html(
+            '<img src="/no/such/dir" data-anim="true" data-h="40px"/>', {})
+        local badn = badt.children[1]
+        local bh = UiDSL.measure(badn, 200)
+        local bbb = Blitbuffer.new(200, bh + 4, Blitbuffer.TYPE_BB8)
+        bbb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(badn, bbb, 0, 0, 200, aview)
+        ok(dark_in(bbb, 0, 0, 200, bh) > 20,
+            "uidsl: bad anim dir falls back to the placeholder")
+        GifAnim.stop_all(aapp)
+    end
+
+    -- Measure-cache busting: a growing spacer squeezes its para sibling,
+    -- which wraps taller - the row/card must follow. Without invalidation
+    -- they keep the stale (short) height and the next card paints over.
+    do
+        local capp = fake_app({ settings = {} })
+        function capp:refresh() end
+        capp.state.sandbox = {}
+        local ct = UiDSL.from_html(
+            '<div class="card"><row><spacer data-bind-width="sandbox.pos"/>' ..
+            '<p>um texto medio que quebra em mais linhas quando espremido</p></row></div>', {})
+        UiDSL.apply_styles(ct, UiDSL.parse(""))
+        UiDSL.resolve_binds(ct, capp)
+        local card = ct.children[1]
+        local cw0 = UiDSL.measure(card, 200)
+        capp.state.sandbox.pos = 6
+        UiDSL.resolve_binds(ct, capp)
+        local cw1 = UiDSL.measure(card, 200)
+        ok(cw1 > cw0,
+            "uidsl: squeezed para grows the card (got " ..
+            tostring(cw0) .. " -> " .. tostring(cw1) .. ")")
+    end
+
+    -- === Round 2: theme colors, halign, margins, fixed h, hr, progress,
+    -- rounded image corners, HTML-like placeholder (alt text) ============
+    do
+        -- Theme palette names resolve against the LIVE Theme.
+        local ct = UiDSL.from_html('<p class="acao">x</p>', {})
+        local st = UiDSL.apply_styles(ct.children[1],
+            UiDSL.parse(".acao { color: primary; background: muted; border-color: danger; }"))
+        ok(st.color == Theme.button_bg and st.bg == Theme.muted
+            and st.border_color == Theme.danger,
+            "uidsl: theme color names resolve to the live palette")
+        -- Row halign: center packs children in the middle; right at the end.
+        local function row_x(html, css)
+            local t = UiDSL.from_html(html, {})
+            UiDSL.apply_styles(t, UiDSL.parse(css or ""))
+            local bbr = Blitbuffer.new(300, 40, Blitbuffer.TYPE_BB8)
+            bbr:fill(Blitbuffer.COLOR_WHITE)
+            UiDSL.paint(t.children[1], bbr, 0, 0, 300, { hitboxes = {} })
+            local minx, maxx = 1e9, -1
+            for yy = 0, 39 do
+                for xx = 0, 299 do
+                    if bbr:getPixel(xx, yy):getR() < 200 then
+                        if xx < minx then minx = xx end
+                        if xx > maxx then maxx = xx end
+                    end
+                end
+            end
+            return minx, maxx
+        end
+        local lmin = row_x('<row><icon name="star" size="20"/></row>')
+        local cmin = row_x('<row><icon name="star" size="20"/></row>',
+            'row { halign: center; }')
+        local rmin = row_x('<row><icon name="star" size="20"/></row>',
+            'row { halign: right; }')
+        ok(lmin < cmin and cmin < rmin,
+            "uidsl: row halign left<center<right (" .. lmin .. "<" .. cmin .. "<" .. rmin .. ")")
+        -- Margin shifts a child inside its box (both axes via margin).
+        local mt = UiDSL.from_html('<div><p class="desloca">x</p></div>', {})
+        UiDSL.apply_styles(mt, UiDSL.parse(".desloca { margin: 9px; }"))
+        local mt_ch = mt.children[1].children[1]
+        ok(mt_ch.margin == 9 and mt_ch.margin_x == 9,
+            "uidsl: margin decorates the node")
+        local mh0 = UiDSL.measure(mt.children[1], 200)
+        local mt2 = UiDSL.from_html('<div><p>x</p></div>', {})
+        local mh_plain = UiDSL.measure(mt2.children[1], 200)
+        ok(mh0 == mh_plain + 18,
+            "uidsl: vertical margin feeds the parent height (got " .. mh0 .. " vs " .. mh_plain .. ")")
+        -- Fixed h on a box + valign of rows already covered; hr paints a line.
+        local ht = UiDSL.from_html("<hr/>", {})
+        local hn = ht.children[1]
+        ok(hn.tag == "rule", "uidsl: <hr> becomes a rule node")
+        local hb = Blitbuffer.new(200, 20, Blitbuffer.TYPE_BB8)
+        hb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.apply_styles(ht, UiDSL.parse("hr { background: primary; h: 4px; }"))
+        UiDSL.paint(hn, hb, 0, 0, 200, { hitboxes = {} })
+        local hrows = 0
+        for yy = 0, 19 do
+            if hb:getPixel(50, yy):getR() < 200 then hrows = hrows + 1 end
+        end
+        ok(hrows == 4, "uidsl: hr paints a themed 4px line (got " .. hrows .. " rows)")
+        -- Progress: bind feeds the fill; data-max rescales.
+        local papp = fake_app({ settings = {} })
+        function papp:refresh() end
+        papp.state.sandbox = { conta = 0 }
+        local pt = UiDSL.from_html('<progress data-bind="sandbox.conta" data-max="9"/>', {})
+        local pn = pt.children[1]
+        UiDSL.apply_styles(pt, UiDSL.parse(""))
+        UiDSL.resolve_binds(pt, papp)
+        ok(pn.tag == "progress" and pn.progress_value == 0 and pn.progress_max == 9,
+            "uidsl: progress binds and clamps to data-max")
+        papp.state.sandbox.conta = 9
+        UiDSL.resolve_binds(pt, papp)
+        local pbb = Blitbuffer.new(200, 20, Blitbuffer.TYPE_BB8)
+        pbb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(pn, pbb, 0, 0, 200, { hitboxes = {} })
+        local pfill = 0
+        for xx = 0, 199 do
+            if pbb:getPixel(xx, 5):getR() < 200 then pfill = pfill + 1 end
+        end
+        ok(pfill > 150, "uidsl: full progress fills the track (got " .. pfill .. "/200)")
+        papp.state.sandbox.conta = 4
+        UiDSL.resolve_binds(pt, papp)
+        local pbb2 = Blitbuffer.new(200, 20, Blitbuffer.TYPE_BB8)
+        pbb2:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(pn, pbb2, 0, 0, 200, { hitboxes = {} })
+        local pfill2 = 0
+        for xx = 0, 199 do
+            if pbb2:getPixel(xx, 5):getR() < 200 then pfill2 = pfill2 + 1 end
+        end
+        ok(pfill2 < pfill and pfill2 > 60,
+            "uidsl: half progress fills ~half (got " .. pfill2 .. ")")
+        -- Broken image with alt: icon + alt text ink; without alt: icon only.
+        local function broken_ink(h, alt)
+            local b = Blitbuffer.new(200, h + 4, Blitbuffer.TYPE_BB8)
+            b:fill(Blitbuffer.COLOR_WHITE)
+            local t = UiDSL.from_html(
+                '<img src="/no/such/file.png" data-h="' .. h .. 'px"' ..
+                (alt and (' alt="' .. alt .. '"') or "") .. "/>", {})
+            UiDSL.apply_styles(t, UiDSL.parse(""))
+            UiDSL.paint(t.children[1], b, 0, 0, 200, { hitboxes = {} })
+            return dark_in(b, 0, 0, 200, h)
+        end
+        local ink_noalt = broken_ink(60, nil)
+        local ink_alt = broken_ink(60, "retrato")
+        ok(ink_noalt > 10 and ink_alt > ink_noalt,
+            "uidsl: placeholder icon + alt text (HTML-like; got " ..
+            ink_noalt .. " vs " .. ink_alt .. ")")
+        -- Rounded image corners: cover carve happens in P.image (verified by
+        -- the probe); here the node passes radius through.
+        local rt = UiDSL.from_html(
+            '<img src="/no/such/file.png" data-h="60px" data-radius="10px"/>', {})
+        local rn = rt.children[1]
+        ok(rn.radius == 10, "uidsl: data-radius attribute lands on the image node")
+    end
+
     -- css_test page end-to-end (HTML body painted, toolbar registered).
     local app = fake_app({ page = "css_test", settings = { debug_mode = true } })
     local view = { app = app, hitboxes = {} }
@@ -2921,6 +3455,157 @@ do
     end
     ok(nbtn >= 2, "css_test: Reload + Shot buttons registered")
     ok(ink_ratio(bb) > 0, "css_test: sandbox ink on screen")
+    dump(bb, "css_test")
+
+    -- sandbox.html end-to-end: install writes the skeleton once (never
+    -- overwrites), the page paints the user file with inline <style> wins.
+    do
+        -- Hermetic: start without the file regardless of previous runs.
+        os.remove(UiDSL.sandbox_path())
+        local ok_inst1 = UiDSL.install_sandbox()
+        ok(ok_inst1 and UiDSL.sandbox_exists(), "sandbox: install writes sandbox.html")
+        local ok_inst2 = UiDSL.install_sandbox()
+        ok(ok_inst1 and not ok_inst2, "sandbox: second install refuses to overwrite")
+        -- Force reinstall overwrites (the app's Reset action path).
+        local f = io.open(UiDSL.sandbox_path(), "w")
+        f:write("<p>user edits</p>")
+        f:close()
+        local ok_force = UiDSL.install_sandbox(true)
+        local fr = io.open(UiDSL.sandbox_path(), "r")
+        local body = fr and fr:read("*a")
+        if fr then fr:close() end
+        ok(ok_force and body and body:find("Playground", 1, true) ~= nil,
+            "sandbox: force install restores the skeleton")
+        local sapp = fake_app({ page = "css_test", settings = { debug_mode = true } })
+        local stree, smerged, serrs = UiDSL.sandbox_tree(sapp,
+            { reload = function() end, shot = function() end }, {})
+        -- Sonics spawned real timers on sapp's fake view: kill them now or
+        -- they fire into dead widgets after the harness moves on.
+        require("ktui/gifanim").stop_all(sapp)
+        ok(stree.children and #stree.children >= 6,
+            "sandbox: user file converts (got " .. tostring(stree.children and #stree.children) .. ")")
+        -- The skeleton is CLEAN by design (no intentional errors): the error
+        -- strip stays empty unless the author breaks something.
+        if #(serrs or {}) > 0 then
+            for _, e in ipairs(serrs) do io.stderr:write("  sandbox err: " .. tostring(e) .. "\n") end
+        end
+        ok(#(serrs or {}) == 0, "sandbox: clean skeleton paints without errors (got "
+            .. tostring(#(serrs or {})) .. ")")
+        ok(smerged and smerged.rules and #smerged.rules > 0, "sandbox: merged sheet feeds the tree")
+        -- Unknown actions still surface as errors when an author writes one.
+        local bad_tree, _m, bad_errs = UiDSL.from_html(
+            '<div data-action="voar">x</div>', {}, {})
+        ok(bad_tree and #(bad_errs or {}) == 1
+            and tostring(bad_errs[1]):find("voar", 1, true) ~= nil,
+            "sandbox: unknown action is a visible error")
+        -- E2E: tap the +1 stepper -> the LIVE progress bar follows the
+        -- counter (bind read back on every sandbox_tree/resolve_binds).
+        local function find_node(n, pred)
+            if pred(n) then return n end
+            for _, c in ipairs(n.children or {}) do
+                local f = find_node(c, pred)
+                if f then return f end
+            end
+        end
+        local eapp = fake_app({ page = "css_test", settings = { debug_mode = true } })
+        function eapp:refresh() end
+        eapp.state.sandbox = {}
+        local etree = UiDSL.sandbox_tree(eapp,
+            { reload = function() end, shot = function() end }, {})
+        -- The sandbox tree contains animated sonics: their players schedule
+        -- REAL UIManager timers that would fire into our fake view once the
+        -- harness moves on (handleEvent crash). Kill them before proceeding.
+        require("ktui/gifanim").stop_all(eapp)
+        local plus = find_node(etree, function(n) return n.bind_step == 1 end)
+        local bar = find_node(etree, function(n) return n.tag == "progress" end)
+        ok(plus and plus.on_tap and bar,
+            "sandbox: stepper + progress wired (tap=on, bar=on)")
+        if plus and plus.on_tap and bar then
+            plus.on_tap() -- sandbox.conta: 0 -> 1
+            UiDSL.sandbox_tree(eapp, {}, {}) -- next paint re-resolves binds
+            ok(bar.progress_value == 1,
+                "sandbox: progress follows the counter after a tap (got "
+                .. tostring(bar.progress_value) .. ")")
+            plus.on_tap()
+            UiDSL.sandbox_tree(eapp, {}, {})
+            ok(bar.progress_value == 2,
+                "sandbox: progress keeps following (got "
+                .. tostring(bar.progress_value) .. ")")
+            -- FULL tap path, like the device: paint the page (hitboxes
+            -- registered), fire the +1 HITBOX the way onTapKotavern does,
+            -- repaint, and read the bar back off the painted tree.
+            local gifanim = require("ktui/gifanim")
+            local v2 = { app = eapp, hitboxes = {} }
+            function v2:refresh() end
+            v2.dimen = { x = 0, y = 0, w = VW, h = VH }
+            -- The Playground card is far down the page: scroll until its
+            -- +1 button is inside the visible band (nodes outside it are
+            -- culled and register no hitboxes - same as on the device).
+            local plus_box
+            for scroll = 0, 2200, 100 do
+                v2.hitboxes = {}
+                Pages.css_test(v2, new_bb(), 0, 0, VW, VH, scroll)
+                gifanim.stop_all(eapp)
+                for i = #v2.hitboxes, 1, -1 do
+                    local b = v2.hitboxes[i]
+                    if tostring(b.label) == "btn:+1" then plus_box = b; break end
+                end
+                if plus_box then break end
+            end
+            ok(plus_box ~= nil and plus_box.callback ~= nil,
+                "sandbox: +1 hitbox registered on the view")
+            if plus_box then
+                eapp.state.sandbox.conta = 0
+                plus_box.callback(0, 0)
+                ok(eapp.state.sandbox.conta == 1,
+                    "sandbox: hitbox tap writes the live state (conta="
+                    .. tostring(eapp.state.sandbox.conta) .. ")")
+                Pages.css_test(v2, new_bb(), 0, 0, VW, VH, 0)
+                gifanim.stop_all(eapp)
+                local bar2 = find_node(etree, function(n)
+                    return n.tag == "progress" end)
+                ok(bar2.progress_value == 1,
+                    "sandbox: bar follows after a real hitbox tap (got "
+                    .. tostring(bar2.progress_value) .. ")")
+            end
+        end
+    end
+
+    -- Regression: a mid-item scroll must not bleed list content over the
+    -- fixed Reload/Shot toolbar (UiDSL.paint has no clip rect; the toolbar
+    -- paints last over an opaque strip). The toolbar strip must render
+    -- identically scrolled or not, and its hits must win the reverse test.
+    local function paint_css(scroll)
+        local a = fake_app({ page = "css_test", settings = { debug_mode = true } })
+        local v = { app = a, hitboxes = {} }
+        function v:refresh() end
+        v.dimen = { x = 0, y = 0, w = VW, h = VH }
+        setmetatable(v, { __index = AppView })
+        local b = new_bb()
+        local ms = Pages.css_test(v, b, 0, 0, VW, VH, scroll)
+        return v, b, ms
+    end
+    local v0, b0, ms0 = paint_css(0)
+    ok(ms0 > 50, "css_test: sandbox scrolls (got max=" .. tostring(ms0) .. ")")
+    -- 40px up: hero head sits mid-strip, its bg + title row would wash the
+    -- buttons if the list painted over the toolbar (no clip rect in paint).
+    local mid = math.min(40, ms0)
+    local v1, b1 = paint_css(mid)
+    local tpad = Theme.metrics().pad
+    local tbh = Theme.btn_h()
+    local tbw = math.floor((VW - tpad * 2 - Theme.scale(12)) / 2)
+    local d0 = dark_in(b0, tpad + 10, 8, tbw - 20, tbh - 8)
+    local d1 = dark_in(b1, tpad + 10, 8, tbw - 20, tbh - 8)
+    ok(d0 > 1000 and d1 == d0,
+        "css_test: toolbar survives mid-item scroll (dark " .. tostring(d0) .. " vs " .. tostring(d1) .. ")")
+    local last_uidsl, first_btn = 0, nil
+    for i, hbox in ipairs(v1.hitboxes) do
+        local lb = tostring(hbox.label or "")
+        if lb:sub(1, 6) == "uidsl:" then last_uidsl = i end
+        if lb:sub(1, 4) == "btn:" and not first_btn then first_btn = i end
+    end
+    ok(first_btn and first_btn > last_uidsl,
+        "css_test: toolbar hits registered after list hits")
 
     -- Debug settings page: rows + the single Debug Mode toggle.
     local app2 = fake_app({ page = "settings_debug", settings = { debug_mode = true } })
