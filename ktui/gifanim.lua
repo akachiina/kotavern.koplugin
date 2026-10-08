@@ -127,10 +127,14 @@ function GifAnim.draw(player, bb, x, y, w, h, clip)
     return true
 end
 
--- True when no other widget sits above our view (a KOReader modal, dialog,
--- keyboard): the animation pauses under them instead of blitting into the
--- region they cover. An uninspectable/empty stack means "assume visible"
--- (tests drive both paths explicitly via GifAnim.DIRECT).
+-- True when something sits ABOVE our view in the window stack (a KOReader
+-- modal, dialog, keyboard, or another fullscreen app like the File Manager):
+-- the animation pauses under them instead of blitting into the region they
+-- cover. Top-down scan: ANY widget found before ours hides us - it does not
+-- matter whether it declares covers_fullscreen, modals always paint over
+-- what is below. Our view missing from the stack entirely also means hidden
+-- (plugin closed but a player still ticking). An uninspectable/empty stack
+-- means "assume visible" (tests drive both paths via GifAnim.DIRECT).
 function GifAnim._obscured(view)
     local stack = UIManager._window_stack
     if type(stack) ~= "table" or #stack == 0 then
@@ -139,7 +143,10 @@ function GifAnim._obscured(view)
     for i = #stack, 1, -1 do
         local w = stack[i] and stack[i].widget
         if w == view then
-            return false
+            return false -- reached our view first: nothing covers it
+        end
+        if w then
+            return true -- something is stacked above our view: covered
         end
     end
     return true -- our view is not on the stack at all: not being displayed

@@ -1610,7 +1610,7 @@ page {
   background: gray(0.04);
   color: #111111;
   panel-color: #ffffff;
-  soft-color: gray(0.85);
+  soft-color: gray(0.25);
   border-color: gray(0.2);
   muted-color: gray(0.45);
   radius: 6px;
@@ -1674,7 +1674,7 @@ page {
   background: gray(0.04);
   color: #111111;
   panel-color: #ffffff;
-  soft-color: gray(0.85);
+  soft-color: gray(0.25);
   border-color: gray(0.2);
   muted-color: gray(0.45);
   radius: 6px;

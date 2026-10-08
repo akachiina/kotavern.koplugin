@@ -525,6 +525,12 @@ function AppView:paintTo(bb, x, y)
     -- passed position and the tick would keep blitting frames into ALL of
     -- them - the "sonic multiplies" bug.
     require("ktui/gifanim").invalidate_rects(self)
+    -- A page may paint fixed chrome OVER the scrolling content (the css_test
+    -- Reload/Shot toolbar): content_region still includes that band, so
+    -- DIRECT animation ticks must also stay out of it. The page declares
+    -- what it painted over (see Pages.css_test); the region from the
+    -- previous paint stays valid until this paint replaces it.
+    self.chrome_region = nil
 
     local m = Theme.metrics()
     self.dimen = Geom:new{ x = x, y = y, w = m.screen_w, h = m.screen_h }
