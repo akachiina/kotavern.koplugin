@@ -1660,3 +1660,39 @@ msgstr "sandbox.html ya existe"
 
 msgid "Could not write sandbox.html"
 msgstr "No se pudo escribir sandbox.html"
+
+msgid "Test HTML"
+msgstr "Probar HTML"
+
+msgid "Sandbox page painted by MuPDF from HTML"
+msgstr "Página sandbox pintada por MuPDF desde HTML"
+
+msgid "Install html_sandbox.html"
+msgstr "Instalar html_sandbox.html"
+
+msgid "Write the demo page into themes/pages/ (tap again to reset)"
+msgstr "Escribir la página demo en themes/pages/ (toca de nuevo para restablecer)"
+
+msgid "html_sandbox.html reset (backup kept)"
+msgstr "html_sandbox.html restablecido (copia guardada)"
+
+msgid "html_sandbox.html created in themes/pages/"
+msgstr "html_sandbox.html creado en themes/pages/"
+
+msgid "html_sandbox.html already exists"
+msgstr "html_sandbox.html ya existe"
+
+msgid "Could not write html_sandbox.html"
+msgstr "No se pudo escribir html_sandbox.html"
+
+msgid "HTML pagination"
+msgstr "Paginación HTML"
+
+msgid "Page-turn scroll for the HTML sandbox"
+msgstr "Desplazamiento por páginas para el sandbox HTML"
+
+msgid "HTML reloaded"
+msgstr "HTML recargado"
+
+msgid "HTML problems:"
+msgstr "Problemas de HTML:"

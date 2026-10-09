@@ -561,6 +561,49 @@ function App:install_sandbox_file()
     end
 end
 
+-- Write the HTML sandbox demo page to <data>/themes/pages/html_sandbox.html.
+-- Tapping again resets it to the current skeleton: the old file is kept as
+-- .bak first (user-owned, never lost).
+function App:install_html_sandbox_file()
+    local KtHTML = require("ktui/kthtml")
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+    if KtHTML.page_exists("html_sandbox.html") then
+        pcall(function()
+            local path = KtHTML.page_path("html_sandbox.html")
+            local src = io.open(path, "r")
+            if src then
+                local body = src:read("*a")
+                src:close()
+                local dst = io.open(path .. ".bak", "w")
+                if dst then dst:write(body) dst:close() end
+            end
+        end)
+        local ok = KtHTML.install_sandbox(true)
+        if ok then
+            UIManager:show(InfoMessage:new{
+                text = _("html_sandbox.html reset (backup kept)"), timeout = 3 })
+            self:navigate("html_test")
+        else
+            UIManager:show(InfoMessage:new{
+                text = _("Could not write html_sandbox.html"), timeout = 3 })
+        end
+        return
+    end
+    local ok, errcode = KtHTML.install_sandbox()
+    if ok then
+        UIManager:show(InfoMessage:new{
+            text = _("html_sandbox.html created in themes/pages/"), timeout = 3 })
+        self:navigate("html_test")
+    elseif errcode == "exists" then
+        UIManager:show(InfoMessage:new{
+            text = _("html_sandbox.html already exists"), timeout = 3 })
+    else
+        UIManager:show(InfoMessage:new{
+            text = _("Could not write html_sandbox.html"), timeout = 3 })
+    end
+end
+
 -- Write the sandbox demo CSS to <data>/themes so users have a starting file.
 function App:install_demo_theme()
     local Storage = require("kt_storage")
@@ -774,6 +817,7 @@ end
 -- Navigation
 function App:navigate(page, extra)
     require("ktui/gifanim").stop_all(self)
+    require("ktui/kthtml").free_all(self)
     self.state.previous_page = self.state.page
     self.state.page = page
     if extra then

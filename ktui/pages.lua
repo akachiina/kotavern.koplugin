@@ -894,6 +894,22 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
               return nil
           end,
           callback = function() app:install_sandbox_file() end },
+        { text = _("Test HTML"), icon = "eye",
+          subtext = _("Sandbox page painted by MuPDF from HTML"),
+          callback = function() app:navigate("html_test") end },
+        { text = _("Install html_sandbox.html"), icon = "file",
+          subtext = _("Write the demo page into themes/pages/ (tap again to reset)"),
+          value = function()
+              if require("ktui/kthtml").page_exists("html_sandbox.html") then
+                  return _("Installed")
+              end
+              return nil
+          end,
+          callback = function() app:install_html_sandbox_file() end },
+        { text = _("HTML pagination"), icon = "sort", toggle = true,
+          subtext = _("Page-turn scroll for the HTML sandbox"),
+          value = function() return app.state.settings.html_pagination == true end,
+          callback = function() app:toggle_setting("html_pagination") end },
         { section = true, text = _("Danger zone") },
         { text = _("Debug Mode"), icon = "wrench", toggle = true,
           subtext = _("Turning it off hides this category and the CSS overlay."),
@@ -1024,12 +1040,112 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
         icon = "refresh", label = _("Reload"), on_tap = reload_cb })
     Widgets.button(view, bb, { x = x + pad + btn_w + Theme.scale(12), y = y + Theme.scale(4), w = btn_w, h = btn_h,
         icon = "camera", label = _("Shot"), on_tap = shot_cb })
+    -- Declare the painted-over band so DIRECT animation ticks skip it
+    -- (GifAnim clips against chrome_region too - a sonic scrolled under the
+    -- toolbar must not blit its frame back on top of the buttons).
+    view.chrome_region = { x = x, y = y, w = w, h = list_y - y }
 
     -- Paint errors in their reserved bottom strip with a solid background.
     if #errors > 0 then
         local err_y = list_y + list_h
         P.rect(bb, x, err_y, w, err_h, Theme.bg)
         P.text(bb, _("CSS problems:") .. " " .. table.concat(errors, "; "),
+            x + pad, err_y + Theme.scale(4),
+            w - pad * 2, "tiny", { color = Theme.muted })
+    end
+    return max_scroll
+end
+
+-- HTML sandbox: a page painted from a LITERAL html+css user file
+-- (themes/pages/html_sandbox.html) through MuPDF's HtmlBoxWidget. No custom
+-- parser: the file is real HTML, links use the kt: scheme (nav/back/toggle
+-- /input/action) and taps re-render the doc, one refresh per tap. Dogfoods
+-- the kt: router itself (Reload/Shot are page links, no native toolbar).
+function Pages.html_test(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local KtHTML = require("ktui/kthtml")
+    local max_scroll = 0
+    local m = Theme.metrics()
+    local pad = m.pad
+    local list_y = y
+    local list_h = h
+    local inner_w = w - pad * 2 - Theme.scrollbar_w()
+    local paginated = app.state.settings.html_pagination == true
+
+    local actions = {
+        reload = function()
+            app:apply_settings()
+            KtHTML.invalidate(app, "html_sandbox.html")
+            app:refresh(true)
+            UIManager:show(InfoMessage:new{
+                text = _("HTML reloaded"), timeout = 2 })
+        end,
+        shot = function() app:debug_page_shot() end,
+        step = function(id)
+            app.state.sandbox = app.state.sandbox or {}
+            local n = tonumber(app.state.sandbox.conta) or 0
+            n = math.max(0, math.min(9, n + (tonumber(id) or 0)))
+            app.state.sandbox.conta = n
+            KtHTML.invalidate(app, "html_sandbox.html")
+            app:refresh(true)
+        end,
+        move = function(id)
+            app.state.sandbox = app.state.sandbox or {}
+            local n = tonumber(app.state.sandbox.pos) or 0
+            n = math.max(0, math.min(8, n + (tonumber(id) or 0)))
+            app.state.sandbox.pos = n
+            KtHTML.invalidate(app, "html_sandbox.html")
+            app:refresh(true)
+        end,
+    }
+    -- String-level prepare first (link lint), so the error strip is
+    -- reserved BEFORE choosing the layout viewport.
+    local src, src_errors = KtHTML.prepare(app, "html_sandbox.html", actions)
+    local errors = {}
+    for _, e in ipairs(src_errors or {}) do errors[#errors + 1] = e end
+
+    local err_h = 0
+    if #errors > 0 then
+        err_h = Theme.line_h("tiny") + Theme.scale(8)
+        list_h = list_h - err_h
+    end
+
+    local doc = src and KtHTML.ensure(app, view, "html_sandbox.html",
+        src, inner_w, list_h, { paginated = paginated }) or nil
+    local total_h = doc and KtHTML.content_h(doc, list_h) or 0
+    max_scroll = math.max(0, total_h - list_h)
+    local inner_scroll = math.max(0, math.min(scroll or 0, max_scroll))
+    if app.state.scroll and app.scroll_key then
+        app.state.scroll[app:scroll_key()] = inner_scroll
+    end
+    Scroll.set_list_bounds(view, x, list_y, w, list_h,
+        (doc and doc.paginated) and list_h or nil)
+
+    -- Clear the list background FIRST to wipe old scrolled content.
+    P.rect(bb, x, list_y, w, list_h, Theme.bg)
+    if doc then
+        KtHTML.paint_window(doc, bb, x + pad, list_y, inner_w, list_h,
+            inner_scroll, view, actions)
+        view.dithered = true -- bitmap content, same hint as images
+    end
+    -- Single content hitbox (registered after paint so it wins ties that
+    -- are not the scrollbar, which registers later in draw_content).
+    if doc then
+        P.hit(view, x + pad, list_y, inner_w, list_h, function(tx, ty)
+            local live = KtHTML.current(app, "html_sandbox.html")
+            if live then
+                return KtHTML.tap(live, app, "html_sandbox.html", actions,
+                    x + pad, list_y, inner_scroll, tx, ty)
+            end
+            return false
+        end, "kthtml:page")
+    end
+
+    -- Errors in their reserved bottom strip with a solid background.
+    if #errors > 0 then
+        local err_y = list_y + list_h
+        P.rect(bb, x, err_y, w, err_h, Theme.bg)
+        P.text(bb, _("HTML problems:") .. " " .. table.concat(errors, "; "),
             x + pad, err_y + Theme.scale(4),
             w - pad * 2, "tiny", { color = Theme.muted })
     end

@@ -3619,7 +3619,7 @@ do
         if lb == "row:toggle" then ntog = ntog + 1 end
     end
     ok(nrow >= 4, "debug page: setting rows registered (got " .. tostring(nrow) .. ")")
-    ok(ntog == 1, "debug page: exactly one Debug Mode toggle")
+    ok(ntog == 2, "debug page: Debug Mode + HTML pagination toggles (got " .. tostring(ntog) .. ")")
 
     -- Settings root: Debug category + easter egg appear only in debug mode.
     local function paint_settings(settings_overrides)
@@ -3650,6 +3650,294 @@ do
     ok(not app5._debug_armed, "debug: two taps do not arm Debug Mode")
     App._debug_triple_tap(app5)
     ok(app5._debug_armed == true, "debug: three rapid taps arm Debug Mode")
+end
+
+-- === 18b. KtHTML sandbox (literal HTML+CSS via MuPDF) ========================
+do
+    local KtHTML = require("ktui/kthtml")
+
+    -- Theme CSS carries the live palette (our string.format "variables").
+    local css = KtHTML.theme_css()
+    ok(css:find("background: #", 1, true) ~= nil and css:find(".pill", 1, true) ~= nil,
+        "kthtml: theme CSS generated with colors + pills")
+
+    -- State templates: value echo, conditional class, px math, escaping.
+    local tapp = { state = { settings = { debug_mode = true }, sandbox = { conta = 3 } } }
+    local rendered = KtHTML.render_body(
+        '<p>{{s:sandbox.conta}}</p><p>{{s:missing}}</p>' ..
+        '<a class="pill {{c:settings.debug_mode:on}}">x</a>' ..
+        '<img style="margin-left: {{px:sandbox.conta:24}};"/>' ..
+        '<p>{{s:sandbox.evil}}</p>',
+        { state = { settings = tapp.state.settings,
+            sandbox = { conta = tapp.state.sandbox.conta, evil = "<b>&" } } })
+    ok(rendered:find("<p>3</p>", 1, true) ~= nil
+        and rendered:find("<p></p>", 1, true) ~= nil
+        and rendered:find('class="pill on"', 1, true) ~= nil
+        and rendered:find("margin-left: 72px", 1, true) ~= nil
+        and rendered:find("&lt;b&gt;&amp;", 1, true) ~= nil,
+        "kthtml: s/c/px templates + escaping")
+
+    -- <style> extracted, <script> dropped.
+    local nostyle, gotcss = KtHTML.extract_style(
+        "<style>.a{color:#111;}</style><p>Hi</p><script>alert(1)</script>")
+    ok(gotcss:find(".a", 1, true) ~= nil and nostyle:find("alert", 1, true) == nil,
+        "kthtml: style extracted, script discarded")
+
+    -- e/t templates: empty-fallback and conditional text.
+    local etapp = { state = { sandbox = { nome = "", sw = false } } }
+    local etr = KtHTML.render_body(
+        '<p>{{e:sandbox.nome:digite}}</p><p>{{t:sandbox.sw:LIGADO|desligado}}</p>', etapp)
+    ok(etr:find("digite", 1, true) ~= nil and etr:find("desligado", 1, true) ~= nil,
+        "kthtml: e/t fall back on empty state")
+    etapp.state.sandbox.nome, etapp.state.sandbox.sw = "Li & <b>", true
+    local etr2 = KtHTML.render_body(
+        '<p>{{s:sandbox.nome}}</p><p>{{e:sandbox.nome:digite}}</p>' ..
+        '<p>{{t:sandbox.sw:LIGADO|desligado}}</p>', etapp)
+    ok(etr2:find("Li &amp; &lt;b&gt;", 1, true) ~= nil
+        and etr2:find("<p></p>", 1, true) ~= nil
+        and etr2:find("LIGADO}", 1, true) == nil
+        and etr2:find("LIGADO", 1, true) ~= nil,
+        "kthtml: s shows value, e hides hint, t has no stray brace")
+
+    -- Component CSS ships in the base layer.
+    ok(css:find(".pill.secondary", 1, true) ~= nil
+        and css:find("a.field", 1, true) ~= nil
+        and css:find("table.seg", 1, true) ~= nil
+        and css:find(".pfill", 1, true) ~= nil
+        and css:find(".chip", 1, true) ~= nil
+        and css:find(".round", 1, true) ~= nil,
+        "kthtml: component classes in theme CSS")
+
+    -- Install flow mirrors the DSL sandbox (never overwrites, force does).
+    os.remove(KtHTML.page_path("html_sandbox.html"))
+    local h_inst1 = KtHTML.install_sandbox()
+    ok(h_inst1 and KtHTML.page_exists("html_sandbox.html"),
+        "kthtml: install writes html_sandbox.html")
+    local h_inst2 = KtHTML.install_sandbox()
+    ok(h_inst1 and not h_inst2, "kthtml: second install refuses to overwrite")
+    local hf = io.open(KtHTML.page_path("html_sandbox.html"), "w")
+    hf:write("<p>user edits</p>")
+    hf:close()
+    local h_force = KtHTML.install_sandbox(true)
+    local hr = io.open(KtHTML.page_path("html_sandbox.html"), "r")
+    local hbody = hr and hr:read("*a")
+    if hr then hr:close() end
+    ok(h_force and hbody and hbody:find("Playground", 1, true) ~= nil,
+        "kthtml: force install restores the skeleton")
+
+    -- Prepare lints unknown actions/schemes before any layout happens.
+    local hrapp = fake_app({ page = "html_test", settings = {} })
+    local src, src_errors = KtHTML.prepare(hrapp, "html_sandbox.html",
+        { reload = function() end, shot = function() end,
+          step = function() end, move = function() end })
+    ok(src ~= nil and src.body:find("Playground", 1, true) ~= nil,
+        "kthtml: skeleton prepares a body")
+    local saw_voar, saw_scheme = false, false
+    for _, e in ipairs(src_errors or {}) do
+        if tostring(e):find("voar", 1, true) then saw_voar = true end
+        if tostring(e):find("kt:unknown", 1, true) then saw_scheme = true end
+    end
+    ok(saw_voar and saw_scheme and #src_errors >= 2,
+        "kthtml: skeleton link errors stay visible (got " .. tostring(#src_errors) .. ")")
+
+    -- Tall layout builds a doc with real height; paint leaves ink.
+    local hview = { app = hrapp, hitboxes = {} }
+    function hview:refresh() end
+    local doc = KtHTML.ensure(hrapp, hview, "html_sandbox.html", src, 500, 700, {})
+    local total_h = doc and doc.total_h or 0
+    ok(doc ~= nil and not doc.paginated and total_h > 1000 and total_h < 6000,
+        "kthtml: tall layout measures content (total_h=" .. tostring(total_h) .. ")")
+    local hbb = Blitbuffer.new(500, 700, Blitbuffer.TYPE_BB8)
+    hbb:fill(Blitbuffer.COLOR_WHITE)
+    KtHTML.paint_window(doc, hbb, 0, 0, 500, 700, 0)
+    ok(dark_in(hbb, 0, 0, 500, 700) > 0, "kthtml: tall paint leaves ink")
+
+    -- Link router: find a real kt: link, tap its center.
+    local function kt_link(target)
+        local pg = doc.widget.document:openPage(doc.widget.page_number or 1)
+        local links = pg:getPageLinks() or {}
+        pg:close()
+        for _, l in ipairs(links) do
+            local uri = l.uri or l.url or ""
+            if uri == target or uri:find(target, 1, true) == 1 then
+                return l
+            end
+        end
+        return nil
+    end
+    local tog = kt_link("kt:toggle:sandbox.ligado")
+    ok(tog ~= nil, "kthtml: toggle link exists in layout")
+    if tog then
+        local refreshes = 0
+        function hrapp:refresh() refreshes = refreshes + 1 end
+        local cx, cy = math.floor((tog.x0 + tog.x1) / 2), math.floor((tog.y0 + tog.y1) / 2)
+        ok(KtHTML.tap(doc, hrapp, "html_sandbox.html", {}, 0, 0, 0, cx, cy) == true,
+            "kthtml: tap consumes the toggle link")
+        ok(hrapp.state.sandbox.ligado == true and refreshes >= 1,
+            "kthtml: toggle tap flips state + refreshes")
+    end
+    -- The toggle tap invalidated the doc (fresh body on next paint), so
+    -- re-ensure before probing further links.
+    doc = KtHTML.ensure(hrapp, hview, "html_sandbox.html", src, 500, 700, {})
+    ok(doc ~= nil and doc.widget ~= nil, "kthtml: doc rebuilds after invalidate")
+    local navapp = fake_app({ page = "html_test", settings = {} })
+    local went = nil
+    function navapp:navigate(p) went = p end
+    local navl = kt_link("kt:action:reload")
+    if navl then
+        local fired = nil
+        local cx = math.floor((navl.x0 + navl.x1) / 2)
+        local cy = math.floor((navl.y0 + navl.y1) / 2)
+        ok(KtHTML.tap(doc, navapp, "html_sandbox.html",
+            { reload = function(id) fired = id or "noid" end }, 0, 0, 0, cx, cy) == true,
+            "kthtml: action link fires with router map")
+        ok(fired == "noid", "kthtml: action id defaults when absent")
+    end
+    ok(KtHTML.tap(doc, navapp, "html_sandbox.html", {}, 0, 0, 0, -50, -50) == false,
+        "kthtml: tap outside links is not consumed")
+
+    -- Animation: lint validates names, ensure collects link rects, paint
+    -- overlays frames, tap consumes silently, rebuild prunes the stale.
+    do
+        ok(KtHTML.check_anim("debug_banner") == nil,
+            "kthtml: valid anim dir passes lint")
+        ok(KtHTML.check_anim("../x") ~= nil and KtHTML.check_anim("nodir") ~= nil,
+            "kthtml: bad anim names/dirs flagged")
+        local ahtml = '<a class="anim" style="display: inline-block; width: 64px; height: 64px;" href="kt:anim:debug_banner">' ..
+            '<img src="debug_banner/frame_1.png" style="width: 64px;"/></a>' ..
+            '<a class="anim" href="kt:anim:../x"><img src="x.png"/></a>'
+        local atmp = os.tmpname()
+        local af = io.open(atmp, "w")
+        af:write(ahtml)
+        af:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return atmp end
+        local asrc, aerrs = KtHTML.prepare(hrapp, "anim_probe.html", {})
+        local saw_anim_err = false
+        for _, e in ipairs(aerrs or {}) do
+            if tostring(e):find("anim", 1, true) then saw_anim_err = true end
+        end
+        ok(asrc ~= nil and saw_anim_err,
+            "kthtml: bad anim link surfaces a lint error")
+        local GifAnim = require("ktui/gifanim")
+        local adoc = asrc and KtHTML.ensure(hrapp, hview, "anim_probe.html",
+            asrc, 300, 300, {}) or nil
+        ok(adoc ~= nil and adoc.anims ~= nil and #adoc.anims == 1,
+            "kthtml: one anchor yields one rect after dedupe (got " ..
+            tostring(adoc and adoc.anims and #adoc.anims) .. ")")
+        if adoc then
+            local abb = Blitbuffer.new(300, 300, Blitbuffer.TYPE_BB8)
+            abb:fill(Blitbuffer.COLOR_WHITE)
+            KtHTML.paint_window(adoc, abb, 0, 0, 300, 300, 0)
+            ok(dark_in(abb, 0, 0, 300, 300) > 20,
+                "kthtml: anim overlay paints a frame")
+            local a = adoc.anims[1]
+            local acx = math.floor(a.x0 + (a.x1 - a.x0) / 2)
+            local acy = math.floor(a.y0 + (a.y1 - a.y0) / 2)
+            local before = hrapp.state.sandbox
+            ok(KtHTML.tap(adoc, hrapp, "anim_probe.html", {}, 0, 0, 0, acx, acy) == true,
+                "kthtml: anim tap consumed silently")
+            ok(hrapp.state.sandbox == before,
+                "kthtml: anim tap mutates nothing")
+            GifAnim.stop_all(hrapp)
+        end
+        -- Prune drops players whose animation left the rebuilt HTML.
+        local fake_player = { stopped = false, tick = function() end, bbs = {} }
+        hrapp.state.gif_players = { ["kthtml:anim:anim_probe.html:old:1"] = fake_player }
+        KtHTML.prune_anim_players(hrapp, "anim_probe.html", {})
+        ok(hrapp.state.gif_players["kthtml:anim:anim_probe.html:old:1"] == nil
+            and fake_player.stopped == true,
+            "kthtml: prune stops + drops stale players")
+        KtHTML.page_path = real_path
+        os.remove(atmp)
+    end
+
+    -- Pagination mode lays out at viewport height and paints per page.
+    local pdoc = KtHTML.ensure(hrapp, hview, "html_sandbox.html", src, 500, 700,
+        { paginated = true })
+    ok(pdoc ~= nil and pdoc.paginated == true and (pdoc.page_count or 0) >= 1,
+        "kthtml: paginated layout builds (pages=" .. tostring(pdoc and pdoc.page_count) .. ")")
+    local pbb = Blitbuffer.new(500, 700, Blitbuffer.TYPE_BB8)
+    pbb:fill(Blitbuffer.COLOR_WHITE)
+    KtHTML.paint_window(pdoc, pbb, 0, 0, 500, 700, 0)
+    ok(dark_in(pbb, 0, 0, 500, 700) > 0, "kthtml: paginated paint leaves ink")
+
+    -- kt:btn: anchors become native canvas pills with own hitboxes.
+    do
+        local bhtml = '<a style="display: inline-block; width: 100px; height: 32px;" '
+            .. 'href="kt:btn:poke:id9">poke</a>'
+            .. '<a style="display: inline-block; width: 90px; height: 30px;" '
+            .. 'href="kt:btn:unmapped">dead</a>'
+        local btmp = os.tmpname()
+        local bf = io.open(btmp, "w")
+        bf:write(bhtml)
+        bf:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return btmp end
+        local bsrc, berrs = KtHTML.prepare(hrapp, "btn_probe.html", {})
+        ok(bsrc ~= nil and #berrs == 0, "kthtml: btn links pass lint")
+        local bdoc = bsrc and KtHTML.ensure(hrapp, hview, "btn_probe.html",
+            bsrc, 300, 200, {}) or nil
+        ok(bdoc ~= nil and bdoc.btns and #bdoc.btns == 2,
+            "kthtml: both btn anchors extracted (got "
+            .. tostring(bdoc and bdoc.btns and #bdoc.btns) .. ")")
+        if bdoc then
+            local fired = nil
+            local bview = { app = hrapp, hitboxes = {} }
+            function bview:refresh() end
+            local bbb = Blitbuffer.new(300, 200, Blitbuffer.TYPE_BB8)
+            bbb:fill(Blitbuffer.COLOR_WHITE)
+            KtHTML.paint_window(bdoc, bbb, 0, 0, 300, 200, 0, bview,
+                { poke = function(id) fired = id end })
+            ok(dark_in(bbb, 0, 0, 300, 200) > 0,
+                "kthtml: btn pill paints over the bitmap")
+            local hb = nil
+            for i = #bview.hitboxes, 1, -1 do
+                if tostring(bview.hitboxes[i].label) == "btn:poke" then
+                    hb = bview.hitboxes[i]
+                    break
+                end
+            end
+            ok(hb ~= nil and hb.callback ~= nil,
+                "kthtml: kt:btn registers a native hitbox on the view")
+            if hb then hb.callback(0, 0) end
+            ok(fired == "id9",
+                "kthtml: btn tap fires the mapped action with its id (got "
+                .. tostring(fired) .. ")")
+            -- Unmapped name: the router consumes the tap, state untouched.
+            local b2 = bdoc.btns[2]
+            local bcx = math.floor(b2.x0 + (b2.x1 - b2.x0) / 2)
+            local bcy = math.floor(b2.y0 + (b2.y1 - b2.y0) / 2)
+            ok(KtHTML.tap(bdoc, hrapp, "btn_probe.html", {}, 0, 0, 0, bcx, bcy) == true,
+                "kthtml: unmapped btn tap consumed (no fall-through)")
+            KtHTML.free_doc(bdoc)
+        end
+        KtHTML.page_path = real_path
+        os.remove(btmp)
+    end
+
+    -- Lifecycle: invalidate drops, free_all releases.
+    KtHTML.invalidate(hrapp, "html_sandbox.html")
+    ok(KtHTML.current(hrapp, "html_sandbox.html") == nil,
+        "kthtml: invalidate drops the cached doc")
+    KtHTML.free_all(hrapp)
+    ok(hrapp.state.kthtml_docs == nil, "kthtml: free_all releases everything")
+
+    -- html_test page end-to-end (HTML body painted, hitbox registered).
+    local eapp = fake_app({ page = "html_test", settings = { debug_mode = true } })
+    local eview = { app = eapp, hitboxes = {} }
+    function eview:refresh() end
+    eview.dimen = { x = 0, y = 0, w = VW, h = VH }
+    setmetatable(eview, { __index = AppView })
+    local ebb = new_bb()
+    local emax = Pages.html_test(eview, ebb, 0, 0, VW, VH, 0)
+    ok(emax >= 0, "html_test: paints and returns max_scroll")
+    local nhtml = 0
+    for _i, hbox in ipairs(eview.hitboxes) do
+        if tostring(hbox.label or "") == "kthtml:page" then nhtml = nhtml + 1 end
+    end
+    ok(nhtml == 1, "html_test: content hitbox registered")
+    ok(ink_ratio(ebb) > 0, "html_test: page ink on screen")
 end
 
 -- === 8. Ghost-healing: no-flash repaints escalate to flashui periodically ====

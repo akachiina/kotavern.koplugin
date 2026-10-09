@@ -627,6 +627,11 @@ function UiDSL.paint(node, bb, x, y, w, view)
     if node.display == "none" then return end
     local pad = node.pad or 0
     local h = UiDSL.measure(node, w)
+    -- Record where this node last painted: bind taps refresh regionally
+    -- (e-ink: changing one digit must not wave the whole panel - see
+    -- bind_refresh). Coordinates are screen-relative for the page paints;
+    -- tests painting at (0,0) get a valid region either way.
+    node._paint_region = { x = x, y = y, w = w, h = h }
     local bg = node.bg
     -- Button draws its own background via W.button; skip the generic box.
     if node.tag ~= "button" then
@@ -1398,6 +1403,21 @@ local function bind_refresh(app)
     if app and app.refresh then app:refresh(true) end
 end
 
+-- Refresh after a bind mutation. REGIONAL FIRST: taps on a bound node
+-- repaint just the node's last painted band (recorded by UiDSL.paint) —
+-- one digit/a toggle flip must not wave the whole panel on e-ink. Falls
+-- back to the caller's refresh (full) when the node has no region yet:
+-- headless tests, or a tap that fired before any paint recorded it.
+local function bind_refresh_node(app, node)
+    local r = node and node._paint_region
+    if app and app.view and app.view.refresh and r and (r.w or 0) > 0
+        and (r.h or 0) > 0 then
+        app.view:refresh(nil, r)
+        return
+    end
+    if app and app.refresh then app:refresh(true) end
+end
+
 -- Resolve every node carrying bind_key (public for tests: sandbox_tree
 -- calls it after every style pass, including cache hits, because binds
 -- are live state, not file content):
@@ -1416,13 +1436,13 @@ end
 --     never animates, each tap is one full refresh).
 local function resolve_binds(tree, app, errors)
     if not tree then return end
-    local function flip_bool(path)
+    local function flip_bool(path, node)
         return function()
             local _, parent, key = bind_lookup(app, path, true)
             if parent and key then
                 parent[key] = not (parent[key] == true)
             end
-            bind_refresh(app)
+            bind_refresh_node(app, node)
         end
     end
     local function step_num(node)
@@ -1435,7 +1455,7 @@ local function resolve_binds(tree, app, errors)
                 if node.bind_max ~= nil then n = math.min(n, node.bind_max) end
                 parent[key] = n
             end
-            bind_refresh(app)
+            bind_refresh_node(app, node)
         end
     end
     -- Returns true when a layout-affecting field changed. The measure cache
@@ -1460,7 +1480,7 @@ local function resolve_binds(tree, app, errors)
             if node.tag == "toggle" then
                 node.toggle_value = (val == true)
                 if not node.on_tap then
-                    node.on_tap = flip_bool(node.bind_key)
+                    node.on_tap = flip_bool(node.bind_key, node)
                 end
             elseif node.tag == "button" then
                 if node.bind_step ~= nil then
@@ -1476,7 +1496,7 @@ local function resolve_binds(tree, app, errors)
                         node.kind = node.toggle_value and "primary" or "secondary"
                     end
                     if not node.on_tap then
-                        node.on_tap = flip_bool(node.bind_key)
+                        node.on_tap = flip_bool(node.bind_key, node)
                     end
                 end
             elseif node.tag == "value" then
@@ -1538,7 +1558,7 @@ function UiDSL.save_input(app, node, text)
     if parent and key then
         parent[key] = tostring(text or "")
     end
-    bind_refresh(app)
+    bind_refresh_node(app, node)
 end
 
 -- Open the system single-line input dialog for an <input> node. Public and

@@ -205,6 +205,7 @@ local function push_frame(player)
     -- a node was partially visible (scroll edge) paint only their visible
     -- part, never the chrome below/around (nav bar, error strip).
     local clip = view.content_region
+    local chrome = view.chrome_region -- band a page painted over (toolbar)
     if GifAnim.DIRECT and not GifAnim._obscured(view) then
         local ok, bb = pcall(function() return Screen.bb end)
         if ok and bb then
@@ -223,6 +224,24 @@ local function push_frame(player)
                             vis = nil
                         else
                             vis = { x = x2, y = y2, w = x3 - x2, h = y3 - y2 }
+                        end
+                    end
+                    if vis and chrome then
+                        -- Subtract the chrome band: a rect intersecting the
+                        -- toolbar keeps only its below-band part (the page's
+                        -- opaque strip owns those pixels).
+                        if vis.y + vis.h > chrome.y
+                            and vis.y < chrome.y + (chrome.h or 0) then
+                            local band_y = math.max(vis.y, chrome.y)
+                            local band_end = math.min(vis.y + vis.h,
+                                chrome.y + (chrome.h or 0))
+                            if vis.y >= chrome.y then
+                                vis = nil -- fully inside the band: skip
+                            else
+                                vis = { x = vis.x, y = vis.y, w = vis.w,
+                                    h = band_y - vis.y } -- above-band part
+                            end
+                            _ = band_end
                         end
                     end
                     if vis then
@@ -244,7 +263,12 @@ local function push_frame(player)
     -- Widget-repaint fallback: only while some instance is actually shown,
     -- otherwise this would be a full-widget refresh every 120ms.
     for _, rect in ipairs(player.rects or {}) do
-        if GifAnim._rect_visible(view, rect) then
+        -- Chrome check mirrors the DIRECT path: the band is not ours.
+        local under_chrome = chrome and rect.y < chrome.y + (chrome.h or 0)
+            and rect.y + rect.h > chrome.y
+            and rect.x < chrome.x + (chrome.w or 0)
+            and rect.x + rect.w > chrome.x
+        if GifAnim._rect_visible(view, rect) and not under_chrome then
             if view.refresh then
                 view:refresh(nil, rect)
             end
