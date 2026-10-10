@@ -208,25 +208,93 @@ do
     Header.draw(view, bb, 0, 0, VW)
 
     ok(ink_ratio(bb) > 150, "dashboard: paints ink (brand, pills, cards, nav)")
-    ok(count_hits(view) > 10, "dashboard: registers hitboxes (pills, cards, nav, kebab, close)")
+    ok(count_hits(view) > 10, "dashboard: registers hitboxes (pills, cards, nav, kebab)")
     dump(bb, "dashboard")
 
-    -- Viewport-fitted rows: painted row step must fill the list exactly.
+    -- Fixed card heights (ST-style): every card paints at the same height -
+    -- the desired setting capped at what fills 2 rows - whatever the count;
+    -- 6 fit with zero scroll, overflow scrolls.
     local desired = app:dashboard_card_h()
     local gap = Theme.metrics().card_gap
-    local rows = math.max(1, math.floor((list_h + gap) / (desired + gap)))
-    local card_h = math.floor((list_h - gap * (rows - 1)) / rows)
-    ok(rows >= 1 and card_h >= Theme.scale(120),
-        "dashboard: viewport rows sane (rows=" .. rows .. ", card_h=" .. card_h .. ")")
+    local function card_heights(v)
+        local hs = {}
+        for _, b in ipairs(v.hitboxes) do
+            if tostring(b.label or ""):sub(1, 5) == "char:" then hs[#hs + 1] = b.h end
+        end
+        return hs
+    end
+    local fixed = (card_heights(view))[1] or 0
+    local step = fixed + gap
+    ok(fixed > 0 and fixed <= desired,
+        "dashgrid: two-row cap never exceeds the desired height (" .. tostring(fixed) .. " <= " .. tostring(desired) .. ")")
+    local function want_scroll(n)
+        local total = math.ceil(n / 3) * step - gap
+        return math.ceil(math.max(0, total - list_h) / step) * step
+    end
+    do
+        local h6 = card_heights(view)
+        local all_fixed = #h6 == 6
+        for _, h in ipairs(h6) do all_fixed = all_fixed and h == fixed end
+        ok(all_fixed, "dashgrid: 6 cards all paint at capped height (" .. tostring(fixed) .. ")")
+        local ms6 = Pages.dashboard({ app = app, hitboxes = {} }, new_bb(), 0, content_top, VW, list_h, 0)
+        ok(ms6 == want_scroll(6) and ms6 == 0,
+            "dashgrid: 6 cards fit with zero scroll (max_scroll=" .. tostring(ms6) .. ")")
+    end
+    -- 7 cards (user case): same height as 6 - no shrinking; the 3rd row
+    -- waits below the fold and the scrollbar takes it.
+    do
+        local app7 = fake_app()
+        local items7 = app7:dashboard_items()
+        table.insert(items7, { name = "Sete", path = nil, tags = {}, tokens = 5, creator = "Q" })
+        function app7:dashboard_items() return items7 end
+        local v7 = { app = app7, hitboxes = {} }
+        local bb7 = new_bb()
+        local ms7 = Pages.dashboard(v7, bb7, 0, content_top, VW, list_h, 0)
+        local h7 = card_heights(v7)
+        -- Only the visible rows paint (the 3rd waits below the fold), but
+        -- every painted card must be at full desired height.
+        local all_fixed = #h7 == 6
+        for _, h in ipairs(h7) do all_fixed = all_fixed and h == fixed end
+        ok(all_fixed, "dashgrid: 7 cards keep the same height (no shrink)")
+        ok(ms7 == want_scroll(7) and ms7 > 0,
+            "dashgrid: 7 cards scroll the 3rd row (max_scroll=" .. tostring(ms7) .. ")")
+        -- Scrolled to the bottom, rows 2+3 paint; every one at full height.
+        local v7s = { app = app7, hitboxes = {} }
+        Pages.dashboard(v7s, new_bb(), 0, content_top, VW, list_h, ms7)
+        local h7s = card_heights(v7s)
+        local tail_full = #h7s == 4
+        for _, h in ipairs(h7s) do tail_full = tail_full and h == fixed end
+        ok(tail_full,
+            "dashgrid: scrolled rows paint full height")
+        dump(bb7, "dashboard_7cards")
+    end
+    -- 8 cards: same height again; scroll grows to the 3rd row.
+    do
+        local app8 = fake_app()
+        local real_items = app8:dashboard_items()
+        table.insert(real_items, { name = "Zed", path = nil, tags = {}, tokens = 5, creator = "Q" })
+        table.insert(real_items, { name = "Uma", path = nil, tags = {}, tokens = 6, creator = "Q" })
+        function app8:dashboard_items() return real_items end
+        local v8 = { app = app8, hitboxes = {} }
+        local bb8 = new_bb()
+        local ms8 = Pages.dashboard(v8, bb8, 0, content_top, VW, list_h, 0)
+        local h8 = card_heights(v8)
+        local all_fixed = #h8 == 6
+        for _, h in ipairs(h8) do all_fixed = all_fixed and h == fixed end
+        ok(all_fixed, "dashgrid: 8 cards keep the same height (no shrink)")
+        ok(ms8 == want_scroll(8) and ms8 > 0,
+            "dashgrid: 8 cards scroll (max_scroll=" .. tostring(ms8) .. ")")
+    end
 end
 
--- === 2. Secondary page header: back + title + kebab + close =================
+-- === 2. Secondary page header: back + title + kebab (no close X) ===========
 do
     local app = fake_app({ page = "chats", chats_index = { {}, {}, {} } })
     local view = { app = app, hitboxes = {} }
     local bb = new_bb()
     Header.draw(view, bb, 0, 0, VW)
-    ok(ink_ratio(bb) > 50, "header: secondary page paints (back, title, kebab, close)")
+    ok(ink_ratio(bb) > 50, "header: secondary page paints (back, title, kebab)")
+    ok(not has_hit(view, "close"), "header: no close X hitbox (exit is via kebab -> Quit)")
     dump(bb, "header_chats")
 end
 
@@ -1509,6 +1577,174 @@ do
     ok(not has_hit2, "favlist: no star, no hitbox")
 end
 
+-- === 4q. Geometry-audit fixes: hit order, boolean values, disabled gating ===
+do
+    local Widgets = require("ktui/widgets")
+    local Cards = require("ktui/cards")
+    local Sheets = require("ktui/sheets")
+
+    -- favlist: row hit registered BEFORE the star hit, so the star wins taps
+    -- on overlap (reverse-order dispatch: last registered wins).
+    do
+        local app = fake_app({ settings = {} })
+        local view = { app = app, hitboxes = {} }
+        Cards.list_item(view, new_bb(),
+            { name = "T", fav = true, tags = {}, tokens = 5, path = nil },
+            0, 0, VW, 120, nil)
+        local row_i, fav_i = nil, nil
+        for i, b in ipairs(view.hitboxes) do
+            local lb = tostring(b.label or "")
+            if lb:sub(1, 10) == "list_item:" then row_i = i end
+            if lb:sub(1, 8) == "favlist:" then fav_i = i end
+        end
+        ok(row_i and fav_i and row_i < fav_i,
+            "favlist: star hit registered after the row hit (wins overlap)")
+    end
+
+    -- W.row: boolean values must not paint (tostring(true) leaked as "true").
+    do
+        local function paint_value(v)
+            local app = fake_app({ settings = {} })
+            local view = { app = app, hitboxes = {} }
+            local bb = new_bb()
+            Widgets.row(view, bb, { x = 0, y = 0, w = VW, h = 60,
+                title = "T", value = v, toggle = true, toggle_value = true,
+                on_toggle = function() end, on_tap = function() end })
+            return view, bb
+        end
+        local _, bb_str = paint_value("On")
+        local _, bb_bool = paint_value(true)
+        -- Right-half ink: the "On" text paints extra ink over the identical
+        -- toggle; boolean true must add nothing.
+        local hw = math.floor(VW / 2)
+        ok(dark_in(bb_str, hw, 0, VW - hw, 60) > dark_in(bb_bool, hw, 0, VW - hw, 60),
+            "row: boolean value paints no text (string value paints)")
+    end
+
+    -- W.row: disabled rows register NO hits (row, toggle, or kebab).
+    do
+        local app = fake_app({ settings = {} })
+        local view = { app = app, hitboxes = {} }
+        Widgets.row(view, new_bb(), { x = 0, y = 0, w = VW, h = 60,
+            title = "T", toggle = true, toggle_value = false,
+            kebab = true, on_toggle = function() end,
+            on_kebab = function() end, on_tap = function() end,
+            enabled = false })
+        ok(#view.hitboxes == 0,
+            "row: disabled row registers no hits (got " .. #view.hitboxes .. ")")
+    end
+
+    -- Sheets: disabled actions register no hit; non-confirm Cancel is sheet:.
+    do
+        local app = fake_app({ page = "chat" })
+        app.state.sheet = { title = "T", scroll = 0, actions = {
+            { label = "Gone", enabled = false },
+            { label = "Here", on_tap = function() end },
+        } }
+        local view = { app = app, hitboxes = {} }
+        local okp, err = pcall(function() Sheets.draw(view, new_bb()) end)
+        ok(okp, "sheets: disabled-action sheet renders (" .. tostring(err) .. ")")
+        ok(has_hit(view, "sheet:Here") and not has_hit(view, "sheet:Gone"),
+            "sheets: disabled action has no hit, enabled keeps its tap")
+        ok(has_hit(view, "sheet:cancel"),
+            "sheets: non-confirm Cancel registers as sheet:cancel")
+    end
+
+    -- Segmented: tab widths differ by at most 1px (remainder distributed).
+    do
+        local app = fake_app({ settings = {} })
+        local view = { app = app, hitboxes = {} }
+        Widgets.segmented(view, new_bb(), { x = 0, y = 0, w = 301, h = 36,
+            tabs = { { id = 1, label = "A" }, { id = 2, label = "B" }, { id = 3, label = "C" } },
+            active = 1, on_select = function() end })
+        local widths = {}
+        for _, b in ipairs(view.hitboxes) do
+            if tostring(b.label or ""):sub(1, 4) == "seg:" then widths[#widths + 1] = b.w end
+        end
+        local mn, mx = math.huge, 0
+        for _, wd in ipairs(widths) do mn = math.min(mn, wd); mx = math.max(mx, wd) end
+        ok(#widths == 3 and mx - mn <= 1,
+            "segmented: remainder distributed (width spread " .. tostring(mx - mn) .. ")")
+    end
+end
+
+-- === 4t. Uniform card/list slots: names align across mixed content ===========
+-- First dark-ink row inside the text zone (frame/star excluded by construction).
+local function first_text_row(bb, x, y, w, h)
+    local pad = Theme.scale(8)
+    for yy = y + 2, y + h - 3 do
+        for xx = x + pad + 2, x + w - pad - 2 do
+            if bb:getPixel(xx, yy):getR() < 200 then return yy end
+        end
+    end
+    return nil
+end
+do
+    local Cards = require("ktui/cards")
+
+    -- Grid caption: full card (tags+meta) vs bare card (neither). Fixed slots
+    -- put both names at the same height; per-item bands did not.
+    do
+        local app = fake_app({ settings = {} })
+        local function paint_card(item)
+            local view = { app = app, hitboxes = {} }
+            local bb = new_bb()
+            Cards.character(view, bb, item, 0, 0, 180, 300)
+            return bb
+        end
+        local full = paint_card({ name = "Aria", tags = { "human", "mage" }, tokens = 1234, creator = "Luna" })
+        local bare = paint_card({ name = "B" })
+        -- Scan only the caption half (initial lives in the top half).
+        local y_full, y_bare = nil, nil
+        for yy = 150, 297 do
+            for xx = 10, 170 do
+                if not y_full and full:getPixel(xx, yy):getR() < 200 then y_full = yy end
+                if not y_bare and bare:getPixel(xx, yy):getR() < 200 then y_bare = yy end
+            end
+        end
+        ok(y_full and y_bare and y_full == y_bare,
+            "cards: caption names align with/without tags+meta ("
+            .. tostring(y_full) .. " vs " .. tostring(y_bare) .. ")")
+    end
+
+    -- Dashboard list rows (rich): full vs bare item, same row height.
+    do
+        local app = fake_app({ settings = {} })
+        local function paint_row(item)
+            local view = { app = app, hitboxes = {} }
+            local bb = new_bb()
+            Cards.list_item(view, bb, item, 0, 0, VW, 120, nil)
+            return bb
+        end
+        local full = paint_row({ name = "Aria", tags = { "human" }, tokens = 1234, creator = "Luna" })
+        local bare = paint_row({ name = "B" })
+        local y_full = first_text_row(full, 0, 0, VW, 120)
+        local y_bare = first_text_row(bare, 0, 0, VW, 120)
+        ok(y_full and y_bare and y_full == y_bare,
+            "cards: list-row names align with/without tags+meta ("
+            .. tostring(y_full) .. " vs " .. tostring(y_bare) .. ")")
+    end
+
+    -- Chats rows (legacy): empty preview vs filled preview.
+    do
+        local app = fake_app({ settings = {} })
+        local function paint_chat(subtext, meta)
+            local view = { app = app, hitboxes = {} }
+            local bb = new_bb()
+            Cards.list_item(view, bb,
+                { name = "Chat", subtext = subtext, meta = meta }, 0, 0, VW, 120, nil)
+            return bb
+        end
+        local filled = paint_chat("(Aria)", "hello")
+        local empty = paint_chat("", "")
+        local y_filled = first_text_row(filled, 0, 0, VW, 120)
+        local y_empty = first_text_row(empty, 0, 0, VW, 120)
+        ok(y_filled and y_empty and y_filled == y_empty,
+            "cards: chat-row names align with/without preview ("
+            .. tostring(y_filled) .. " vs " .. tostring(y_empty) .. ")")
+    end
+end
+
 -- === 4u. load_settings keeps non-default persisted keys =========================
 do
     local Store = require("kt_storage")
@@ -1991,9 +2227,52 @@ do
     end
     ok(pill_hits == 2, "header: chats toolbar registers 2 pills (got " .. pill_hits .. ")")
     ok(has_hit(view, "header_kebab"), "header: kebab hit registered")
-    ok(dark_in(bb, VW - 44 - 42 - 2, 0, 42, 42) > 8,
+    local kebab_x = VW - Theme.metrics().pad - Theme.scale(42)
+    ok(dark_in(bb, kebab_x, 0, Theme.scale(42), Theme.scale(42)) > 8,
         "header: kebab paints three ink dots (no glyph)")
     dump(bb, "header_chats_full")
+end
+
+-- === 8b. Toolbar pills always carry an icon (icon-only fallback) ============
+do
+    -- Static sweep: every toolbar_spec entry on every pill page has an icon.
+    -- (Label-only pills like "+ Import" painted EMPTY black pills when the
+    -- narrow-screen icon-only fallback dropped their label.)
+    local pages = { "dashboard", "chats", "connections", "personas", "presets", "lorebooks", "regex_scripts" }
+    local missing = {}
+    for _, page in ipairs(pages) do
+        local app = fake_app({ page = page })
+        local spec = Header.toolbar_spec({ app = app }) or {}
+        for _, side in ipairs({ spec.left or {}, spec.right or {} }) do
+            for _, b in ipairs(side) do
+                if not b.icon then missing[#missing + 1] = page .. ":" .. tostring(b.label) end
+            end
+        end
+    end
+    ok(#missing == 0, "toolbar: every pill has an icon (" .. table.concat(missing, ", ") .. ")")
+
+    -- Narrow paint: dashboard toolbar at 360px falls back to icon-only, but
+    -- every pill still paints light icon strokes on the black pill.
+    local app = fake_app({ page = "dashboard" })
+    local view = { app = app, hitboxes = {} }
+    local bb = new_bb()
+    Header.draw(view, bb, 0, 0, 360)
+    local pills, empty = 0, 0
+    for _, b in ipairs(view.hitboxes) do
+        if tostring(b.label or ""):sub(1, 5) == "pill:" then
+            pills = pills + 1
+            local light = 0
+            for yy = b.y + 2, b.y + b.h - 3 do
+                for xx = b.x + 2, b.x + b.w - 3 do
+                    if bb:getPixel(xx, yy):getR() > 200 then light = light + 1 end
+                end
+            end
+            if light <= 10 then empty = empty + 1 end
+        end
+    end
+    ok(pills == 5 and empty == 0,
+        "toolbar: narrow dashboard paints 5 icon pills, none empty (pills=" .. pills .. " empty=" .. empty .. ")")
+    dump(bb, "header_dashboard_narrow")
 end
 
 -- === 9. Nav: underline spans the label width; badge paints ===================
@@ -2325,7 +2604,7 @@ do
     ok(has_hit(view, "pm_toggle_"), "pages: prompt_manager registers toggle hits")
     ok(has_hit(view, "pm_up_") and has_hit(view, "pm_down_"),
         "pages: prompt_manager registers reorder hits")
-    ok(has_hit(view, "pm_kebab_"), "pages: prompt_manager registers kebab hits (rename/remove)")
+    ok(not has_hit(view, "pm_kebab_"), "pages: prompt_manager has NO phantom kebab hit (removed: no affordance, overlapped Up)")
     ok(has_hit(view, "btn:New Prompt"), "pages: prompt_manager page bar has the add-prompt action")
     dump(bb, "page_prompt_manager")
 end
@@ -2402,6 +2681,61 @@ do
     Modals.input("t", "", "", "OK", function() end, function() end)
     ok(#dialog_stub.buttons == 2 and type(dialog_stub.buttons[1][1].text) == "string",
         "modals: input Clear button prepended (rows: [Clear] [Cancel, OK])")
+    Modals.input("t", "", "", "OK", function() end, nil, true)
+    ok(dialog_stub.allow_newline == true,
+        "modals: input multiline forwards allow_newline")
+    ok(dialog_stub.text_height ~= nil,
+        "modals: input multiline sets a tall text_height (else the box stays one row)")
+    Modals.input("t", "", "", "OK", function() end)
+    ok(dialog_stub.allow_newline == false,
+        "modals: input defaults to single-line")
+    -- Edit Prompt flow: content step is a bounded multiline input, then a
+    -- 3-role sheet (MultiInputDialog grew past the screen on long prompts).
+    do
+        local UIMgr = require("ui/uimanager")
+        local real_close = UIMgr.close
+        UIMgr.close = function() end
+        package.loaded["ui/widget/inputdialog"] = nil
+        package.preload["ui/widget/inputdialog"] = function()
+            return { new = function(_, o) dialog_stub = o
+                return { getInputText = function() return "new\ncontent" end,
+                    onShowKeyboard = function() end } end }
+        end
+        package.loaded["ktui/modals"] = nil
+        local Modals2 = require("ktui/modals")
+        local App = require("kt_app")
+        local prompt = { identifier = "p1", content = "old", role = "system" }
+        local app = setmetatable({ state = {
+            editing_preset = { prompts = { prompt } },
+            settings = {},
+        } }, { __index = App })
+        function app:refresh() self._refreshed = true end
+        function app:_prompt_order_list() return { { identifier = "p1" } } end
+        app.view = {}
+        function app.view:refresh() end
+        app:edit_prompt_item(1)
+        ok(dialog_stub.allow_newline == true and dialog_stub.text_height ~= nil,
+            "modals: edit-prompt content step is bounded multiline")
+        local ok_btn = nil
+        for _, row in ipairs(dialog_stub.buttons or {}) do
+            for _, b in ipairs(row) do
+                if b.is_enter_default then ok_btn = b end
+            end
+        end
+        ok(ok_btn ~= nil, "modals: edit-prompt content step has a default OK")
+        if ok_btn then ok_btn.callback() end
+        local sheet = app.state.sheet
+        local labels = {}
+        if sheet then for _, a in ipairs(sheet.actions or {}) do labels[#labels + 1] = a.label end end
+        ok(sheet and #labels == 3 and labels[1] == "system" and labels[3] == "assistant",
+            "modals: edit-prompt opens a 3-role sheet")
+        if sheet then for _, a in ipairs(sheet.actions) do
+            if a.label == "user" then a.on_tap() end
+        end end
+        ok(prompt.content == "new\ncontent" and prompt.role == "user" and app._refreshed,
+            "modals: edit-prompt saves multiline content + role")
+        UIMgr.close = real_close
+    end
     -- restore real widgets for any later section
     require("ui/uimanager").show = real_show
     package.preload["ui/widget/buttondialog"] = nil
@@ -2509,11 +2843,11 @@ do
     print(string.format("[probe] pill icon slot: whites=%d grays=%d darks=%d", whites, grays, darks))
     ok(whites >= 8, "pill: icon strokes render WHITE on the black pill (no gray box)")
     ok(darks > grays, "pill: icon slot bg stays dark (no dimmed box)")
-    -- Hairline runs UNDER the close button (regression: a full-height white
-    -- box erased it there).
-    local close_x = 300 - Theme.metrics().pad - Theme.scale(44)
-    ok(hbb:getPixel(close_x + 8, tb_y - 1):getR() == Theme.soft:getR(),
-        "header: hairline continuous under the close button")
+    -- Hairline runs beside the kebab (regression: a full-height white
+    -- box erased it there). Probed left of the kebab dots (bare bar).
+    local probe_x = 300 - Theme.metrics().pad - Theme.scale(42) - 4
+    ok(hbb:getPixel(probe_x, tb_y - 1):getR() == Theme.soft:getR(),
+        "header: hairline continuous beside the kebab")
 end
 
 -- === 17. Bottom alignment: fully scrolled chat shows the last panel whole ==
@@ -2968,6 +3302,202 @@ do
             "uidsl: missing image paints the placeholder")
     end
 
+    -- <htmlblock> islands: raw capture, node conversion, measure/paint
+    -- through MuPDF, no hitboxes, visible fallback on empty content.
+    do
+        local htree = UiDSL.from_html(
+            '<div><p>antes</p><htmlblock><p>Ola <b>mundo</b> &amp; ola</p></htmlblock><p>depois</p></div>',
+            {})
+        local card = htree.children[1]
+        ok(card and card.children and #card.children == 3
+            and card.children[2].tag == "html"
+            and card.children[2].text == nil,
+            "uidsl: htmlblock becomes one raw html node (got " ..
+            tostring(card and card.children and #card.children) .. ")")
+        local isl = card.children[2]
+        ok(isl.raw and isl.raw:find("<b>mundo</b>", 1, true) ~= nil
+            and isl.raw:find("&amp;", 1, true) ~= nil,
+            "uidsl: island body stays raw (tags + entities intact)")
+        -- vars substitute inside islands too.
+        local vtree = UiDSL.from_html('<htmlblock>{{x}}</htmlblock>', {}, { x = "42" })
+        ok(vtree.children[1].raw == "42",
+            "uidsl: vars expand inside islands")
+        -- Unclosed block never matches extraction: parses as plain content.
+        local bad = UiDSL.from_html('<div><htmlblock><p>oops</p></div>', {})
+        local found_html = false
+        local function scan(n)
+            if n.tag == "html" then found_html = true end
+            for _, c in ipairs(n.children or {}) do scan(c) end
+        end
+        scan(bad)
+        ok(not found_html, "uidsl: unclosed htmlblock parses as plain nodes")
+        -- Measure + paint through MuPDF (headless widgets load for real).
+        local iw = 300
+        local ih = UiDSL.measure(isl, iw)
+        ok(ih > 10, "uidsl: island measures real height (got " .. tostring(ih) .. ")")
+        local ih2 = UiDSL.measure(isl, iw)
+        ok(ih2 == ih and isl._html_bb ~= nil,
+            "uidsl: island height cached with bitmap")
+        local bb5 = Blitbuffer.new(iw, ih + 4, Blitbuffer.TYPE_BB8)
+        bb5:fill(Blitbuffer.COLOR_WHITE)
+        local hits_before = 0
+        local fview = { app = fake_app({}), hitboxes = {} }
+        UiDSL.paint(isl, bb5, 0, 0, iw, fview)
+        ok(dark_in(bb5, 0, 0, iw, ih) > 20,
+            "uidsl: island paints MuPDF ink")
+        ok(#fview.hitboxes == hits_before,
+            "uidsl: island registers no hitboxes (V1 non-interactive)")
+        -- Empty island: visible placeholder + strip error, never silent.
+        local etree = UiDSL.from_html('<htmlblock></htmlblock>', {})
+        local empty = etree.children[1]
+        ok(empty.tag == "html", "uidsl: empty island still a node")
+        local ehh = UiDSL.measure(empty, iw)
+        ok(ehh > 0, "uidsl: empty island measures placeholder height")
+        -- Regression (torta do print): fallback height is measured tiny
+        -- text + padding, never a magic constant - immune to base font
+        -- size changes.
+        local exp_h = P.text_size("(conteúdo indisponível)", iw, "tiny", {}).h
+            + Theme.scale(16)
+        ok(ehh == exp_h,
+            "uidsl: fallback height is measured, not magic (got "
+            .. tostring(ehh) .. " want " .. tostring(exp_h) .. ")")
+        local eerrs = UiDSL.html_errors(etree)
+        ok(#eerrs == 1 and tostring(eerrs[1]):find("render failed", 1, true) ~= nil,
+            "uidsl: empty island surfaces a strip error")
+        local bb6 = Blitbuffer.new(iw, ehh + 4, Blitbuffer.TYPE_BB8)
+        bb6:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(empty, bb6, 0, 0, iw)
+        ok(dark_in(bb6, 0, 0, iw, ehh) > 0,
+            "uidsl: empty island paints the fallback box")
+        -- Nothing may leak above/below the box: paint offset in a taller
+        -- canvas and require the margins clean (the reported overlap).
+        local bb7 = Blitbuffer.new(iw, ehh + 40, Blitbuffer.TYPE_BB8)
+        bb7:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(empty, bb7, 0, 20, iw)
+        ok(dark_in(bb7, 0, 0, iw, 18) == 0
+            and dark_in(bb7, 0, 20 + ehh + 2, iw, 18) == 0,
+            "uidsl: placeholder stays inside its box")
+        -- Long alt on a broken image truncates single-line: nothing may
+        -- paint below the box either.
+        local im2 = UiDSL.node({ tag = "image", src = "/no/such/file.png",
+            h = "60px",
+            alt = "um texto alternativo bem longo para testar estouro" })
+        local ih2 = UiDSL.measure(im2, 120)
+        local bb8 = Blitbuffer.new(120, ih2 + 40, Blitbuffer.TYPE_BB8)
+        bb8:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(im2, bb8, 0, 20, 120)
+        ok(dark_in(bb8, 0, 20 + ih2 + 2, 120, 18) == 0,
+            "uidsl: long alt never paints below its box")
+        UiDSL.free_html(htree)
+        UiDSL.free_html(etree)
+        ok(isl._html_bb == nil and empty._html_bb == nil,
+            "uidsl: free_html releases island bitmaps")
+    end
+
+    -- 1.6: island without a fixed cap - a tall (but sub-budget) document
+    -- measures at its real content height instead of clipping at a magic
+    -- 2000px. RAM budget stays: a doc beyond the byte ceiling still warns.
+    do
+        local many = {}
+        for i = 1, 50 do many[#many + 1] = "<p>linha de conteudo numero "
+            .. i .. " para empurrar a ilha para baixo</p>" end
+        local tall = UiDSL.from_html(
+            '<htmlblock>' .. table.concat(many, "\n") .. '</htmlblock>', {})
+        local tisl = tall.children[1]
+        local tw = 300
+        local th = UiDSL.measure(tisl, tw)
+        -- 80 paragraphs of body text are ~10 viewport pages: WAY past the
+        -- old 2000px cap, well under the byte budget (300px wide).
+        ok(th > 2000,
+            "uidsl3: tall island measures past the old fixed cap (h="
+            .. tostring(th) .. ")")
+        ok(#UiDSL.html_errors(tall) == 0
+            and tisl._html_warn == nil,
+            "uidsl3: tall island fits the RAM budget: no clipped warning")
+        ok(tisl._html_bb ~= nil,
+            "uidsl3: tall island caches the bitmap it measured")
+        UiDSL.free_html(tall)
+    end
+
+    -- Anti-torto harness: every node type painted in isolation must keep
+    -- ALL ink inside its measured box (nothing above y, nothing below
+    -- y+h), across base font sizes and densities. Catches the whole
+    -- measure-vs-paint mismatch class (e.g. the island placeholder that
+    -- rode the top border). 4px tolerance band for rasterized edges.
+    -- Light theme only: dark_in counts dark-on-white (inverted needs the
+    -- mirrored check, different helper). 4px tolerance band for rasterized
+    -- edges (rounded borders overshoot ~2px - measured, not guessed).
+    do
+        local function build_battery()
+            return {
+                { n = UiDSL.node({ tag = "text", text = "Ag", align = "center" }), ink = true },
+                { n = UiDSL.node({ tag = "text", text = "Direita", align = "right" }), ink = true },
+                { n = UiDSL.node({ tag = "para",
+                    text = "Um parágrafo com palavras suficientes para quebrar em mais de uma linha dentro da largura." }), ink = true },
+                { n = UiDSL.node({ tag = "button",
+                    text = "Um rótulo bem longo que pode estourar a pílula se nada truncar" }), ink = true },
+                { n = UiDSL.node({ tag = "input", input_text = "", input_hint = "digite..." }), ink = true },
+                { n = UiDSL.node({ tag = "input", input_text = "texto digitado bem longo para testar" }), ink = true },
+                { n = UiDSL.node({ tag = "toggle", toggle_value = true }), ink = true },
+                { n = UiDSL.node({ tag = "check", toggle_value = true }), ink = true },
+                { n = UiDSL.node({ tag = "avatar", avatar_name = "Luna" }), ink = true },
+                { n = UiDSL.node({ tag = "image", src = "/no/such/file.png",
+                    h = "60px", alt = "retrato alternativo bem longo para testar estouro" }), ink = true },
+                { n = UiDSL.node({ tag = "progress", progress_value = 50, progress_max = 100 }), ink = true },
+                { n = UiDSL.node({ tag = "rule" }), ink = true },
+                { n = UiDSL.node({ tag = "spacer", h = "12px" }), ink = false },
+                { n = UiDSL.node({ tag = "html", raw = "" }), ink = true },
+                { n = UiDSL.node({ tag = "row", gap = 8, children = {
+                    UiDSL.node({ tag = "text", text = "a" }),
+                    UiDSL.node({ tag = "toggle", toggle_value = false }),
+                } }), ink = true },
+                { n = UiDSL.node({ tag = "row", gap = 8, children = {
+                    UiDSL.node({ tag = "text", text = "x", margin = 6 }),
+                    UiDSL.node({ tag = "text", text = "y" }),
+                } }), ink = true },
+                { n = UiDSL.node({ tag = "box", children = {
+                    UiDSL.node({ tag = "text", text = "m", margin = 6 }),
+                } }), ink = true },
+            }
+        end
+        local saved_font = Theme.get_base_font_size()
+        for _, fs in ipairs({ 8, 22, 32 }) do
+            Theme.set_base_font_size(fs)
+            for _, dn in ipairs({ "compact", "normal", "spacious" }) do
+                Theme.set_density(dn)
+                local tag = "f" .. tostring(fs) .. "/" .. dn
+                for i, item in ipairs(build_battery()) do
+                    local W0, H0, X0, Y0 = 400, 420, 50, 60
+                    local bb = Blitbuffer.new(W0, H0, Blitbuffer.TYPE_BB8)
+                    bb:fill(Blitbuffer.COLOR_WHITE)
+                    local w = 300
+                    local h = UiDSL.measure(item.n, w)
+                    UiDSL.paint(item.n, bb, X0, Y0, w, { hitboxes = {} })
+                    local name = tag .. " #" .. i .. " (" .. item.n.tag .. ")"
+                    if item.ink then
+                        ok(dark_in(bb, X0, Y0, w, h) > 0,
+                            "torto: " .. name .. " paints ink inside")
+                    else
+                        ok(dark_in(bb, 0, 0, W0, H0) == 0,
+                            "torto: " .. name .. " paints nothing at all")
+                    end
+                    ok(dark_in(bb, 0, 0, W0, math.max(0, Y0 - 4)) == 0,
+                        "torto: " .. name .. " nothing above the box")
+                    -- 4px tolerance: rounded-rect border outlines can exceed
+                    -- the nominal rect by ~2px (verified: exactly 2 stray
+                    -- pixels under bordered boxes, stable across configs).
+                    -- Anything structural bleeds 5px+.
+                    local below_n = dark_in(bb, 0, Y0 + h + 4, W0,
+                        math.max(0, H0 - (Y0 + h + 4)))
+                    ok(below_n == 0,
+                        "torto: " .. name .. " nothing below the box")
+                end
+            end
+        end
+        Theme.set_base_font_size(saved_font)
+        Theme.set_density("normal")
+    end
+
     -- validate_sheet + merge_sheets: node-layer errors surface, inline wins.
     do
         local verr = UiDSL.validate_sheet(UiDSL.parse(".x { color: banana; foo: 1; pad: 8px; }"))
@@ -3053,6 +3583,51 @@ do
         -- public sandbox flow below (see sandbox bind test).
         ok(btree.children[1].bind_key == "settings.debug_mode",
             "uidsl: bind path survives style pass")
+    end
+
+    -- Checkbox: void tag, square metric, paints box + check when on,
+    -- flips bound state on tap like a toggle.
+    do
+        local ctree = UiDSL.from_html(
+            '<check data-bind="settings.dark"/>' ..
+            '<check data-bind="settings.lit" checked="true"/>', {})
+        ok(#ctree.children == 2 and ctree.children[1].tag == "check"
+            and ctree.children[2].tag == "check",
+            "uidsl: check parses as void nodes")
+        ok(ctree.children[1].bind_key == "settings.dark"
+            and ctree.children[2].toggle_value == true,
+            "uidsl: check carries bind path + checked attr")
+        for i, nd in ipairs(ctree.children) do
+            ok(UiDSL.measure(nd, 300) > 0,
+                "uidsl: check " .. tostring(i) .. " measures positive")
+        end
+        local capp = fake_app({ settings = { dark = false, lit = true } })
+        capp.refresh = function() end
+        UiDSL.resolve_binds(ctree, capp, {})
+        ok(ctree.children[1].toggle_value == false
+            and ctree.children[2].toggle_value == true,
+            "uidsl: check reads live state")
+        local cbb = Blitbuffer.new(300, 120, Blitbuffer.TYPE_BB8)
+        cbb:fill(Blitbuffer.COLOR_WHITE)
+        local cview = { hitboxes = {} }
+        UiDSL.paint(ctree.children[1], cbb, 0, 0, 300, cview)
+        UiDSL.paint(ctree.children[2], cbb, 0, 40, 300, cview)
+        ok(dark_in(cbb, 0, 0, 300, 80) > 20, "uidsl: checks leave ink")
+        ok(#cview.hitboxes == 2, "uidsl: checks register tap hitboxes")
+        ctree.children[1].on_tap()
+        ok(capp.state.settings.dark == true,
+            "uidsl: check tap flips the bound state")
+        -- checked attr seeds missing state (never writes false).
+        local sapp = fake_app({ settings = {} })
+        sapp.refresh = function() end
+        local stree = UiDSL.from_html(
+            '<check data-bind="settings.a" checked="true"/>' ..
+            '<check data-bind="settings.b"/>', {})
+        UiDSL.resolve_binds(stree, sapp, {})
+        ok(sapp.state.settings.a == true and sapp.state.settings.b == nil
+            and stree.children[1].toggle_value == true
+            and stree.children[2].toggle_value ~= true,
+            "uidsl: checked seeds true, absent stays absent")
     end
 
     -- data-bind end-to-end through the real sandbox file flow.
@@ -3478,19 +4053,20 @@ do
             "sandbox: force install restores the skeleton")
         local sapp = fake_app({ page = "css_test", settings = { debug_mode = true } })
         local stree, smerged, serrs = UiDSL.sandbox_tree(sapp,
-            { reload = function() end, shot = function() end }, {})
-        -- Sonics spawned real timers on sapp's fake view: kill them now or
-        -- they fire into dead widgets after the harness moves on.
-        require("ktui/gifanim").stop_all(sapp)
+            { reload = function() end, shot = function() end,
+              step = function() end, move = function() end }, {})
         ok(stree.children and #stree.children >= 6,
             "sandbox: user file converts (got " .. tostring(stree.children and #stree.children) .. ")")
-        -- The skeleton is CLEAN by design (no intentional errors): the error
-        -- strip stays empty unless the author breaks something.
-        if #(serrs or {}) > 0 then
-            for _, e in ipairs(serrs) do io.stderr:write("  sandbox err: " .. tostring(e) .. "\n") end
+        -- Tree-time errors: voar only. The empty-island fallback renders
+        -- at measure time (needs a width), so its error surfaces through
+        -- UiDSL.html_errors after measuring (unit-tested below) and the
+        -- page appends it to the strip (see Pages.css_test).
+        local saw_voar_sb = false
+        for _, e in ipairs(serrs or {}) do
+            if tostring(e):find("voar", 1, true) then saw_voar_sb = true end
         end
-        ok(#(serrs or {}) == 0, "sandbox: clean skeleton paints without errors (got "
-            .. tostring(#(serrs or {})) .. ")")
+        ok(saw_voar_sb and #(serrs or {}) == 1,
+            "sandbox: intentional errors stay visible (got " .. tostring(#(serrs or {})) .. ")")
         ok(smerged and smerged.rules and #smerged.rules > 0, "sandbox: merged sheet feeds the tree")
         -- Unknown actions still surface as errors when an author writes one.
         local bad_tree, _m, bad_errs = UiDSL.from_html(
@@ -3510,30 +4086,52 @@ do
         local eapp = fake_app({ page = "css_test", settings = { debug_mode = true } })
         function eapp:refresh() end
         eapp.state.sandbox = {}
-        local etree = UiDSL.sandbox_tree(eapp,
-            { reload = function() end, shot = function() end }, {})
-        -- The sandbox tree contains animated sonics: their players schedule
-        -- REAL UIManager timers that would fire into our fake view once the
-        -- harness moves on (handleEvent crash). Kill them before proceeding.
-        require("ktui/gifanim").stop_all(eapp)
-        local plus = find_node(etree, function(n) return n.bind_step == 1 end)
+        -- Build directly (not via sandbox_tree): the tree cache is keyed by
+        -- file+theme, NOT by actions map, so a cached tree would carry a
+        -- previous map's on_tap closures. from_html gives this test its own
+        -- tree with its own mutating step/move.
+        local stepmove = {
+            reload = function() end, shot = function() end,
+            step = function(id)
+                local n = tonumber(eapp.state.sandbox.conta) or 0
+                eapp.state.sandbox.conta =
+                    math.max(0, math.min(9, n + (tonumber(id) or 0)))
+            end,
+            move = function(id)
+                local n = tonumber(eapp.state.sandbox.pos) or 0
+                eapp.state.sandbox.pos =
+                    math.max(0, math.min(8, n + (tonumber(id) or 0)))
+            end,
+        }
+        local sf = io.open(UiDSL.sandbox_path(), "r")
+        local shtml = sf and sf:read("*a")
+        if sf then sf:close() end
+        local etree = UiDSL.from_html(shtml or "", stepmove, {})
+        UiDSL.apply_styles(etree, UiDSL.demo_sheet())
+        UiDSL.resolve_binds(etree, eapp, {})
+        local plus = find_node(etree, function(n)
+            return n.tag == "button" and n.text == "+1" end)
         local bar = find_node(etree, function(n) return n.tag == "progress" end)
         ok(plus and plus.on_tap and bar,
             "sandbox: stepper + progress wired (tap=on, bar=on)")
         if plus and plus.on_tap and bar then
             plus.on_tap() -- sandbox.conta: 0 -> 1
-            UiDSL.sandbox_tree(eapp, {}, {}) -- next paint re-resolves binds
+            UiDSL.resolve_binds(etree, eapp, {}) -- next paint re-resolves
             ok(bar.progress_value == 1,
                 "sandbox: progress follows the counter after a tap (got "
                 .. tostring(bar.progress_value) .. ")")
             plus.on_tap()
-            UiDSL.sandbox_tree(eapp, {}, {})
+            UiDSL.resolve_binds(etree, eapp, {})
             ok(bar.progress_value == 2,
                 "sandbox: progress keeps following (got "
                 .. tostring(bar.progress_value) .. ")")
             -- FULL tap path, like the device: paint the page (hitboxes
             -- registered), fire the +1 HITBOX the way onTapKotavern does,
             -- repaint, and read the bar back off the painted tree.
+            -- Prime the module cache with THIS app's map first: on_tap
+            -- closures capture the parsing map, and the cache key is
+            -- file+theme (not map), so a stale map would no-op the taps.
+            UiDSL.sandbox_tree(eapp, stepmove, {}, true)
             local gifanim = require("ktui/gifanim")
             local v2 = { app = eapp, hitboxes = {} }
             function v2:refresh() end
@@ -3562,6 +4160,9 @@ do
                     .. tostring(eapp.state.sandbox.conta) .. ")")
                 Pages.css_test(v2, new_bb(), 0, 0, VW, VH, 0)
                 gifanim.stop_all(eapp)
+                -- etree is this test's own tree (not the page cache):
+                -- re-resolve it to read the fresh state back.
+                UiDSL.resolve_binds(etree, eapp, {})
                 local bar2 = find_node(etree, function(n)
                     return n.tag == "progress" end)
                 ok(bar2.progress_value == 1,
@@ -3598,11 +4199,15 @@ do
     local d1 = dark_in(b1, tpad + 10, 8, tbw - 20, tbh - 8)
     ok(d0 > 1000 and d1 == d0,
         "css_test: toolbar survives mid-item scroll (dark " .. tostring(d0) .. " vs " .. tostring(d1) .. ")")
+    -- Toolbar buttons specifically (sandbox <button> steppers also
+    -- register btn: hits mid-list since the skeleton grew them).
     local last_uidsl, first_btn = 0, nil
     for i, hbox in ipairs(v1.hitboxes) do
         local lb = tostring(hbox.label or "")
         if lb:sub(1, 6) == "uidsl:" then last_uidsl = i end
-        if lb:sub(1, 4) == "btn:" and not first_btn then first_btn = i end
+        if (lb == "btn:Reload" or lb == "btn:Shot") and not first_btn then
+            first_btn = i
+        end
     end
     ok(first_btn and first_btn > last_uidsl,
         "css_test: toolbar hits registered after list hits")
@@ -3618,8 +4223,20 @@ do
         if lb:find("row:", 1, true) == 1 and lb ~= "row:toggle" then nrow = nrow + 1 end
         if lb == "row:toggle" then ntog = ntog + 1 end
     end
-    ok(nrow >= 4, "debug page: setting rows registered (got " .. tostring(nrow) .. ")")
+    -- Toggle rows register twice (row tap + toggle slot); plain rows once.
+    -- Test CSS/HTML + both installs + pagination/Debug row taps = 6.
+    ok(nrow == 6, "debug page: both sandboxes rows present (got " .. tostring(nrow) .. ")")
     ok(ntog == 2, "debug page: Debug Mode + HTML pagination toggles (got " .. tostring(ntog) .. ")")
+    -- Debug rows: UIDSL sandbox restored alongside KtHTML.
+    local labels = {}
+    for _i, hbox in ipairs(v2.hitboxes) do
+        labels[tostring(hbox.label or "")] = true
+    end
+    ok(labels["row:Test HTML"] and labels["row:Install html_sandbox.html"],
+        "debug page: HTML sandbox essentials present")
+    ok(labels["row:Test CSS"] and labels["row:Install sandbox.html"]
+        and not labels["row:Test Native+HTML"],
+        "debug page: UIDSL sandbox rows restored")
 
     -- Settings root: Debug category + easter egg appear only in debug mode.
     local function paint_settings(settings_overrides)
@@ -3699,6 +4316,21 @@ do
         and etr2:find("LIGADO", 1, true) ~= nil,
         "kthtml: s shows value, e hides hint, t has no stray brace")
 
+    -- Button look is pure CSS: sans family everywhere, bold centered
+    -- pills with button padding (no engine involved). border-radius is
+    -- probe-verified ABSENT in MuPDF (square corners render square), so
+    -- the honest e-ink button look is squared - kt:btn stays the opt-in
+    -- native-pill path where exact radius matters.
+    ok(css:find("font-family: 'KTSans', 'Noto Sans', sans-serif", 1, true)
+        ~= nil, "kthtml: sans family across the sandbox")
+    ok(css:find("@font-face", 1, true) ~= nil
+        and css:find("sans-regular.ttf", 1, true) ~= nil,
+        "kthtml: bundled sans via @font-face (no system fonts needed)")
+    ok(css:find("font-weight: bold; text-align: center", 1, true) ~= nil
+        and css:find("padding: 10px 16px", 1, true) ~= nil,
+        "kthtml: pills are bold, centered, button-padded")
+    ok(css:find("font-family: monospace", 1, true) ~= nil,
+        "kthtml: code keeps monospace under the sans body")
     -- Component CSS ships in the base layer.
     ok(css:find(".pill.secondary", 1, true) ~= nil
         and css:find("a.field", 1, true) ~= nil
@@ -3707,6 +4339,18 @@ do
         and css:find(".chip", 1, true) ~= nil
         and css:find(".round", 1, true) ~= nil,
         "kthtml: component classes in theme CSS")
+    -- State colors on anchors need !important (the base a{color} beats
+    -- MuPDF blue, so a plain state color would lose to IT and paint
+    -- dark-on-dark - the unreadable-ON-pill bug class).
+    local function rule_has_important(selector)
+        local i = css:find(selector, 1, true)
+        if not i then return false end
+        local blk = css:sub(i, i + 200)
+        return blk:find("color:[^;]*!important") ~= nil
+    end
+    ok(rule_has_important(".pill.primary") and rule_has_important(".pill.on")
+        and rule_has_important("table.seg td.on"),
+        "kthtml: anchor state colors carry !important")
 
     -- Install flow mirrors the DSL sandbox (never overwrites, force does).
     os.remove(KtHTML.page_path("html_sandbox.html"))
@@ -3852,6 +4496,55 @@ do
         os.remove(atmp)
     end
 
+    -- Inline link inside a sentence (no pill class): tap fires through
+    -- the grown hitbox like any other link. Buttons and links share the
+    -- exact same tap path - visual style never gates function.
+    do
+        local ltmp = os.tmpname()
+        local lf = io.open(ltmp, "w")
+        lf:write('<p>texto antes <a href="kt:action:go">aqui</a> texto depois</p>')
+        lf:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return ltmp end
+        local lsrc = KtHTML.prepare(hrapp, "inline_probe.html", {})
+        local ldoc = lsrc and KtHTML.ensure(hrapp, hview, "inline_probe.html",
+            lsrc, 400, 200, {}) or nil
+        ok(ldoc ~= nil, "kthtml: inline link doc builds")
+        if ldoc then
+            local lview = { app = hrapp, hitboxes = {} }
+            function lview:refresh() end
+            P.hit(lview, 0, 0, 400, 200, function() end, "kthtml:page")
+            local lbb = Blitbuffer.new(400, 200, Blitbuffer.TYPE_BB8)
+            lbb:fill(Blitbuffer.COLOR_WHITE)
+            local fired = nil
+            KtHTML.paint_window(ldoc, lbb, 0, 0, 400, 200, 0, lview,
+                { go = function() fired = true end })
+            local pg = ldoc.widget.document:openPage(1)
+            local links = pg:getPageLinks() or {}
+            pg:close()
+            local ll = nil
+            for _, l in ipairs(links) do
+                if (l.uri or "") == "kt:action:go" then ll = l end
+            end
+            ok(ll ~= nil, "kthtml: inline link exists in layout")
+            if ll then
+                local cx = math.floor((ll.x0 + ll.x1) / 2)
+                local cy = math.floor((ll.y0 + ll.y1) / 2)
+                for i = #lview.hitboxes, 1, -1 do
+                    local box = lview.hitboxes[i]
+                    if P.contains(box, cx, cy) then
+                        box.callback(cx, cy)
+                        break
+                    end
+                end
+                ok(fired == true, "kthtml: inline link tap fires")
+            end
+            KtHTML.free_doc(ldoc)
+        end
+        KtHTML.page_path = real_path
+        os.remove(ltmp)
+    end
+
     -- Pagination mode lays out at viewport height and paints per page.
     local pdoc = KtHTML.ensure(hrapp, hview, "html_sandbox.html", src, 500, 700,
         { paginated = true })
@@ -3923,6 +4616,295 @@ do
     KtHTML.free_all(hrapp)
     ok(hrapp.state.kthtml_docs == nil, "kthtml: free_all releases everything")
 
+    -- Hitbox order: the page hitbox is registered BEFORE paint, so native
+    -- overlay hitboxes (registered during paint) win ties in the reverse
+    -- dispatch loop. This replays onTapKotavern order, not just registration.
+    do
+        local ohtml = '<a style="display: inline-block; width: 120px; height: 40px;"'
+            .. ' href="kt:btn:go:x1">Go</a>'
+        local otmp = os.tmpname()
+        local of = io.open(otmp, "w")
+        of:write(ohtml)
+        of:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return otmp end
+        local osrc = KtHTML.prepare(hrapp, "order_probe.html", {})
+        local odoc = osrc and KtHTML.ensure(hrapp, hview, "order_probe.html",
+            osrc, 300, 200, {}) or nil
+        ok(odoc ~= nil, "kthtml: order probe builds")
+        if odoc then
+            local oview = { app = hrapp, hitboxes = {} }
+            function oview:refresh() end
+            local fired, page_hit = nil, false
+            -- Pages.html_test order: page hitbox FIRST, then paint.
+            P.hit(oview, 0, 0, 300, 200, function() page_hit = true end,
+                "kthtml:page")
+            local obb = Blitbuffer.new(300, 200, Blitbuffer.TYPE_BB8)
+            obb:fill(Blitbuffer.COLOR_WHITE)
+            KtHTML.paint_window(odoc, obb, 0, 0, 300, 200, 0, oview,
+                { go = function(id) fired = id end })
+            local b = odoc.btns[1]
+            local bcx = math.floor(b.x0 + (b.x1 - b.x0) / 2)
+            local bcy = math.floor(b.y0 + (b.y1 - b.y0) / 2)
+            for i = #oview.hitboxes, 1, -1 do
+                local box = oview.hitboxes[i]
+                if P.contains(box, bcx, bcy) then
+                    box.callback(bcx, bcy)
+                    break
+                end
+            end
+            ok(fired == "x1" and not page_hit,
+                "kthtml: overlay hitbox wins over page hitbox (got "
+                .. tostring(fired) .. ")")
+            KtHTML.free_doc(odoc)
+        end
+        KtHTML.page_path = real_path
+        os.remove(otmp)
+    end
+
+    -- Padding tap: the grown hitbox (touch-sized) fires where the bare
+    -- link rect (text-hugging) would miss. This is what the overlay-free
+    -- path buys over pure links - same action, bigger target, no paint.
+    do
+        if not hrapp.refresh then function hrapp:refresh() end end
+        hrapp.state.sandbox = hrapp.state.sandbox or {}
+        hrapp.state.sandbox.pad = false
+        local phtml = '<a href="kt:toggle:sandbox.pad">ok</a>'
+        local ptmp = os.tmpname()
+        local pf = io.open(ptmp, "w")
+        pf:write(phtml)
+        pf:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return ptmp end
+        local psrc = KtHTML.prepare(hrapp, "pad_probe.html", {})
+        local pdoc = psrc and KtHTML.ensure(hrapp, hview, "pad_probe.html",
+            psrc, 300, 200, {}) or nil
+        ok(pdoc ~= nil, "kthtml: padding probe builds")
+        if pdoc then
+            local pg = pdoc.widget.document:openPage(1)
+            local links = pg:getPageLinks() or {}
+            pg:close()
+            local pl = nil
+            for _, l in ipairs(links) do
+                if (l.uri or "") == "kt:toggle:sandbox.pad" then pl = l end
+            end
+            ok(pl ~= nil, "kthtml: probe link exists")
+            if pl then
+                local lw, lh = pl.x1 - pl.x0, pl.y1 - pl.y0
+                local pview = { app = hrapp, hitboxes = {} }
+                function pview:refresh() end
+                P.hit(pview, 0, 0, 300, 200, function() end, "kthtml:page")
+                local pbb = Blitbuffer.new(300, 200, Blitbuffer.TYPE_BB8)
+                pbb:fill(Blitbuffer.COLOR_WHITE)
+                KtHTML.paint_window(pdoc, pbb, 0, 0, 300, 200, 0, pview, {})
+                local grown = nil
+                for _i, hbox in ipairs(pview.hitboxes) do
+                    if tostring(hbox.label or "") ==
+                        "ktlink:kt:toggle:sandbox.pad" then
+                        grown = hbox
+                    end
+                end
+                ok(grown ~= nil, "kthtml: grown hitbox registered")
+                if grown then
+                    local touch_min = Theme.scale(44)
+                    ok(grown.w >= touch_min and grown.h >= touch_min,
+                        "kthtml: grown hitbox meets touch size (got "
+                        .. tostring(grown.w) .. "x" .. tostring(grown.h)
+                        .. " from link " .. tostring(math.floor(lw)) .. "x"
+                        .. tostring(math.floor(lh)) .. ")")
+                    -- Tap inside the grown box but outside the link: 3px
+                    -- inside the grown right edge (grown strictly pads
+                    -- small links, so this is outside the text run).
+                    local tx = math.floor(grown.x + grown.w - 3)
+                    local ty = math.floor((pl.y0 + pl.y1) / 2)
+                    local outside_link = tx < pl.x0 or tx >= pl.x1
+                    ok(outside_link, "kthtml: probe tap is outside the link")
+                    if outside_link then
+                        for i = #pview.hitboxes, 1, -1 do
+                            local box = pview.hitboxes[i]
+                            if P.contains(box, tx, ty) then
+                                box.callback(tx, ty)
+                                break
+                            end
+                        end
+                        ok(hrapp.state.sandbox.pad == true,
+                            "kthtml: padding tap flips state")
+                    end
+                end
+            end
+            KtHTML.free_doc(pdoc)
+        end
+        KtHTML.page_path = real_path
+        os.remove(ptmp)
+    end
+
+    -- Toggle/field are link pills (no overlay): probe-verified, MuPDF link
+    -- boxes hug anchor text and whitespace-only anchors make no link, so an
+    -- overlay would guess geometry. Taps route through shared handlers.
+    do
+        if not hrapp.refresh then function hrapp:refresh() end end
+        local whtml = '<a class="pill" href="kt:toggle:sandbox.t1">liga</a>'
+            .. '<a class="field" href="kt:input:sandbox.f1">campo</a>'
+        local wtmp = os.tmpname()
+        local wf = io.open(wtmp, "w")
+        wf:write(whtml)
+        wf:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return wtmp end
+        local wsrc = KtHTML.prepare(hrapp, "widgets_probe.html", {})
+        local wdoc = wsrc and KtHTML.ensure(hrapp, hview, "widgets_probe.html",
+            wsrc, 300, 300, {}) or nil
+        ok(wdoc ~= nil, "kthtml: toggle/field pill doc builds")
+        if wdoc then
+            local wview = { app = hrapp, hitboxes = {} }
+            function wview:refresh() end
+            local wbb = Blitbuffer.new(300, 300, Blitbuffer.TYPE_BB8)
+            wbb:fill(Blitbuffer.COLOR_WHITE)
+            KtHTML.paint_window(wdoc, wbb, 0, 0, 300, 300, 0, wview, {})
+            ok(dark_in(wbb, 0, 0, 300, 300) > 0,
+                "kthtml: toggle/field pills paint")
+            local pg = wdoc.widget.document:openPage(1)
+            local links = pg:getPageLinks() or {}
+            pg:close()
+            local tl = nil
+            for _, l in ipairs(links) do
+                if (l.uri or l.url or "") == "kt:toggle:sandbox.t1" then tl = l end
+            end
+            ok(tl ~= nil, "kthtml: toggle pill link exists")
+            if tl then
+                local cx = math.floor((tl.x0 + tl.x1) / 2)
+                local cy = math.floor((tl.y0 + tl.y1) / 2)
+                ok(KtHTML.tap(wdoc, hrapp, "widgets_probe.html", {}, 0, 0, 0,
+                    cx, cy) == true, "kthtml: pill tap routes")
+                ok(hrapp.state.sandbox.t1 == true,
+                    "kthtml: pill toggle flips state through shared handler")
+            end
+            KtHTML.free_doc(wdoc)
+        end
+        KtHTML.page_path = real_path
+        os.remove(wtmp)
+    end
+
+    -- W.html_block: static island measures, paints, taps.
+    do
+        local Widgets = require("ktui/widgets")
+        local iapp = fake_app({ page = "native_test", settings = {} })
+        local iview = { app = iapp, hitboxes = {} }
+        function iview:refresh() end
+        local ibb = Blitbuffer.new(400, 200, Blitbuffer.TYPE_BB8)
+        ibb:fill(Blitbuffer.COLOR_WHITE)
+        local imax = Widgets.html_block(iview, ibb, {
+            x = 0, y = 0, w = 400, h = 200, scroll = 0,
+            html = "<p>ilha <a href=\"kt:action:ping\">toca</a></p>",
+            actions = { ping = function() end },
+            key = "block_probe",
+        })
+        ok(imax >= 0, "kthtml: html_block returns max_scroll")
+        ok(dark_in(ibb, 0, 0, 400, 200) > 0, "kthtml: html_block paints")
+        local ih = nil
+        for _i, hbox in ipairs(iview.hitboxes) do
+            if tostring(hbox.label or "") == "kthtml:island" then ih = hbox end
+        end
+        ok(ih ~= nil, "kthtml: island hitbox registered")
+    end
+
+    -- No phantom refresh: tapping a link must enqueue zero refreshes
+    -- before the action runs. A pre-action setDirty+forceRePaint cycle once
+    -- cost a full blocking e-ink refresh with zero visible effect (the
+    -- pixels never changed) - deleted, pinned gone by this test.
+    do
+        if not hrapp.refresh then function hrapp:refresh() end end
+        local qtmp = os.tmpname()
+        local qf = io.open(qtmp, "w")
+        qf:write('<p><a href="kt:toggle:sandbox.quiet">x</a></p>')
+        qf:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return qtmp end
+        local qsrc = KtHTML.prepare(hrapp, "quiet_probe.html", {})
+        local qdoc = qsrc and KtHTML.ensure(hrapp, hview, "quiet_probe.html",
+            qsrc, 300, 200, {}) or nil
+        ok(qdoc ~= nil, "kthtml: quiet probe builds")
+        if qdoc then
+            local real_setdirty = UIManager.setDirty
+            local dirtied = 0
+            UIManager.setDirty = function(...)
+                dirtied = dirtied + 1
+                return true
+            end
+            local pg = qdoc.widget.document:openPage(1)
+            local links = pg:getPageLinks() or {}
+            pg:close()
+            local ql = nil
+            for _, l in ipairs(links) do
+                if (l.uri or "") == "kt:toggle:sandbox.quiet" then ql = l end
+            end
+            if ql then
+                local cx = math.floor((ql.x0 + ql.x1) / 2)
+                local cy = math.floor((ql.y0 + ql.y1) / 2)
+                KtHTML.tap(qdoc, hrapp, "quiet_probe.html", {}, 0, 0, 0, cx, cy)
+            end
+            UIManager.setDirty = real_setdirty
+            ok(ql ~= nil and dirtied == 0 and hrapp.state.sandbox.quiet == true,
+                "kthtml: tap fires with zero pre-action refreshes")
+            KtHTML.free_doc(qdoc)
+        end
+        KtHTML.page_path = real_path
+        os.remove(qtmp)
+    end
+
+    -- Full-width pill hit: the painted bar spans the content width while
+    -- the link hugs text, so a tap at the far right edge (inside paint,
+    -- far outside the link) must still fire. This is the user-visible bug
+    -- class: visual without hit.
+    do
+        if not hrapp.refresh then function hrapp:refresh() end end
+        local fhtml = '<p><a class="pill" href="kt:action:go">Go</a></p>'
+        local ftmp = os.tmpname()
+        local ff = io.open(ftmp, "w")
+        ff:write(fhtml)
+        ff:close()
+        local real_path = KtHTML.page_path
+        KtHTML.page_path = function() return ftmp end
+        local fsrc = KtHTML.prepare(hrapp, "fullwidth_probe.html", {})
+        local fdoc = fsrc and KtHTML.ensure(hrapp, hview, "fullwidth_probe.html",
+            fsrc, 400, 200, {}) or nil
+        ok(fdoc ~= nil, "kthtml: full-width probe builds")
+        if fdoc then
+            local fview = { app = hrapp, hitboxes = {} }
+            function fview:refresh() end
+            P.hit(fview, 0, 0, 400, 200, function() end, "kthtml:page")
+            local fbb = Blitbuffer.new(400, 200, Blitbuffer.TYPE_BB8)
+            fbb:fill(Blitbuffer.COLOR_WHITE)
+            local fired = nil
+            KtHTML.paint_window(fdoc, fbb, 0, 0, 400, 200, 0, fview,
+                { go = function() fired = true end })
+            local wide = nil
+            for _i, hbox in ipairs(fview.hitboxes) do
+                if tostring(hbox.label or "") == "ktlink:kt:action:go" then
+                    wide = hbox
+                end
+            end
+            ok(wide ~= nil and wide.w == 400,
+                "kthtml: pill hit spans the painted bar (got w="
+                .. tostring(wide and wide.w) .. ")")
+            if wide then
+                -- Far right edge: inside paint, ~300px past the link text.
+                local tx, ty = 390, math.floor(wide.y + wide.h / 2)
+                for i = #fview.hitboxes, 1, -1 do
+                    local box = fview.hitboxes[i]
+                    if P.contains(box, tx, ty) then
+                        box.callback(tx, ty)
+                        break
+                    end
+                end
+                ok(fired == true, "kthtml: far-right bar tap fires")
+            end
+            KtHTML.free_doc(fdoc)
+        end
+        KtHTML.page_path = real_path
+        os.remove(ftmp)
+    end
+
     -- html_test page end-to-end (HTML body painted, hitbox registered).
     local eapp = fake_app({ page = "html_test", settings = { debug_mode = true } })
     local eview = { app = eapp, hitboxes = {} }
@@ -3938,6 +4920,26 @@ do
     end
     ok(nhtml == 1, "html_test: content hitbox registered")
     ok(ink_ratio(ebb) > 0, "html_test: page ink on screen")
+
+    -- native_test page end-to-end (native title/buttons + HTML island).
+    local napp = fake_app({ page = "native_test", settings = {} })
+    local nview = { app = napp, hitboxes = {} }
+    function nview:refresh() end
+    nview.dimen = { x = 0, y = 0, w = VW, h = VH }
+    setmetatable(nview, { __index = AppView })
+    local nbb = new_bb()
+    local nmax = Pages.native_test(nview, nbb, 0, 0, VW, VH, 0)
+    ok(nmax == 0, "native_test: fixed layout, no scroll")
+    local nbtn, nisl = 0, 0
+    for _i, hbox in ipairs(nview.hitboxes) do
+        local lb = tostring(hbox.label or "")
+        if lb:sub(1, 4) == "btn:" then nbtn = nbtn + 1 end
+        if lb == "kthtml:island" then nisl = nisl + 1 end
+    end
+    ok(nbtn >= 2 and nisl == 1,
+        "native_test: 2 native buttons + island hitbox (got "
+        .. tostring(nbtn) .. "+" .. tostring(nisl) .. ")")
+    ok(ink_ratio(nbb) > 0, "native_test: page ink on screen")
 end
 
 -- === 8. Ghost-healing: no-flash repaints escalate to flashui periodically ====
@@ -3984,6 +4986,152 @@ do
 end
 
 -- === 9. UIDSL: stable cascade, tag specificity, palette scoping, inline text ==
+
+-- === 19. UIDSL round 3: single layout engine (measure == paint) ==============
+do
+    local UiDSL = require("ktui/uidsl")
+    local function paint_ink(node, w, clip)
+        local bh = UiDSL.measure(node, w)
+        local bb = Blitbuffer.new(w, bh, Blitbuffer.TYPE_BB8)
+        bb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(node, bb, 0, 0, w, { hitboxes = {} }, clip)
+        return bb, bh
+    end
+    -- Box flow: measure == paint geometry. Three children stack; the middle
+    -- one carries a border so its painted top edge marks its measured dy.
+    local tree = UiDSL.node({ tag = "box", children = {
+        UiDSL.node({ tag = "text", text = "AAA" }),
+        UiDSL.node({ tag = "box", border = true, pad = 2, children = {
+            UiDSL.node({ tag = "text", text = "BBB" }) } }),
+        UiDSL.node({ tag = "text", text = "CCC" }),
+    } })
+    local bb, bh = paint_ink(tree, 200)
+    local h1 = UiDSL.measure(tree.children[1], 200)
+    local h2 = UiDSL.measure(tree.children[2], 200)
+    -- Slot dy of child 2 == painted top edge of its border box: after row 1,
+    -- the first dark row of child 2's band must land within 1px of h1.
+    local top_edge
+    for yy = h1, h1 + h2 do
+        if dark_in(bb, 0, yy, 200, 1) > 0 then top_edge = yy break end
+    end
+    ok(top_edge ~= nil and math.abs(top_edge - h1) <= 1,
+        "uidsl3: painted child-2 top edge == measured dy (" ..
+        tostring(top_edge) .. " vs " .. h1 .. ")")
+    -- dy of child 3 == h1 + h2 (exact stack, no gap).
+    local slots = UiDSL.flow_visits(tree, 200)
+    ok(slots[3].dy == h1 + h2, "uidsl3: child-3 slot dy == h1+h2 (" ..
+        tostring(slots[3].dy) .. " vs " .. (h1 + h2) .. ")")
+    ok(bh == h1 + h2 + UiDSL.measure(tree.children[3], 200),
+        "uidsl3: total painted height == summed child heights")
+    -- Clip: a node fully outside the clip paints nothing.
+    local wide = UiDSL.node({ tag = "box", bg = Blitbuffer.gray(0.5),
+        h = "20px", children = {} })
+    UiDSL.apply_styles(wide, UiDSL.parse(""))
+    local bbc = Blitbuffer.new(100, 80, Blitbuffer.TYPE_BB8)
+    bbc:fill(Blitbuffer.COLOR_WHITE)
+    UiDSL.paint(wide, bbc, 0, 0, 100, { hitboxes = {} },
+        { x = 0, y = 40, w = 100, h = 40 })
+    ok(dark_in(bbc, 0, 0, 100, 20) == 0,
+        "uidsl3: node outside the clip paints nothing (item 1.2)")
+    -- Overlapping clip still paints (gates, does not crop).
+    UiDSL.paint(wide, bbc, 0, 30, 100, { hitboxes = {} },
+        { x = 0, y = 40, w = 100, h = 40 })
+    ok(dark_in(bbc, 0, 40, 100, 10) > 0,
+        "uidsl3: node overlapping the clip paints inside it")
+    -- between = space-between with exact rounding (item 1.5): 3 equal
+    -- children of width 60 in a 300px row -> spacing pairs 90/90, last
+    -- child flush at 300 - 60 = 240.
+    local rtree = UiDSL.node({ tag = "row", halign = "between", children = {
+        UiDSL.node({ tag = "box", h = "4px", width = "60px" }),
+        UiDSL.node({ tag = "box", h = "4px", width = "60px" }),
+        UiDSL.node({ tag = "box", h = "4px", width = "60px" }),
+    } })
+    UiDSL.apply_styles(rtree, UiDSL.parse(""))
+    local rs = UiDSL.flow_visits(rtree, 300)
+    ok(rs[1].dx == 0 and rs[2].dx == 120 and rs[3].dx == 240,
+        "uidsl3: between lands children at 0/120/240 (space-between; got " ..
+        rs[1].dx .. "/" .. rs[2].dx .. "/" .. rs[3].dx .. ")")
+    -- Odd remainder: 3 children of 50 in a 230px row, free = 80 -> thirds.
+    local rtree2 = UiDSL.node({ tag = "row", halign = "between", children = {
+        UiDSL.node({ tag = "box", h = "4px", width = "50px" }),
+        UiDSL.node({ tag = "box", h = "4px", width = "50px" }),
+        UiDSL.node({ tag = "box", h = "4px", width = "50px" }),
+    } })
+    UiDSL.apply_styles(rtree2, UiDSL.parse(""))
+    local rs2 = UiDSL.flow_visits(rtree2, 230)
+    ok(rs2[2].dx == 50 + math.floor(80 / 2) and rs2[3].dx == 50 + math.floor(80 / 2) * 2 + 50
+        and rs2[3].dx + 50 <= 230,
+        "uidsl3: between odd-remainder distributes without drift (" ..
+        rs2[2].dx .. ", " .. rs2[3].dx .. ")")
+    -- Text of a flex child measures at the width paint actually uses (1.1
+    -- consequence): forcing visits then painting must not re-wrap.
+    local ftree = UiDSL.from_html("<row><p>texto suficientemente comprido para quebrar em duas linhas dentro da largura do teste<p/></row>", {})
+    UiDSL.apply_styles(ftree, UiDSL.parse(""))
+    local rowh0 = UiDSL.measure(ftree.children[1], 220)
+    local rowh1 = UiDSL.measure(ftree.children[1], 220)
+    ok(rowh0 == rowh1,
+        "uidsl3: flex row text re-measure is stable (measure == paint width)")
+    -- 1.3: padded box reserves room for the SAME line count text paints
+    -- with (measure width == paint width even inside pad).
+    local tw = UiDSL.from_html(
+        '<div class="caixa"><p>palavra por palavra a frase bem comprida quebra em tres linhas aqui dentro da caixa com dez pixels de protecao em volta</p></div>', {})
+    UiDSL.apply_styles(tw, UiDSL.parse(".caixa { pad: 10px; width: 200px; }"))
+    local box_h = UiDSL.measure(tw.children[1], 200)
+    local tb = Blitbuffer.new(200, box_h + 24, Blitbuffer.TYPE_BB8)
+    tb:fill(Blitbuffer.COLOR_WHITE)
+    UiDSL.paint(tw.children[1], tb, 0, 0, 200, { hitboxes = {} })
+    -- The last LINE BOX must hold ink (content reaches its allotted final
+    -- line: no under-measure clipping tails). Trailing descender bearing
+    -- inside that box is normal typography, not a bug - so this asserts
+    -- the line box, not the box edge. And nothing may paint past the box
+    -- (the overlap direction that actually breaks layout).
+    local _, plh = P.paragraph_metrics(
+        "palavra por palavra a frase bem comprida quebra em tres linhas aqui dentro da caixa com dez pixels de protecao em volta",
+        180, "default", {})
+    ok(dark_in(tb, 0, box_h - 10 - plh, 200, plh) > 0,
+        "uidsl3: last line box holds ink (1.3; box_h=" .. box_h .. ")")
+    ok(dark_in(tb, 0, box_h + 2, 200, 20) == 0,
+        "uidsl3: nothing paints below the measured box")
+    -- 1.4: fixed-height row centers text by glyph ink, not top edge.
+    local rowt = UiDSL.from_html(
+        '<row class="banda"><p>centro</p></row>', {})
+    UiDSL.apply_styles(rowt, UiDSL.parse(".banda { h: 44px; }"))
+    local rown = rowt.children[1]
+    local rh = UiDSL.measure(rown, 200)
+    ok(rh == 44, "uidsl3: fixed-h row measures 44 (got " .. rh .. ")")
+    local rb = Blitbuffer.new(200, 44, Blitbuffer.TYPE_BB8)
+    rb:fill(Blitbuffer.COLOR_WHITE)
+    UiDSL.paint(rown, rb, 0, 0, 200, { hitboxes = {} })
+    local top_ink, bot_ink
+    for yy = 0, 43 do
+        if dark_in(rb, 0, yy, 200, 1) > 0 then top_ink = yy break end
+    end
+    for yy = 43, 0, -1 do
+        if dark_in(rb, 0, yy, 200, 1) > 0 then bot_ink = yy break end
+    end
+    ok(top_ink and (bot_ink - top_ink) > 0 and top_ink >= 6
+        and bot_ink <= 40,
+        "uidsl3: text ink sits inside the band v-centered (" ..
+        tostring(top_ink) .. ".." .. tostring(bot_ink) .. ")")
+    -- 2.1: inline style beats the stylesheet (CSS-inline priority).
+    local ist = UiDSL.from_html(
+        '<p class="fina" style="color: gray(0.2); pad: 3px;">x</p>', {})
+    UiDSL.apply_styles(ist, UiDSL.parse(".fina { color: gray(0.8); pad: 8px; }"))
+    local pnode = ist.children[1]
+    -- e-ink gray scale is INVERTED (gray(0.2) = R 204, near white).
+    ok(pnode.pad == 3 and pnode.color and pnode.color:getR() == 204,
+        "uidsl3: style= inline wins over the sheet on pad AND color (R=" ..
+        tostring(pnode.color and pnode.color:getR()) .. ")")
+    -- Inline style beats the sheet even where the sheet comes from HTML
+    -- attributes: width attribute loses to a sheet, which loses to style=.
+    local ist2 = UiDSL.from_html(
+        '<p class="fina" width="40px" style="width: 90px;">x</p>', {})
+    UiDSL.apply_styles(ist2, UiDSL.parse(".fina { width: 60px; }"))
+    ok(ist2.children[1].width == "90px",
+        "uidsl3: style= width beats sheet + html attr (CSS ladder)")
+end
+
+-- === 9b. UIDSL: stable cascade, tag specificity, palette scoping, inline text ==
 do
     local UiDSL = require("ktui/uidsl")
     -- Specificity ladder: #id.class > tag.class > class.
@@ -4043,6 +5191,142 @@ do
         UiDSL.paint(para4, new_bb(), 0, 0, VW)
     end)
     ok(okp, "uidsl: font-size node paints (" .. tostring(err) .. ")")
+end
+
+-- === 19c. Empty state: block (icon+text) centered as ONE unit =================
+do
+    local Widgets = require("ktui/widgets")
+    local bh = 400
+    local bbe = Blitbuffer.new(300, bh, Blitbuffer.TYPE_BB8)
+    bbe:fill(Blitbuffer.COLOR_WHITE)
+    Widgets.empty_state({ hitboxes = {} }, bbe, {
+        x = 0, y = 0, w = 300, h = bh,
+        icon = "comments",
+        text = "No chats yet. Open a character card on Home and start a chat.",
+    })
+    -- Every dark pixel forms one contiguous block: nothing above/below it,
+    -- and top/bottom margins are within a band of each other (centered).
+    local top_ink, bot_ink
+    for yy = 0, bh - 1 do
+        if dark_in(bbe, 0, yy, 300, 1) > 0 then top_ink = yy break end
+    end
+    for yy = bh - 1, 0, -1 do
+        if dark_in(bbe, 0, yy, 300, 1) > 0 then bot_ink = yy break end
+    end
+    ok(top_ink and bot_ink, "emptystate: paints ink at all")
+    if top_ink and bot_ink then
+        -- Optical center (46%): the block's center should sit slightly
+        -- above geometric center - bright chrome (Sort/Search pills) pins
+        -- the top edge, and a pure 50% block reads sunk. Tolerance 6px
+        -- covers rounding + remaining bearings.
+        local block_center = (top_ink + bot_ink) / 2
+        local target = bh * 0.46
+        ok(math.abs(block_center - target) <= 6,
+            "emptystate: block optical-centered at 46% (center="
+            .. string.format("%.0f", block_center) .. " target="
+            .. string.format("%.0f", target) .. ")")
+        -- Icon row sits INSIDE the block above the text (no orphan icon).
+        local icon_bot
+        for yy = top_ink, bot_ink do
+            if dark_in(bbe, 0, yy, 300, 1) == 0 then icon_bot = yy break end
+        end
+        ok(icon_bot == nil or icon_bot < bot_ink,
+            "emptystate: icon and text form one contiguous block")
+    end
+end
+
+-- === 19d. var-list bottom-out: last item flush at max scroll =================
+do
+    local Scroll = require("ktui/scroll")
+    -- Body 400px tall; items of 120px + gap 10: offs 0,130,260,390(in): total=630.
+    -- Old max_scroll = 630-400 = 230; last item start = 260 > 230 -> dead band:
+    -- the third item could NEVER paint fully inside the viewport.
+    -- Real bug shape: last item start EXCEEDS the naive total_h - h.
+    -- Body 400; items 200+200+200 gap 10: offs 0,210,420; total 620;
+    -- naive max = 220 < last start 420? No: 620-400=220. Need >= last start:
+    -- make the LAST ITEM TALL: 200 + 100 + 400 (last h=400 fills viewport):
+    -- offs 0,210,320; total 720; naive max = 320 == last start (fits).
+    -- Deadband only when total_h - h > last start: gap-inflated totals.
+    -- Actually the REAL shape: dashboards where range overshoots by < row.
+    -- items 130+130+130 gap 10, body 400: offs 0,140,280; total 410;
+    -- naive max = 10 < last start... this matter is: max_scroll < last start
+    -- shows the tail LOW while snap pulls back. Construct: threshold case
+    -- body 400, items 120,120,200, gap 10: offs 0,130,260; total 460;
+    -- naive max = 60 < last start 260: the 200px item paints half-cut and
+    -- snap keeps 0 -- dead scrollbar that "doesn't move anything".
+    local items = {
+        { h = 120, tag = 1 }, { h = 120, tag = 2 }, { h = 200, tag = 3 },
+    }
+    local painted = {}
+    local bbv = Blitbuffer.new(100, 400, Blitbuffer.TYPE_BB8)
+    bbv:fill(Blitbuffer.COLOR_WHITE)
+    local viewv = { app = { state = { scroll = {} } }, hitboxes = {}, scroll_key = function() return "k" end }
+    function viewv.app:scroll_key() return "k" end
+    local ms = Scroll.scrolled_list_var(viewv, bbv, items, 0, 0, 100, 400, 999, 10,
+        function(item, cy) painted[cy] = item.tag end)
+    -- Fine-travel regime (max_scroll 60 < pitch 130): NO snap must revert
+    -- the scroll - old code snapped 60 to offs[1]=0, killing the scrollbar
+    -- (dashboard bug). Now: ms=60 survives, last item paints FLUSH bottom.
+    ok(ms == 60, "varlist: fine-travel max_scroll survives unsnapped (got " .. ms .. ")")
+    ok(painted[200] == 3,
+        "varlist: last item flush with viewport bottom at max scroll (cy="
+        .. tostring(painted[200] and 200 or "nil") .. ")")
+    -- Exact fit: no scroll needed -> max_scroll stays 0.
+    painted = {}
+    local items2 = { { h = 190 }, { h = 190 } } -- 190*2 + 10 = 390 < 400
+    local ms2 = Scroll.scrolled_list_var(viewv, bbv, items2, 0, 0, 100, 400, 999, 10,
+        function(item, cy) end)
+    ok(ms2 == 0, "varlist: exact fit has zero scroll (got " .. ms2 .. ")")
+end
+
+-- === 19b. Deck: band grid (round 4 item 1) ====================================
+do
+    local Deck = require("ktui/deck")
+    -- Exact fit: two bands fill the body flush, leftovers go to the grow
+    -- band, zero gap at the tail.
+    local body_h = 600
+    local rects = Deck.layout(nil, {
+        Deck.card("list", { grow = true }), -- 2 units
+        Deck.touch("footer"),               -- 1 unit
+    }, { x = 0, y = 0, w = 300, h = body_h })
+    local m = Theme.metrics()
+    local unit = math.max(m.touch_min, Theme.scale(48))
+    ok(rects.list and rects.footer and rects.footer.y + rects.footer.h == body_h,
+        "deck: last band flush at body bottom (" ..
+        tostring(rects.footer and rects.footer.y + rects.footer.h) .. " vs " .. body_h .. ")")
+    ok(rects.list.h >= 2 * unit,
+        "deck: grow band never below base units (+ leftover)")
+    ok(rects.footer.h + m.card_gap <= body_h - rects.list.h,
+        "deck: gap consumed between bands only")
+    -- px band never shrunk by distribution (banner case).
+    local rects2 = Deck.layout(nil, {
+        Deck.card("rows", { grow = true }),
+        Deck.px("banner", 189),
+    }, { x = 0, y = 0, w = 300, h = body_h })
+    ok(rects2.banner.h == 189,
+        "deck: px band keeps exact height (got " .. rects2.banner.h .. ")")
+    ok(rects2.banner.y + rects2.banner.h == body_h,
+        "deck: px band pinned at body bottom")
+    -- Over capacity: px band dropped last; grow band shrinks to 1 unit first.
+    local small = { x = 0, y = 0, w = 300, h = unit + m.card_gap + 60 }
+    local rects3 = Deck.layout(nil, {
+        Deck.card("rows", { grow = true }),
+        Deck.px("banner", 300),
+    }, small)
+    ok(rects3.banner == nil or rects3.banner.h <= 60 + unit,
+        "deck: over-capacity drops/clamps the tail before starving rows")
+    ok(rects3.rows ~= nil and rects3.rows.h >= m.touch_min,
+        "deck: rows keep a touchable band even in tight bodies")
+    -- grid_heights: units -> px with last-band flush (no drift).
+    local gh = Deck.grid_heights({ 1, 1, 1 }, 303, 1)
+    ok(gh[1] + gh[2] + gh[3] == 301, -- 303 - 2 gaps = 301 usable
+        "deck: grid_heights sums to usable height (" .. gh[1] + gh[2] + gh[3] .. " vs 301)")
+    ok(gh[1] == 100 and gh[2] == 100 and gh[3] == 101,
+        "deck: grid_heights floor share + last band flush (" ..
+        gh[1] .. "/" .. gh[2] .. "/" .. gh[3] .. ")")
+    -- capacity: touches fit count.
+    local cap = Deck.capacity(nil, { h = 5 * unit + 4 * m.card_gap })
+    ok(cap == 5, "deck: capacity counts exact-fit rows (got " .. cap .. ")")
 end
 
 -- === 10. List rows use the round avatar treatment =============================

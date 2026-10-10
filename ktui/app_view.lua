@@ -635,6 +635,8 @@ function AppView:draw_content(bb, x, y, w, h)
         max_scroll = Pages.css_test(self, bb, x, y, w, h, scroll)
     elseif page == "html_test" then
         max_scroll = Pages.html_test(self, bb, x, y, w, h, scroll)
+    elseif page == "native_test" then
+        max_scroll = Pages.native_test(self, bb, x, y, w, h, scroll)
     elseif page == "presets" then
         max_scroll = Pages.presets(self, bb, x, y, w, h, scroll)
     elseif page == "connections" then

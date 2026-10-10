@@ -2168,7 +2168,7 @@ function App:send_message()
             return
         end
         self:_do_send_message(text)
-    end)
+    end, nil, true)
 end
 
 -- Regenerate the last assistant reply, keeping the current one as a swipe so
@@ -3094,13 +3094,16 @@ function App:impersonate()
             self_ref.state.is_generating = false
             if content then
                 content = self_ref:_postprocess_ai(content)
-                Modals.input(_("Write as ") .. user_name, content,
-                    _("Edit your message, then Send"), _("Send"), function(text)
-                    text = Util.trim(tostring(text or ""))
-                    if text ~= "" then
-                        self_ref:_do_send_message(text)
-                    end
-                end, true)
+                    Modals.input(_("Write as ") .. user_name, content,
+                        _("Edit your message, then Send"), _("Send"), function(text)
+                        text = Util.trim(tostring(text or ""))
+                        if text ~= "" then
+                            self_ref:_do_send_message(text)
+                        end
+                    -- (6th arg was `true`: a truthy clear_callback paints a
+                    -- Clear button that would call true() on tap. Impersonate
+                    -- needs no Clear: nil keeps the two-button layout.)
+                    end, nil, true)
             else
                 UIManager:show(InfoMessage:new{
                     text = _("API Error: ") .. (err or _("Unknown error")),
@@ -3199,19 +3202,26 @@ function App:edit_prompt_item(index)
     local item = list and list[index]
     local prompt = item and self:_find_prompt(item.identifier)
     if not prompt or prompt.marker then return end
-    Modals.multi_input(_("Edit Prompt"), {
-        { text = prompt.content or "", hint = _("Content"), multiline = true },
-        { text = prompt.role or "system", hint = _("Role (system/user/assistant)") },
-    }, _("Save"), function(fields)
-        if fields then
-            prompt.content = fields[1] or ""
-            local role = fields[2] and fields[2]:match("^%s*(.-)%s*$")
-            if role == "user" or role == "assistant" or role == "system" then
-                prompt.role = role
-            end
-            self_ref:refresh(true)
+    -- Content first in a BOUNDED multiline box (like the card description
+    -- editor): MultiInputDialog grows each field to its full content height
+    -- (its `multiline` flag is ignored by the widget), so long prompts
+    -- explode past the screen with the buttons off-screen. Role second.
+    Modals.input(_("Edit Prompt"), prompt.content or "", _("Content"), _("Next"), function(content)
+        local Sheets = require("ktui/sheets")
+        local actions = {}
+        for _, r in ipairs({ "system", "user", "assistant" }) do
+            local role = r
+            table.insert(actions, {
+                label = role, checked = (prompt.role or "system") == role,
+                on_tap = function()
+                    prompt.content = content or ""
+                    prompt.role = role
+                    self_ref:refresh(true)
+                end,
+            })
         end
-    end)
+        Sheets.show(self_ref, { title = _("Role"), actions = actions })
+    end, nil, true)
 end
 
 function App:_find_prompt(identifier)
@@ -3353,21 +3363,23 @@ function App:manage_quick_replies()
     end
 
     local function add_or_edit(qr)
-        Modals.multi_input(qr and _("Edit Quick Reply") or _("New Quick Reply"), {
-            { text = qr and qr.label or "", hint = _("Label") },
-            { text = qr and qr.text or "", hint = _("Message"), multiline = true },
-        }, _("Save"), function(fields)
-            if fields and fields[1] and fields[1] ~= "" then
+        -- Same reason as edit_prompt_item: MultiInputDialog grows the message
+        -- field to full content height and explodes past the screen, so label
+        -- (single-line) and message (bounded multiline box) go step by step.
+        local title = qr and _("Edit Quick Reply") or _("New Quick Reply")
+        Modals.input(title, qr and qr.label or "", _("Label"), _("Next"), function(label)
+            if not label or label == "" then return end
+            Modals.input(title, qr and qr.text or "", _("Message"), _("Save"), function(text)
                 local qrs = self_ref.state.settings.quick_replies or {}
                 if qr then
-                    qr.label = fields[1]
-                    qr.text = fields[2] or ""
+                    qr.label = label
+                    qr.text = text or ""
                 else
-                    table.insert(qrs, { label = fields[1], text = fields[2] or "" })
+                    table.insert(qrs, { label = label, text = text or "" })
                 end
                 save(qrs)
                 self_ref:refresh(true)
-            end
+            end, nil, true)
         end)
     end
 

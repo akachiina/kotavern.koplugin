@@ -23,6 +23,10 @@
 --                                      -> paints the visible window
 --   KtHTML.paint_anims(doc, bb, bx, by, w, h, pageno)
 --                                      -> overlays current anim frames
+--   KtHTML.paint_link_hits(doc, view, page, bx, by, w, h, pageno, actions)
+--                                      -> touch-sized hitboxes for links
+--   KtHTML.fire_link(app, page, actions, uri) -> scheme dispatch
+--   KtHTML.page_links(doc, pageno) -> cached page links (no per-tap scan)
 --   KtHTML.check_anim(name) / anim_dir(name) / prune_anim_players(...)
 --                                      -> animation plumbing
 --   KtHTML.tap(doc, app, page, actions, lx, ly)
@@ -58,8 +62,9 @@
 -- Tall mode auto-falls-back to pagination when the doc paginates.
 
 local Geom = require("ui/geometry")
-local UIManager = require("ui/uimanager")
 local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+local logger = require("logger")
+local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 
 local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
@@ -70,47 +75,44 @@ end
 
 local KtHTML = {}
 
--- Tall-bitmap cap (w x TALL_H x 1 byte). Past this the doc paginates and
+-- Tall-bitmap ceiling (w x TALL_H x 1 byte). The tall height itself is
+-- sized per document (N viewport pages always cover the content:
+-- fragmentation only adds pages, never shrinks them), so small docs get
+-- small bitmaps and fast scans; past the ceiling the doc paginates and
 -- tall mode auto-falls-back to pagination for that paint.
 KtHTML.TALL_H = 10000
 
--- Content height of a laid-out body: smallest layout height that still fits
--- on one page (bisection, 32px precision). One-time cost per file/theme
--- change (the result rides the doc cache); each probe is a throwaway
--- layout that is freed immediately.
-function KtHTML.measure_content(src, w)
-    local Constants = require("kt_constants")
-    local probe = HtmlBoxWidget:new{ dimen = Geom:new{ w = w, h = 64 } }
-    local function pages_at(h)
-        local n = 99
-        pcall(function()
-            probe.dimen = Geom:new{ w = w, h = h }
-            probe:setContent(src.body, src.css,
-                Theme.scale(Theme.get_base_font_size()),
-                false, nil, Constants.PLUGIN_DIR .. "/assets")
-            n = probe.page_count or 99
-        end)
-        return n
-    end
-    local total = nil
-    if pages_at(KtHTML.TALL_H) == 1 then
-        local lo, hi = 1, KtHTML.TALL_H
-        if pages_at(lo) == 1 then
-            total = lo -- empty doc, nothing to scroll
-        else
-            while hi - lo > 32 do
-                local mid = math.floor((lo + hi) / 2)
-                if pages_at(mid) > 1 then
-                    lo = mid
-                else
-                    hi = mid
+-- Content height by pixel scan. Two MuPDF behaviors kill layout-based
+-- measuring, both probe-verified: getUsedBBox reports the FULL page for
+-- HTML, and pagination never triggers below an internal minimum page
+-- height (two paragraphs still fit "one page" at h=1). So scan the
+-- rendered tall bitmap itself bottom-up for the last non-background row
+-- (the same bitmap paint_window blits from - already cached, no extra
+-- render). ±4px precision, one-time cost per file/theme change.
+function KtHTML.scan_bottom(bb, w)
+    if not bb then return nil end
+    local bw, bh = bb:getWidth(), bb:getHeight()
+    if not bw or not bh or bw <= 0 or bh <= 0 then return nil end
+    local br, bg, bbq = 255, 255, 255
+    pcall(function()
+        local c = Theme.bg
+        br, bg, bbq = c:getR(), c:getG(), c:getB()
+    end)
+    w = math.min(w or bw, bw)
+    for y = bh - 1, 0, -4 do
+        for x = 0, w - 1, 4 do
+            local ok, px = pcall(function() return bb:getPixel(x, y) end)
+            if ok and px then
+                local ok2, r, g, b = pcall(function()
+                    return px:getR(), px:getG(), px:getB()
+                end)
+                if ok2 and (r ~= br or g ~= bg or b ~= bbq) then
+                    return math.min(bh, y + 4)
                 end
             end
-            total = hi
         end
     end
-    pcall(function() probe:free() end)
-    return total
+    return nil
 end
 
 -- Blitbuffer color -> #rrggbb. NEVER compare colors to nil with ~= : LuaJIT
@@ -137,22 +139,33 @@ end
 function KtHTML.theme_css()
     local font_px = Theme.scale(Theme.get_base_font_size())
     local css = string.format([[
-body { margin: 0; background: %s; color: %s; }
+@font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
+@font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
+body { margin: 0; background: %s; color: %s; font-family: 'KTSans', 'Noto Sans', sans-serif; }
 h1 { font-size: %dpx; font-weight: bold; margin: 0 0 6px 0; }
 h2 { font-size: %dpx; font: bold; margin: 0 0 4px 0; }
 p { margin: 0 0 6px 0; }
-a { color: %s; text-decoration: none; }
+a { color: %s !important; text-decoration: none !important; }
+.ktbtnink { color: transparent !important; text-decoration: none !important; }
+/* RULE: any color that must show on an <a> needs !important too - the base
+   a{color} above beats MuPDF's blue UA rule, so a plain state color would
+   lose to IT and paint dark-on-dark (unreadable ON pills). Specificity
+   then decides among !importants correctly. */
 .card { border: 1px solid %s; background: %s; padding: 10px; margin: 0 0 10px 0; }
 .hero { background: %s; padding: 12px; margin: 0 0 10px 0; }
 .muted { color: %s; }
 .center { text-align: center; }
 .right { text-align: right; }
-.pill { display: inline-block; border: 1px solid %s; padding: 8px 14px; margin: 0 4px 6px 0; }
-.pill.primary { background: %s; color: %s; }
+/* PATTERN: pills are full-width bars, not compact buttons - MuPDF
+   stretches inline-block to the content width (probe-verified) and the
+   hit layer spans the painted bar to match. Do not chase compact form
+   here; side-by-side pills go in table cells. */
+.pill { display: inline-block; border: 1px solid %s; padding: 10px 16px; margin: 0 4px 6px 0; font-weight: bold; text-align: center; }
+.pill.primary { background: %s; color: %s !important; }
 table.fila { width: 100%%; margin: 0 0 6px 0; }
 table.fila td { vertical-align: middle; padding: 2px 6px 2px 0; }
-code { background: %s; padding: 0 4px; }
-pre { background: %s; padding: 8px; }
+code { background: %s; padding: 0 4px; font-family: monospace; }
+pre { background: %s; padding: 8px; font-family: monospace; }
 hr { border: none; border-top: 1px solid %s; margin: 8px 0; }
 img { vertical-align: middle; }
 ]],
@@ -177,15 +190,14 @@ img { vertical-align: middle; }
     css = css .. string.format([[
 .pill.secondary { background: %s; color: %s; }
 .pill.ghost { border: none; background: %s; }
-.pill.on { background: %s; color: %s; }
-.nonlink { color: %s; border-color: %s; }
-a.field { display: block; border: 1px solid %s; background: %s; color: %s; padding: 8px 10px; margin: 0 0 6px 0; }
-.field .hint { color: %s; }
+.pill.on { background: %s; color: %s !important; }
+a.field { display: block; border: 1px solid %s; background: %s; color: %s !important; padding: 8px 10px; margin: 0 0 6px 0; }
+.field .hint { color: %s !important; }
 .switchstate { font-weight: bold; }
 .chip { display: inline-block; border: 1px solid %s; color: %s; font-size: 85%%; padding: 2px 8px; margin: 0 4px 4px 0; }
 table.seg { width: 100%%; border: 1px solid %s; margin: 0 0 6px 0; }
 table.seg td { text-align: center; padding: 8px 4px; }
-table.seg td.on { background: %s; color: %s; }
+table.seg td.on { background: %s; color: %s !important; }
 .pbar { border: 1px solid %s; padding: 2px; margin: 0 0 6px 0; }
 .pfill { background: %s; height: 10px; }
 img.avatar { width: 48px; height: 48px; }
@@ -438,6 +450,7 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
         return cached
     end
     if cached then KtHTML.free_doc(cached) end
+    logger.dbg("KtHTML: rebuild start", page)
     local Constants = require("kt_constants")
     local widget = HtmlBoxWidget:new{
         dimen = Geom:new{ w = w, h = h },
@@ -452,36 +465,45 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
         return nil
     end
     local doc = {
-        key = key, widget = widget, viewport_h = h,
+        key = key, widget = widget, viewport_h = h, page = page,
         page_count = widget.page_count or 1, paginated = want_paginated,
         view_app = app, view = view,
     }
     if not want_paginated then
-        -- Tall bitmap: relayout at cap height. Content height is found by
-        -- bisecting the 1-page/2-pages boundary (getUsedBBox reports the
-        -- full page for HTML, and text-only measuring would miss trailing
-        -- images). Past the cap = fall back to pagination for this cycle.
-        local pages_at_cap = 1
-        pcall(function()
-            widget.dimen = Geom:new{ w = w, h = KtHTML.TALL_H }
-            widget:setContent(src.body, src.css,
-                Theme.scale(Theme.get_base_font_size()),
-                false, nil, Constants.PLUGIN_DIR .. "/assets")
-            pages_at_cap = widget.page_count or 1
-        end)
-        doc.page_count = pages_at_cap
-        if pages_at_cap > 1 then
+        -- Tall bitmap sized per document: N viewport pages always cover the
+        -- content (fragmentation only adds pages), so relayout at N*h and
+        -- scan the exact bottom. Small docs get small bitmaps and instant
+        -- scans; past TALL_H the doc paginates (fallback below). Neither
+        -- getUsedBBox (full page) nor pagination probing (minimum page
+        -- height) measures small docs - both probe-verified dead ends.
+        local want_h = math.max(h, (widget.page_count or 1) * h)
+        if want_h > KtHTML.TALL_H then
             doc.paginated = true
+            doc.total_h = h
+        else
+            local pages_at_tall = 1
             pcall(function()
-                widget.dimen = Geom:new{ w = w, h = h }
+                widget.dimen = Geom:new{ w = w, h = want_h }
                 widget:setContent(src.body, src.css,
                     Theme.scale(Theme.get_base_font_size()),
                     false, nil, Constants.PLUGIN_DIR .. "/assets")
+                pages_at_tall = widget.page_count or 1
             end)
-            doc.page_count = widget.page_count or 1
-            doc.total_h = h
-        else
-            doc.total_h = KtHTML.measure_content(src, w) or h
+            doc.page_count = pages_at_tall
+            if pages_at_tall > 1 then
+                doc.paginated = true
+                pcall(function()
+                    widget.dimen = Geom:new{ w = w, h = h }
+                    widget:setContent(src.body, src.css,
+                        Theme.scale(Theme.get_base_font_size()),
+                        false, nil, Constants.PLUGIN_DIR .. "/assets")
+                end)
+                doc.page_count = widget.page_count or 1
+                doc.total_h = h
+            else
+                widget:_render()
+                doc.total_h = KtHTML.scan_bottom(widget.bb, w) or h
+            end
         end
     else
         doc.total_h = h
@@ -509,18 +531,40 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
         for _, link in ipairs(links) do
             local uri = link.uri or link.url or ""
             local bname, bid = uri:match("^kt:btn:([^:]+):?(.*)$")
-            if bname and link.x0 and link.x1 and link.y0 and link.y1 then
+            if bname and link.x0 and link.x1 and link.y0 and link.y1
+                and (link.x1 - link.x0) > 1 then
                 -- Native-canvas button anchored by href="kt:btn:NAME[:ID]":
                 -- the MuPDF box is only the anchor slot; the VISIBLE pill is
                 -- painted by our Widgets.button (pressed state, hit test,
                 -- regional refresh) over the bitmap. The anchor text stays
                 -- as the label fallback so the HTML still reads well raw.
-                doc.btns[#doc.btns + 1] = {
-                    name = bname, id = bid ~= "" and bid or nil,
-                    page = pno,
-                    x0 = link.x0, y0 = link.y0,
-                    x1 = link.x1, y1 = link.y1,
-                }
+                -- MuPDF ALSO surfaces one anchor as 2 stacked link entries
+                -- (same width, ~26px apart band pairs; probe-verified). Keep
+                -- only the TOP band (y0 smaller) per (page,name): the second
+                -- is the same anchor's second line box, not another button.
+                local dup = nil
+                for _, prev in ipairs(doc.btns) do
+                    if prev.name == bname and prev.page == pno
+                        and math.abs(prev.x0 - link.x0) < 4
+                        and math.abs((prev.x1 - prev.x0)
+                            - (link.x1 - link.x0)) < 3 then
+                        dup = prev
+                        break
+                    end
+                end
+                if dup then
+                    if link.y0 < dup.y0 then
+                        dup.y0, dup.y1 = link.y0, link.y1
+                        dup.id = bid ~= "" and bid or nil
+                    end
+                else
+                    doc.btns[#doc.btns + 1] = {
+                        name = bname, id = bid ~= "" and bid or nil,
+                        page = pno,
+                        x0 = link.x0, y0 = link.y0,
+                        x1 = link.x1, y1 = link.y1,
+                    }
+                end
             end
             local aname = uri:match("^kt:anim:([^:]+)$")
             if aname and link.x0 and link.x1 and link.y0 and link.y1
@@ -557,8 +601,27 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
             end
         end
     end
+    -- NOTE (probe-verified, do not "simplify" back): MuPDF link boxes hug
+    -- anchor TEXT and ignore the anchor's own CSS box, and whitespace-only
+    -- anchors produce no link at all. So overlays are ONLY built where
+    -- geometry is exact: kt:btn (grown pill metrics) and kt:anim (explicit
+    -- box + image content). Toggles/fields stay re-rendered link pills
+    -- (router handles them) - an overlay would have to guess geometry, and
+    -- guessing is what this engine no longer does.
+    -- Anchor classes per URI (first match wins; same href = same classes by
+    -- author convention). Pills/fields paint FULL content width in MuPDF
+    -- (inline-block stretches) while their links hug text - the hitbox
+    -- layer below uses the class to span the painted bar.
+    doc.link_classes = {}
+    for attrs in src.body:gmatch("<a([^>]*)>") do
+        local uri = attrs:match('href%s*=%s*"([^"]+)"')
+        if uri and uri:find("^kt:", 1) and not doc.link_classes[uri] then
+            doc.link_classes[uri] = attrs:match('class%s*=%s*"([^"]*)"') or ""
+        end
+    end
     KtHTML.prune_anim_players(app, page, doc.anims)
     app.state.kthtml_docs[page] = doc
+    logger.dbg("KtHTML: rebuild done", page, "total_h=" .. tostring(doc.total_h))
     return doc
 end
 
@@ -604,6 +667,21 @@ function KtHTML.paint_btns(doc, bb, bx, by, w, h, pageno, view, actions)
             local rw, rh = b.x1 - b.x0, b.y1 - b.y0
             if rw > 8 and rh > 8 and rx < bx + w and ry < by + h
                 and rx + rw > bx and ry + rh > by then
+                -- MuPDF link boxes hug the anchor TEXT (h ~ one text line).
+                -- Grow to the theme pill height, KEEPING the anchor's left
+                -- edge (matches where the HTML pill would start) and center
+                -- vertically on the text band. Paint AFTER the bitmap so the
+                -- (already transparent) anchor text can't leak around edges.
+                -- Contract: kt:btn anchors stay UNSTYLED (ktbtnink text) -
+                -- the native pill IS the entire visual. A bordered .pill
+                -- class here would double-print (bitmap bar + native pill).
+                local pw = math.max(math.floor(rw) + Theme.scale(28),
+                    W.button_width(tostring(b.name)) or Theme.scale(60))
+                local ph = Theme.btn_h()
+                local px = math.floor(bx + b.x0)
+                if px + pw > bx + w then px = math.floor(bx + w - pw) end
+                if px < bx then px = bx end
+                local py = math.floor(by + b.y0 + (rh - ph) / 2)
                 local label = tostring(b.name)
                 local on_tap = nil
                 if actions and actions[b.name] then
@@ -611,12 +689,8 @@ function KtHTML.paint_btns(doc, bb, bx, by, w, h, pageno, view, actions)
                         actions[b.name](b.id)
                     end
                 end
-                -- Buttons need a view to register hitboxes; already have the
-                -- bitmap behind them (the anchor text was painted by MuPDF -
-                -- we paint the pill ON TOP so the raw text is hidden).
                 W.button(view or { hitboxes = {} }, bb, {
-                    x = math.floor(rx), y = math.floor(ry),
-                    w = math.floor(rw), h = math.floor(rh),
+                    x = px, y = py, w = pw, h = ph,
                     label = label, id = b.id,
                     on_tap = on_tap,
                 })
@@ -643,6 +717,8 @@ function KtHTML.paint_window(doc, bb, x, y, w, h, scroll, view, actions)
         end
         widget:paintTo(bb, x, y)
         KtHTML.paint_anims(doc, bb, x, y, w, h, pno)
+        KtHTML.paint_link_hits(doc, view, doc.page, x, y, w, h, pno,
+            actions)
         KtHTML.paint_btns(doc, bb, x, y, w, h, pno, view, actions)
         return
     end
@@ -657,7 +733,61 @@ function KtHTML.paint_window(doc, bb, x, y, w, h, scroll, view, actions)
         bb:blitFrom(src, x, y, 0, sy, w, vh)
     end)
     KtHTML.paint_anims(doc, bb, x, y - sy, w, h, 1)
+    KtHTML.paint_link_hits(doc, view, doc.page, x, y - sy, w, h, 1,
+        actions)
     KtHTML.paint_btns(doc, bb, x, y - sy, w, h, 1, view, actions)
+end
+
+-- Link hitboxes, independent of overpaint. Link rects hug anchor text
+-- (~30x20px: miserable finger targets). Two shapes, from the anchor's
+-- class (doc.link_classes): .pill/.field bars span the FULL painted width
+-- (MuPDF stretches inline-block full-width - probe-verified), everything
+-- else grows to touch size centered on its rect. The value is the target,
+-- not the pixels - no double paint, no font-metric guessing. btn excluded
+-- (native hitboxes already exist); anim excluded (tap is a no-op). Call
+-- AFTER paint_btns so registration order stays: page (caller, first) <
+-- grown links < native buttons < scrollbar (last). (bx, by) = page origin
+-- in screen coords (tall callers pre-offset scroll).
+function KtHTML.paint_link_hits(doc, view, page, bx, by, w, h, pageno, actions)
+    if not doc or not doc.widget or not view or not view.app then return end
+    local app = view.app
+    local links = KtHTML.page_links(doc, pageno)
+    local min_t = Theme.scale(44)
+    local classes = doc.link_classes or {}
+    for _, link in ipairs(links) do
+        local uri = link.uri or link.url or ""
+        local scheme = uri:match("^kt:([^:]+):?")
+        if (scheme == "toggle" or scheme == "input" or scheme == "action"
+            or scheme == "nav" or scheme == "back")
+            and link.x0 and link.x1 and link.y0 and link.y1 then
+            local rw, rh = link.x1 - link.x0, link.y1 - link.y0
+            if rw > 0 and rh > 0 then
+                local gx, gy, gw, gh
+                local cls = " " .. tostring(classes[uri] or "") .. " "
+                if cls:find(" pill ", 1, true) or cls:find(" field ", 1, true) then
+                    -- Bar pattern (probe-verified): .pill/.field paint FULL
+                    -- content width while the link hugs text, so the hit
+                    -- spans the painted bar; height stays band-grown.
+                    -- Convention: pills are bars (own line), never mid-text.
+                    gx, gw = bx, w
+                    gy = by + link.y0 - math.max(0, (min_t - rh) / 2)
+                    gh = math.max(rh, min_t)
+                else
+                    gx = bx + link.x0 - math.max(0, (min_t - rw) / 2)
+                    gy = by + link.y0 - math.max(0, (min_t - rh) / 2)
+                    gw, gh = math.max(rw, min_t), math.max(rh, min_t)
+                end
+                -- Viewport-clipped (a grown hit for scrolled-away content
+                -- must never catch taps meant for visible content).
+                if gx < bx + w and gy < by + h and gx + gw > bx
+                    and gy + gh > by then
+                    P.hit(view, gx, gy, gw, gh, function()
+                        KtHTML.fire_link(app, page, actions, uri)
+                    end, "ktlink:" .. tostring(uri))
+                end
+            end
+        end
+    end
 end
 
 -- Overlay the current frame of every animation intersecting the viewport.
@@ -698,12 +828,9 @@ end
 
 -- Route a tap at page-local coords (bx, by = content origin on screen).
 -- scroll offsets into the tall bitmap; paginated links are page-local.
--- Returns true when a kt: link consumed it.
--- Touch feedback: the tapped link's rect gets a regional no-flash refresh
--- ("a2" = fast black/white waveform, same class the scrollbar thumb uses)
--- BEFORE the action runs. On e-ink that inverts the link's pixels for one
--- frame - a button press without a full-screen wave. Screens without a2
--- fall back to "ui" through KOReader's refresh queue.
+-- Returns true when a kt: link consumed it. No pre-action feedback by
+-- design: the action's own refresh IS the feedback, and a phantom refresh
+-- before it only adds e-ink latency for zero visible effect.
 function KtHTML.tap(doc, app, page, actions, bx, by, scroll, tx, ty)
     if not doc or not doc.widget then return false end
     local widget = doc.widget
@@ -713,39 +840,43 @@ function KtHTML.tap(doc, app, page, actions, bx, by, scroll, tx, ty)
     end
     if lx < 0 or ly < 0 then return false end
     local link = nil
-    pcall(function()
-        -- Page-local hit test (bypasses the global tap_to_follow_links
-        -- switch: our pages always want their own links live).
-        local pg = widget.document:openPage(widget.page_number or 1)
-        local links = pg:getPageLinks() or {}
-        pg:close()
-        for _, l in ipairs(links) do
-            if l.x0 and lx >= l.x0 and lx < l.x1 and ly >= l.y0 and ly < l.y1 then
-                link = l
-                break
-            end
+    -- Page-local hit test over the cached links (bypasses the global
+    -- tap_to_follow_links switch: our pages always want their own links
+    -- live). Cached per doc: taps are pure math after the first one.
+    for _, l in ipairs(KtHTML.page_links(doc, widget.page_number or 1)) do
+        if l.x0 and lx >= l.x0 and lx < l.x1 and ly >= l.y0 and ly < l.y1 then
+            link = l
+            break
         end
-    end)
+    end
     if not link then return false end
     local uri = link.uri or link.url or ""
     if not uri:find("^kt:", 1) then
         return false -- external links: ignored, like the dictionary popup
     end
-    -- Touch feedback on the link's own rectangle only (screen coords).
-    if doc.view and doc.view.refresh and link.x1 and link.y1 then
-        pcall(function()
-            local sx, sy = bx + link.x0, by + link.y0
-            if not doc.paginated then sy = sy - (scroll or 0) end
-            local geom = Geom:new{
-                x = sx, y = sy,
-                w = math.max(1, math.floor(link.x1 - link.x0)),
-                h = math.max(1, math.floor(link.y1 - link.y0)),
-            }
-            UIManager:setDirty(doc.view, "a2", geom)
-            UIManager:forceRePaint()
-        end)
-    end
-    local scheme, rest = uri:match("^kt:([^:]+):?(.*)$")
+    return KtHTML.fire_link(app, page, actions, uri)
+end
+
+-- Page links, cached per doc (openPage + enumeration once, not per tap;
+-- the cache dies with the doc on invalidate/free). Tall docs are single
+-- page; paginated docs cache per page number.
+function KtHTML.page_links(doc, pageno)
+    if not doc or not doc.widget then return {} end
+    doc.link_cache = doc.link_cache or {}
+    if doc.link_cache[pageno] then return doc.link_cache[pageno] end
+    local links = {}
+    pcall(function()
+        local pg = doc.widget.document:openPage(pageno)
+        links = pg:getPageLinks() or {}
+        pg:close()
+    end)
+    doc.link_cache[pageno] = links
+    return links
+end
+
+-- Fire a kt: URI (shared by the tap router and the grown link hitboxes).
+function KtHTML.fire_link(app, page, actions, uri)
+    local scheme, rest = tostring(uri or ""):match("^kt:([^:]+):?(.*)$")
     rest = rest or ""
     if scheme == "nav" and rest ~= "" then
         app:navigate(rest)
@@ -754,38 +885,15 @@ function KtHTML.tap(doc, app, page, actions, bx, by, scroll, tx, ty)
         app:go_back()
         return true
     elseif scheme == "toggle" and rest ~= "" then
-        -- State templates render into the body at prepare time, so every
-        -- mutation invalidates the cached doc (the next paint rebuilds).
-        KtHTML.invalidate(app, page)
-        if rest:find("^settings%.") then
-            app:toggle_setting(rest:sub(10))
-        else
-            local parent, key = state_ensure(app, rest)
-            if parent and key then
-                parent[key] = not (parent[key] == true)
-            end
-            app:refresh(true)
-        end
+        KtHTML.do_toggle(app, page, rest)
         return true
     elseif scheme == "input" and rest ~= "" then
-        local cur = state_lookup(app, rest)
-        local title = rest:match("[^%.]+$") or rest
-        local Modals = require("ktui/modals")
-        Modals.input(title, tostring(cur == nil and "" or cur), "", nil,
-            function(text)
-                local parent, key = state_ensure(app, rest)
-                if parent and key then parent[key] = tostring(text or "") end
-                KtHTML.invalidate(app, page)
-                app:refresh(true)
-            end)
+        KtHTML.do_input(app, page, rest)
         return true
     elseif scheme == "action" then
         local aname, aid = rest:match("^([^:]+):?(.*)$")
         if aid == "" then aid = nil end
-        local fn = actions and aname and actions[aname]
-        if fn then
-            fn(aid)
-            KtHTML.invalidate(app, page)
+        if KtHTML.do_action(app, page, actions, aname, aid) then
             return true
         end
         return false
@@ -801,6 +909,52 @@ function KtHTML.tap(doc, app, page, actions, bx, by, scroll, tx, ty)
         return true
     end
     return false
+end
+
+-- Shared mutation handlers: the tap router AND the native overlay hitboxes
+-- call these, so link fallback and overlay agree by construction (one
+-- behavior, two entries). Every mutation invalidates the cached doc
+-- because state templates render into the body at prepare time.
+function KtHTML.do_toggle(app, page, path)
+    if not path or path == "" then return end
+    KtHTML.invalidate(app, page)
+    if path:find("^settings%.") then
+        app:toggle_setting(path:sub(10))
+    else
+        local parent, key = state_ensure(app, path)
+        if parent and key then
+            parent[key] = not (parent[key] == true)
+        end
+        app:refresh(true)
+    end
+end
+
+function KtHTML.do_input(app, page, path)
+    if not path or path == "" then return end
+    local cur = state_lookup(app, path)
+    local title = path:match("[^%.]+$") or path
+    local Modals = require("ktui/modals")
+    Modals.input(title, tostring(cur == nil and "" or cur), "", nil,
+        function(text)
+            local parent, key = state_ensure(app, path)
+            if parent and key then parent[key] = tostring(text or "") end
+            KtHTML.invalidate(app, page)
+            app:refresh(true)
+        end)
+end
+
+function KtHTML.do_action(app, page, actions, name, id)
+    local fn = actions and name and actions[name]
+    if not fn then return false end
+    -- NOTE: no blanket invalidate here (a past version had one and every
+    -- read-only action tap paid a full doc rebuild - parse + 2 MuPDF
+    -- layouts + tall raster + pixel scan - inside the same repaint cycle
+    -- as the action's own dialog). Actions that mutate state invalidate
+    -- explicitly (reload/step/move do; toggle/input always do above).
+    logger.dbg("KtHTML: action start", name)
+    fn(id)
+    logger.dbg("KtHTML: action done", name)
+    return true
 end
 
 function KtHTML.free_doc(doc)
@@ -890,8 +1044,7 @@ KtHTML.HTML_SKELETON = [[
 <div class="card">
   <h2>Componentes (pills kt:)</h2>
   <p><a class="pill primary" href="kt:action:shot">Capturar tela</a> <a class="pill" href="kt:action:reload">Recarregar</a></p>
-  <p><a class="anim" style="display: inline-block; width: 120px; height: 36px;" href="kt:btn:reload">[botao nativo]</a></p>
-  <p class="muted">kt:btn: a ancora vira um botao nativo do canvas (pill flutuante com estado de pressao) pintado por cima do bitmap.</p>
+  <p class="muted">Todos os botoes acima sao pills CSS puras - de proposito. O MuPDF ignora border-radius (provado por probe), entao cantos sao retos aqui, como nos dialogos nativos do KOReader. Existiu um overlay nativo (kt:btn) com capsula real, aposentado por custar timer/hitbox/geometria para zero ganho de comportamento.</p>
   <p><a class="pill {{c:settings.debug_mode:on}}" href="kt:toggle:settings.debug_mode">debug: {{s:settings.debug_mode}}</a></p>
   <p class="muted">Toggle real (liga/desliga e salva). Avatar: <img src="sonic_debug.gif" style="width: 48px;"/></p>
 </div>
@@ -913,6 +1066,12 @@ KtHTML.HTML_SKELETON = [[
   <table class="seg"><tr><td class="{{c:sandbox.segA:on}}"><a href="kt:toggle:sandbox.segA">A</a></td><td class="{{c:sandbox.segB:on}}"><a href="kt:toggle:sandbox.segB">B</a></td><td class="{{c:sandbox.segC:on}}"><a href="kt:toggle:sandbox.segC">C</a></td></tr></table>
   <div class="pbar"><div class="pfill" style="width: {{px:sandbox.conta:10}};"></div></div>
   <p class="muted">Barra ligada no contador do Playground (0..9 vira 0..90%). Avatar: <img class="avatar round" src="sonic_debug.gif"/> (circulo se o MuPDF honrar border-radius).</p>
+</div>
+<div class="card">
+  <h2>Controles (pills + router)</h2>
+  <p><a class="pill {{c:sandbox.sw2:on}}" href="kt:toggle:sandbox.sw2">{{t:sandbox.sw2:LIGADO|desligado}}</a></p>
+  <p><a class="field" href="kt:input:sandbox.campo"><span>{{s:sandbox.campo}}</span><span class="hint">{{e:sandbox.campo:digite algo}}</span></a></p>
+  <p class="muted">Chave e campo sao pills com re-render: sem overlay porque a caixa do link abraca o texto (provado por probe) e ancora so com espaco nem link gera. Overlays existem so onde a geometria e exata: botoes (pill crescida) e animacoes (caixa declarada + imagem).</p>
 </div>
 <div class="card">
   <h2>Playground (estado vivo)</h2>

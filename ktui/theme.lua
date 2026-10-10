@@ -200,7 +200,11 @@ function Theme.metrics()
         screen_h = h,
         pad = Theme.scale(10 * d),
         titlebar_h = Theme.scale(48),
-        toolbar_h = Theme.chrome_bar_h(),
+        -- NOTE: no toolbar_h here on purpose. The header pill toolbar height
+        -- (btn_h + 16) lives in Header.height/draw (single definition); an
+        -- earlier metrics.toolbar_h aliased chrome_bar_h() (the icon+label
+        -- bar formula, ~6px taller) but nothing ever read it - keeping it
+        -- invited pages to size content against a height Header never paints.
         nav_h = Theme.chrome_bar_h(),
         card_gap = Theme.scale(8 * d),
         card_h = Theme.scale(400),

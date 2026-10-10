@@ -25,7 +25,11 @@ function Bar.item(view, bb, x, y, w, h, item, opts)
     -- scale with DPI) so labels never touch the indicator band or exit the bar.
     local desc_room = 6
     local indicator_h = opts.indicator and Theme.scale(3) or 0
-    local label_h = item.label and Theme.line_h("chrome") or 0
+    -- Budget with the role that is actually painted below ("tiny"): using a
+    -- smaller role here underestimates the stack, accepts an oversized icon
+    -- in the fit loop, and centers an imaginary smaller stack (real stack
+    -- sits low and crowds the indicator band).
+    local label_h = item.label and Theme.line_h("tiny") or 0
 
     -- Largest icon font whose measured glyph row fits next to the label.
     local max_icon = opts.max_icon or Theme.scale(16)

@@ -90,7 +90,9 @@ end
 
 -- Single-line input. clear_callback adds a leading Clear button (ZenPM
 -- pattern: used by search prompts so the user can wipe the filter inline).
-function Modals.input(title, input, hint, ok_text, callback, clear_callback)
+-- multiline adds allow_newline (Enter inserts a line break instead of firing
+-- the OK button - KOReader's own tradeoff; scrolling stays swipe N/S).
+function Modals.input(title, input, hint, ok_text, callback, clear_callback, multiline)
     local dialog
     local buttons = {
         {
@@ -125,6 +127,12 @@ function Modals.input(title, input, hint, ok_text, callback, clear_callback)
         input = input or "",
         input_hint = hint,
         input_type = "text",
+        allow_newline = multiline and true or false,
+        -- Without text_height the dialog sizes the box by its CONTENT, so an
+        -- empty multiline input still paints one row (allow_newline alone is
+        -- not enough). 160 scaled px ~= 5 lines: KOReader core precedent
+        -- (filemanagerbookinfo.lua).
+        text_height = multiline and require("device").screen:scaleBySize(160) or nil,
         keyboard_visible = not ok_android,
         buttons = buttons,
     }

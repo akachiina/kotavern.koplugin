@@ -319,9 +319,11 @@ function W.row(view, bb, o)
         right = cx
     end
 
-    -- Value text (before the right slots)
+    -- Value text (before the right slots). Only strings paint here: callers
+    -- must normalize booleans/numbers to toggle state or formatted text,
+    -- otherwise tostring(true) leaks into the row as a "true" label.
     local text_right = right
-    if o.value and o.value ~= "" then
+    if type(o.value) == "string" and o.value ~= "" then
         local vs = P.text_size(o.value, nil, "small", { color = Theme.muted })
         local max_vw = math.floor(w * 0.5)
         local vw = math.min(vs.w, max_vw)
@@ -341,14 +343,20 @@ function W.row(view, bb, o)
         P.vcenter_text(bb, W.sanitize(o.title), tx, y, text_w, h, "default", { bold = true, color = title_color })
     end
 
-    -- Hits: whole row first, then sub-slots (registered later → checked first)
-    if o.on_tap and o.enabled ~= false then
+    -- Hits: whole row first, then sub-slots (registered later → checked first).
+    -- Sub-slots honor `enabled` like the row itself: a muted (disabled) row
+    -- must not toggle/edit through its right strips.
+    local interactive = o.enabled ~= false
+    if o.on_tap and interactive then
         P.hit(view, x, y, w, h, o.on_tap, "row:" .. tostring(o.title))
     end
-    if o.toggle and o.on_toggle then
-        P.hit(view, right, y, toggle_w, h, o.on_toggle, "row:toggle")
+    if o.toggle and o.on_toggle and interactive then
+        -- Hit the painted toggle rect (tw_x), not the post-chevron `right`:
+        -- with chevron/check slots `right` shifts 26-52px left of the paint.
+        local tw_x = x + w - pad - kebab_w - toggle_w
+        P.hit(view, tw_x, y, toggle_w, h, o.on_toggle, "row:toggle")
     end
-    if o.kebab and o.on_kebab then
+    if o.kebab and o.on_kebab and interactive then
         P.hit(view, x + w - pad - kebab_w, y, kebab_w, h, o.on_kebab, "row:kebab")
     end
     return h
@@ -402,9 +410,12 @@ function W.segmented(view, bb, o)
     if n == 0 then return 0 end
     local gap = Theme.scale(4)
     local tw = math.floor((o.w - gap * (n - 1)) / n)
+    -- Spread the floor remainder 1px over the first tabs instead of dumping
+    -- it all on the last tab (which came out visibly wider).
+    local rem = (o.w - gap * (n - 1)) - tw * n
     local x = o.x
     for i, tab in ipairs(o.tabs or {}) do
-        local w = (i == n) and (o.w - (n - 1) * (tw + gap)) or tw
+        local w = tw + (i <= rem and 1 or 0)
         local active = (tab.id == o.active)
         if active then
             P.box(bb, x, o.y, w, h, { border = false, background = Theme.button_bg, radius = math.floor(h / 2) })
@@ -417,7 +428,7 @@ function W.segmented(view, bb, o)
         P.hit(view, x, o.y, w, h, function()
             if o.on_select then o.on_select(id) end
         end, "seg:" .. tostring(tab.label))
-        x = x + tw + gap
+        x = x + w + gap
     end
     return h
 end
@@ -426,32 +437,177 @@ end
 
 -- opts: x, y, w, h, icon, text, action = {label, on_tap}
 -- Returns nothing (paints centered inside the area).
-function W.empty_state(view, bb, o)
-    local cy = o.y + math.floor(o.h / 2)
-    if o.icon then
-        local icon_size = Theme.scale(26)
-        local isz = Icons.text_size(o.icon, icon_size)
-        Icons.draw(bb, o.icon, o.x + math.floor((o.w - isz.w) / 2), cy - isz.h - Theme.scale(10), icon_size, { color = Theme.muted })
+-- Ink probe for the empty-state icon (memoized): paints the icon on a
+-- scratch buffer once per (name, size) and records where its real pixels
+-- start/end inside the widget box (glyph bearings are asymmetric and
+-- font-metric boxes lie - see W.empty_state). Memo lives in module scope.
+local empty_ink_cache = {}
+local function _empty_ink_probe(icon, icon_size, key)
+    local hit = empty_ink_cache[key]
+    if hit then return hit[1], hit[2] end
+    local box = icon_size * 2
+    local ok, Blitbuffer = pcall(require, "ffi/blitbuffer")
+    if not ok then return nil, nil end
+    local sb = Blitbuffer.new(box, box, Blitbuffer.TYPE_BB8)
+    sb:fill(Blitbuffer.COLOR_WHITE)
+    Icons.draw(sb, icon, 0, 0, icon_size, { color = Theme.muted })
+    local t, b
+    for y = 0, box - 1 do
+        for x = 0, box - 1 do
+            local okp, px = pcall(function() return sb:getPixel(x, y) end)
+            if okp and px and px:getR() < 200 then t = y break end
+        end
+        if t then break end
     end
-    local lines = P.paragraph_line_count(o.text or "", o.w - Theme.scale(40), "small")
+    for y = box - 1, 0, -1 do
+        for x = 0, box - 1 do
+            local okp, px = pcall(function() return sb:getPixel(x, y) end)
+            if okp and px and px:getR() < 200 then b = y break end
+        end
+        if b then break end
+    end
+    pcall(function() sb:free() end)
+    if not t then return nil, nil end
+    empty_ink_cache[key] = { t, b }
+    return t, b
+end
+
+-- Text ink bounds for the EXACT text to paint (memoized by text+metrics).
+-- Probes with 1-line glyphs ("axo") under-measure: multi-line runs carry
+-- a different first-line bearing (TextBoxWidget pads its frame) and the
+-- caller may end in a descender ("yet"). Painting the real text on a
+-- scratch buffer is deterministic and cheap with the cache. Returns
+-- tt0/tt1 = ink first/last row inside the allocated text_h box.
+local text_ink_cache = {}
+local function _text_ink_probe(text, tw, text_h, key)
+    key = key .. "|" .. text_h
+    local hit = text_ink_cache[key]
+    if hit then return hit[1], hit[2] end
+    local ok, Blitbuffer = pcall(require, "ffi/blitbuffer")
+    if not ok then return nil, nil end
+    local sb = Blitbuffer.new(math.max(8, tw), math.max(2, text_h),
+        Blitbuffer.TYPE_BB8)
+    sb:fill(Blitbuffer.COLOR_WHITE)
+    P.paragraph(sb, text or "", 0, 0, tw, text_h, "small", { color = Theme.muted })
+    local t, b
+    for y = 0, text_h - 1 do
+        for x = 0, tw - 1 do
+            local okp, px = pcall(function() return sb:getPixel(x, y) end)
+            if okp and px and px:getR() < 200 then t = y break end
+        end
+        if t then break end
+    end
+    for y = text_h - 1, 0, -1 do
+        for x = 0, tw - 1 do
+            local okp, px = pcall(function() return sb:getPixel(x, y) end)
+            if okp and px and px:getR() < 200 then b = y break end
+        end
+        if b then break end
+    end
+    pcall(function() sb:free() end)
+    if not t then return nil, nil end
+    text_ink_cache[key] = { t, b }
+    return t, b
+end
+
+function W.empty_state(view, bb, o)
+    -- Center the WHOLE block (icon + text) as one visual unit, positioned
+    -- by INK, not widget boxes (the eye sees ink; glyph boxes carry
+    -- asymmetric bearings that make box-centered composites hang visibly
+    -- shifted - the old version also anchored icon and text independently,
+    -- splitting the block around the center line).
+    --
+    -- Layout rule: optical block height = icon ink height + gap + text ink
+    -- height; the icon paints at the block top (its own bearing already
+    -- measured by probe so the GLYPH's ink starts exactly at block_y), and
+    -- the text's line y compensates its probe-measured top bearing.
+    local icon_size = Theme.scale(26)
+    local isz = o.icon and Icons.text_size(o.icon, icon_size) or nil
+    local gap = o.icon and Theme.scale(10) or 0
+    local tw = o.w - Theme.scale(40)
+    local lines = P.paragraph_line_count(o.text or "", tw, "small")
     local line_h = Theme.line_h("small")
     local text_h = lines * line_h
-    -- Multiline paint (P.center_text is single-line and ellipsizes long
-    -- texts instead of wrapping).
+    -- Icon ink bounds inside its widget box (probe, memoized).
+    local it0, it1 = nil, nil
+    if isz then
+        it0, it1 = _empty_ink_probe(o.icon, icon_size,
+            "emptystate:" .. o.icon .. ":" .. icon_size)
+    end
+    -- Text ink bounds for the REAL text (probe multiline, memoized): the
+    -- composition is placed by ink so bearings never shift the center.
+    local tt0, tt1 = _text_ink_probe(o.text, tw, text_h,
+        "small|" .. tostring(o.text or ""))
+    local icon_ink_h = (it0 and (it1 - it0 + 1)) or (isz and isz.h or 0)
+    local text_ink_h = (tt0 and tt1) and (tt1 - tt0 + 1) or text_h
+    local block_h = icon_ink_h + gap + text_ink_h
+    -- Optical center: pure geometric center in a bright-chrome frame reads
+    -- LOW (the dark Sort/Search pills pin the top edge; nothing balances
+    -- them at the bottom). Classic composition fix - the block's center
+    -- sits at ~46% of the body height, a hair above true center. Users
+    -- perceive this as "centered" (probed visually: 50% reads sunk in the
+    -- chats empty state).
+    local optical_bias = math.floor(o.h * 0.04)
+    local y0 = o.y + math.max(0, math.floor((o.h - block_h) / 2)) - optical_bias
     local tx = o.x + Theme.scale(20)
-    local tw = o.w - Theme.scale(40)
-    P.paragraph(bb, o.text or "", tx, cy - math.floor(text_h / 2), tw, text_h, "small",
-        { color = Theme.muted })
+    if o.icon then
+        -- Icon: paint so its INK top lands at y0 (subtract probe head).
+        Icons.draw(bb, o.icon,
+            o.x + math.floor((o.w - isz.w) / 2), y0 - (it0 or 0),
+            icon_size, { color = Theme.muted })
+    end
+    -- Text box y so the block's text ink begins at y0 + icon_ink_h + gap.
+    local text_y = y0 + icon_ink_h + gap - (tt0 or 0)
+    -- H-center every line (align=center within the padded column): the
+    -- old paint left-anchored the label at x+20 so long lines read "in a
+    -- corner" while the icon floated centered above them.
+    P.paragraph(bb, o.text or "", tx, text_y, tw, text_h, "small",
+        { color = Theme.muted, align = "center" })
     if o.action and o.action.on_tap then
         local bw, bh = W.button_width(o.action.label, o.action.icon)
         W.button(view, bb, {
             x = o.x + math.floor((o.w - bw) / 2),
-            y = cy + math.floor(text_h / 2) + Theme.scale(14),
+            y = y0 + block_h + Theme.scale(14),
             w = bw, h = bh,
             label = o.action.label, icon = o.action.icon,
             kind = "secondary", on_tap = o.action.on_tap,
         })
     end
+end
+
+-- === HTML island (MuPDF content inside native layout) ===
+
+-- A literal-HTML block for native pages (the B pattern: native structure,
+-- MuPDF content). o = { x, y, w, h, scroll, html, css, actions, key,
+-- paginated, mtime }. Static content unless the caller invalidates:
+-- templates render once per doc build, so state-driven islands must call
+-- KtHTML.invalidate(app, key) after mutations (the kt: router already
+-- does). Registers the island hitbox FIRST so overlay hitboxes painted
+-- afterwards win ties (same load-bearing order as Pages.html_test).
+-- Returns max_scroll for the caller's scrollbar.
+function W.html_block(view, bb, o)
+    local KtHTML = require("ktui/kthtml")
+    local app = view.app
+    local key = o.key or "block"
+    local rendered = KtHTML.render_body(o.html or "", app)
+    local css = KtHTML.theme_css() .. "\n" .. (o.css or "")
+    local src = { body = rendered, css = css, mtime = o.mtime }
+    local doc = KtHTML.ensure(app, view, key, src, o.w, o.h,
+        { paginated = o.paginated })
+    if not doc then return 0 end
+    local total = KtHTML.content_h(doc, o.h)
+    local max_scroll = math.max(0, total - o.h)
+    local sc = math.max(0, math.min(o.scroll or 0, max_scroll))
+    P.hit(view, o.x, o.y, o.w, o.h, function(tx, ty)
+        local live = KtHTML.current(app, key)
+        if live then
+            return KtHTML.tap(live, app, key, o.actions,
+                o.x, o.y, sc, tx, ty)
+        end
+        return false
+    end, "kthtml:island")
+    KtHTML.paint_window(doc, bb, o.x, o.y, o.w, o.h, sc, view, o.actions)
+    return max_scroll
 end
 
 return W

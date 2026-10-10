@@ -275,6 +275,40 @@ function P.paragraph_metrics(text, width, role, opts)
     return lines, line_height
 end
 
+-- Height paint WILL occupy (not the nominal lines*line_h): the widget
+-- lays lines out at rounded positions, so lines*line_h drifts ~1px/line
+-- short of reality (probe: 261 nominal vs 262 painted, ink ending 254).
+-- Constructs the widget with paint-identical params and reads back its
+-- adjusted size, so measure and paint agree by construction. Trial height
+-- is one line of headroom over the metrics count (bounded buffer, no
+-- 100000px allocations); empty text keeps the old metrics path so
+-- zero-height empties are preserved.
+function P.paragraph_height(text, width, role, opts)
+    opts = opts or {}
+    local str = tostring(text or "")
+    if str:gsub("%s+", "") == "" then
+        local lines, line_h = P.paragraph_metrics(str, width, role, opts)
+        return lines * line_h
+    end
+    local lines, line_h = P.paragraph_metrics(str, width, role, opts)
+    local widget = TextBoxWidget:new{
+        text = str,
+        face = opts.face or Theme.face(role),
+        bold = opts.bold,
+        fgcolor = opts.color or Theme.ink,
+        bgcolor = opts.bgcolor,
+        alignment = opts.align or opts.alignment or "left",
+        width = width,
+        height = lines * line_h + line_h,
+        height_adjust = true,
+        height_overflow_show_ellipsis = true,
+        line_height = opts.line_height,
+    }
+    local h = widget:getSize().h
+    widget:free()
+    return h
+end
+
 function P.center_text(bb, text, x, y, w, role, opts)
     opts = opts or {}
     local widget = TextWidget:new{

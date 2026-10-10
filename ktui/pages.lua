@@ -57,22 +57,17 @@ end
 -- (The Search/Sort/Filter/View/Import toolbar moved into the header as
 -- contextual pills - see ui/header.lua. The page body is now all content.)
 
--- Viewport-fitted grid rows (ZenPM's package_card_height pattern): derive the
--- number of rows from the DESIRED card height (Settings → Dashboard: short /
--- normal / tall), then stretch/shrink the card to close the viewport exactly.
--- No half-cards, no dead band at the bottom, at any screen size or font size.
-local function viewport_rows(list_h, desired_h, gap)
-    return math.max(1, math.floor((list_h + gap) / (desired_h + gap)))
-end
-
--- ZenPM pattern for TEXT rows: start from the natural content height, then
--- stretch rows to close the viewport exactly (capped at 1.6× so a short list
--- doesn't balloon). No dead band at the bottom of full screens.
+-- Deck-fitted TEXT rows (round 4): natural content height, stretch to close
+-- the viewport exactly but at a SOFTER cap (1.25×, down from 1.6×) - the
+-- 1.6× balloon was the "rows look bloated on tall screens" complaint.
+-- Touch floor preserved. Delegates to ktui/deck for the fitted math.
 local function fit_row_h(list_h, natural_h, gap)
     gap = gap or Theme.metrics().card_gap -- some callers pass no gap
     local rows = math.max(1, math.floor((list_h + gap) / (natural_h + gap)))
     local fitted = math.floor((list_h - gap * (rows - 1)) / rows)
-    return math.max(natural_h, math.min(math.floor(natural_h * 1.6 + 0.5), fitted))
+    local Deck = require("ktui/deck")
+    return math.max(natural_h,
+        math.min(math.floor(natural_h * Deck.ROW_STRETCH_CAP + 0.5), fitted))
 end
 
 function Pages.dashboard(view, bb, x, y, w, h, scroll)
@@ -132,18 +127,29 @@ function Pages.dashboard(view, bb, x, y, w, h, scroll)
     end
 
     local list_h = h - (list_top - y)
-    -- Card height closes the viewport exactly (see viewport_rows above).
-    local grid_rows = viewport_rows(list_h, desired_card_h, card_gap)
-    local card_h = math.floor((list_h - card_gap * (grid_rows - 1)) / grid_rows)
-    -- Skinny-tower guard: ST covers are portrait; never let a card exceed
-    -- ~1.9× its width on narrow viewports - add rows instead (the grid stays
-    -- viewport-fitted, just denser).
-    local max_card_h = card_w * 1.9
-    while card_h > max_card_h and grid_rows < 6 do
-        grid_rows = grid_rows + 1
-        card_h = math.floor((list_h - card_gap * (grid_rows - 1)) / grid_rows)
+    -- Fixed card heights (ST-style): card_h is the desired height from
+    -- Settings → Dashboard (short / normal / tall), CAPPED at what fills
+    -- exactly 2 rows in this viewport - so 6 cards always fit with zero
+    -- scroll, whatever the screen size. The row count still comes from the
+    -- content (ceil(#items / cols)) and the overflow SCROLLS at the same
+    -- height: 7 cards never shrink, the 3rd row waits below the fold.
+    -- (Cap depends only on the viewport, never on the count: sizes stay
+    -- identical across 6/7/8+. The 0.9×w readability floor only matters on
+    -- very short screens, where even 6 may scroll - accepted extreme.)
+    local card_h = desired_card_h
+    local two_row_cap = math.floor((list_h - card_gap) / 2)
+    if two_row_cap > 0 then
+        card_h = math.min(card_h, math.max(math.floor(card_w * 0.9), two_row_cap))
     end
-    local step = view_mode == "list" and (list_row_h + card_gap) or (card_h + card_gap)
+    if os.getenv("KT_DEBUG_GRID") then
+        print("DBG grid: rows=" .. math.max(1, math.ceil(#items / cols))
+            .. " card_h=" .. card_h
+            .. " list_h=" .. list_h .. " desired=" .. desired_card_h
+            .. " card_w=" .. card_w)
+    end
+    -- NOTE: scrolled_list takes the ITEM height (it adds the gap itself):
+    -- grid rows pass card_h, list rows list_row_h. Passing step (h + gap)
+    -- double-counts the gap and inflates max_scroll by N*gaps.
     local max_scroll
     if view_mode == "grid" then
         -- scrolled_list advances cy per item, so group cards into rows: each
@@ -156,7 +162,7 @@ function Pages.dashboard(view, bb, x, y, w, h, scroll)
             end
             table.insert(rows, row)
         end
-        max_scroll = Scroll.scrolled_list(view, bb, rows, x, list_top, w, list_h, scroll, step, card_gap, function(row, cy, scrollable)
+        max_scroll = Scroll.scrolled_list(view, bb, rows, x, list_top, w, list_h, scroll, card_h, card_gap, function(row, cy, scrollable)
             for c = 0, cols - 1 do
                 local card = row[c + 1]
                 if card then
@@ -166,7 +172,7 @@ function Pages.dashboard(view, bb, x, y, w, h, scroll)
             end
         end)
     else
-        max_scroll = Scroll.scrolled_list(view, bb, items, x, list_top, w, list_h, scroll, step, card_gap, function(item, cy, scrollable)
+        max_scroll = Scroll.scrolled_list(view, bb, items, x, list_top, w, list_h, scroll, list_row_h, card_gap, function(item, cy, scrollable)
             local row_gutter = scrollable and gutter or 0
             Cards.list_item(view, bb, item, x + pad, cy, w - pad * 2 - row_gutter, list_row_h)
         end)
@@ -187,12 +193,18 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
     local row_h = math.max(m.touch_min, small_lh + Theme.scale(14))
     local gutter = Theme.scrollbar_w()
 
-    -- Expand the row spec into variable-height items
+    -- Expand the row spec into variable-height items. Deck rule (round 4,
+    -- item 1): when the WHOLE list fits in the viewport, rows absorb the
+    -- leftover evenly (settings rows breathe; sections keep their size +
+    -- breathing share) - when it doesn't, measured heights keep scrolling.
     local items = {}
+    local n_sections, n_rows = 0, 0
     for _, row in ipairs(rows) do
         if row.section then
+            n_sections = n_sections + 1
             table.insert(items, { h = header_h, section = true, text = row.text })
         else
+            n_rows = n_rows + 1
             table.insert(items, {
                 h = row.subtext
                     and math.max(row_h, Theme.line_h("small") * 2 + Theme.scale(14))
@@ -207,9 +219,29 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
             })
         end
     end
-
     local list_y = y + Theme.scale(4)
     local list_h = h - Theme.scale(8)
+    -- Deck grow (round 4, item 1) WITH A CEILING: rows may grow to at most
+    -- 1.35x their natural height (comfortable tap targets, not the
+    -- comically tall panels the unbounded grow painted when a page has few
+    -- rows - Language with ONE row became a full-screen button). The
+    -- remaining leftover stays as breathing room AFTER the last row
+    -- (e-ink friendly, matches ZenPM's fixed-row look).
+    local declared = 0
+    for _, it in ipairs(items) do declared = declared + it.h end
+    local grow_extra = list_h - (declared + (#items - 1) * gap)
+    if grow_extra > 0 and n_rows > 0 then
+        local per_item = math.floor(grow_extra / #items)
+        for _, it in ipairs(items) do
+            if not it.section then
+                -- Cap: at most 1.35x natural height per row (tap targets,
+                -- not full-screen buttons). Unused leftover becomes tail
+                -- breathing room (nothing paints there; no stretched panel).
+                local max_add = math.floor(it.h * 0.35 + 0.5)
+                it.h = it.h + math.min(per_item, max_add)
+            end
+        end
+    end
     return Scroll.scrolled_list_var(view, bb, items, x, list_y, w, list_h, scroll, gap, function(item, item_y, scrollable)
         local row_x = x + pad
         local row_w = w - pad * 2 - (scrollable and gutter or 0)
@@ -219,7 +251,13 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
             return
         end
 
-        local value = item.value_fn and item.value_fn() or nil
+        local raw = item.value_fn and item.value_fn() or nil
+        -- Boolean values drive the toggle only; passing them through would
+        -- paint tostring(true)/tostring(false) in the value text slot
+        -- (W.row paints any truthy non-"" value). Normalize to nil here
+        -- (W.row also guards with a type check as a second line of defense).
+        local value = (type(raw) == "boolean") and nil or raw
+        local toggled = raw == true
         Widgets.row(view, bb, {
             x = row_x, y = item_y, w = row_w, h = item.h,
             icon = item.icon,
@@ -228,7 +266,7 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
             value = value,
             chevron = not item.toggle and value == nil,
             toggle = item.toggle,
-            toggle_value = item.toggle and value == true,
+            toggle_value = item.toggle and toggled,
             on_toggle = item.callback,
             on_tap = item.callback,
             enabled = item.enabled,
@@ -276,11 +314,8 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
     end
 
     -- Easter egg (debug builds): animated memento pinned under the
-    -- settings categories - image left, two-line note vertically centered
-    -- beside it, the whole block centered on the page. The block reserves
-    -- its own band at the bottom of the viewport, so scrolling rows always
-    -- stop above it instead of sliding underneath the GIF (the old layout
-    -- let rows overlap the banner on short screens).
+    -- settings categories. Its band is an ABSOLUTE px band so the list
+    -- never slides beneath the GIF (kept from the round-2 fix).
     local band_h = 0
     local banner = nil
     if app.state.settings.debug_mode then
@@ -302,7 +337,21 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
             note_w = note_w0, text_h = text_h0, block_h = block_h }
     end
 
-    local max_scroll = Pages.settings_section(view, bb, x, y, w, h - band_h, scroll, rows)
+    -- Deck bands (round 4, item 1): the page DECLARES bands, the deck
+    -- distributes pixels. List band grows (leftover space goes to rows,
+    -- never to a stray gap); the GIF banner (when armed) is an absolute
+    -- px band at the bottom.
+    local Deck = require("ktui/deck")
+    local band_defs = {
+        Deck.card("rows", { grow = true, max = h }),
+    }
+    if banner then band_defs[#band_defs + 1] = Deck.px("banner", band_h) end
+    local rects = Deck.layout(view, band_defs, { x = x, y = y, w = w, h = h })
+
+    -- Rows: same painter as before, but fed by the deck's rect.
+    local rrows = rects.rows
+    local max_scroll = Pages.settings_section(view, bb, x, rrows.y, w,
+        rrows.h, scroll, rows)
 
     if banner then
         local GifAnim = require("ktui/gifanim")
@@ -314,8 +363,8 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
         local col_w = banner.note_w
         local block_w = img_s + gap + col_w
         local block_h = banner.block_h
-        -- Centered inside the reserved band (band_h = block_h + pad*2).
-        local band_y = y + h - band_h
+        -- The deck pinned this band at the bottom of the body (rects.banner).
+        local band_y = rects.banner.y
         local bx = x + math.max(pad, math.floor((w - block_w) / 2))
         local by = band_y + pad
         -- Pre-composited full frames (tools/gen_debug_banner.py): the raw
@@ -341,6 +390,7 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
     return max_scroll
 end
 
+-- Settings > Appearance: theme/font/density/chat-style/appearance toggles.
 function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
     local app = view.app
     local density_labels = {
@@ -812,12 +862,18 @@ function Pages.data_storage(view, bb, x, y, w, h, scroll)
     local action_h = math.max(m.touch_min, ls + lt + Theme.scale(14))
     local gap = Theme.scale(6)
 
+    -- Deck band heights (round 4, item 1): when the WHOLE page fits in
+    -- the viewport, the 4 action rows absorb the leftover space evenly
+    -- (rows breathe - the "Refresh cut by nav / scroll that doesn't move"
+    -- shape dies here). When it doesn't fit, measured heights preserve the
+    -- scroll behavior unchanged.
     local items = {
         { kind = "total", h = ls + lt + Theme.scale(14) },
     }
     for _, c in ipairs(info.cats or {}) do
         items[#items + 1] = { kind = "bar", cat = c, h = bar_h }
     end
+    local n_actions = 4
     items[#items + 1] = { kind = "action", title = _("Export backup"), icon = "download",
         h = action_h, cb = function() app:export_backup() end }
     items[#items + 1] = { kind = "action", title = _("Import backup"), icon = "upload",
@@ -826,6 +882,15 @@ function Pages.data_storage(view, bb, x, y, w, h, scroll)
         value = info.root, h = action_h, cb = function() app:move_data_root() end }
     items[#items + 1] = { kind = "action", title = _("Refresh"), icon = "refresh",
         h = action_h, cb = function() app:refresh_storage() end }
+    local stats_h = items[1].h + #info.cats * bar_h
+    local total_fit = stats_h + n_actions * action_h + (#items - 1) * gap
+    local grow_extra = h - total_fit
+    if grow_extra > 0 then
+        local per_action = math.floor(grow_extra / n_actions)
+        for i = #items - 3, #items do
+            items[i].h = action_h + per_action
+        end
+    end
 
     local gutter = Theme.scrollbar_w()
     return Scroll.scrolled_list_var(view, bb, items, x, y, w, h, scroll, gap,
@@ -842,8 +907,13 @@ function Pages.data_storage(view, bb, x, y, w, h, scroll)
             P.text(bb, _(c.msgid), rx, cy, row_w, "small", { bold = true })
             local bstr = Storage.format_bytes(c.bytes or 0)
             local bsz = P.text_size(bstr, row_w, "tiny")
-            P.text(bb, bstr, rx + row_w - math.min(bsz.w, row_w), cy, row_w, "tiny",
-                { color = Theme.muted })
+            -- Baseline-align: title paints a small face, value a tiny one;
+            -- both at cy put the tiny baseline noticeably ABOVE the bold
+            -- baseline ("2 B" floated high vs "Presets" - the visible
+            -- misalignment on the Data page). Tiny text baseline =
+            -- baseline(small) shift + (ls - lt).
+            P.text(bb, bstr, rx + row_w - math.min(bsz.w, row_w),
+                cy + ls - lt, row_w, "tiny", { color = Theme.muted })
             local by = cy + ls + Theme.scale(4)
             local bw = row_w
             P.rect(bb, rx, by, bw, Theme.scale(8), Theme.soft)
@@ -869,22 +939,16 @@ end
 
 -- === Debug Mode ===
 -- Experimental options + the CSS sandbox. Only reachable with debug_mode.
+-- Debug category, both sandboxes: UI DSL (css_test) + KtHTML (html_test),
+-- each with install/reset, plus pagination mode and the Debug Mode master
+-- switch. Older native_test stays in code with no row: frozen, not deleted.
 function Pages.settings_debug(view, bb, x, y, w, h, scroll)
     local app = view.app
-    local current_css = app.state.settings.debug_theme_css or ""
     local rows = {
         { section = true, text = _("Experimental") },
         { text = _("Test CSS"), icon = "magic",
           subtext = _("Sandbox page painted by the UI DSL engine"),
           callback = function() app:navigate("css_test") end },
-        { text = _("CSS theme"), icon = "file",
-          value = function()
-              return current_css ~= "" and current_css or _("None (built-in)")
-          end,
-          callback = function() app:show_debug_actions() end },
-        { text = _("Install default CSS"), icon = "download",
-          subtext = _("Write sandbox.css into the themes folder"),
-          callback = function() app:install_demo_theme() end },
         { text = _("Install sandbox.html"), icon = "file",
           subtext = _("Write the demo screen into themes/pages/ (tap again to reset)"),
           value = function()
@@ -916,19 +980,6 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
           value = function() return app.state.settings.debug_mode == true end,
           callback = function() app:toggle_debug_mode() end },
     }
-    -- One row per theme file; a tap activates it and jumps to the sandbox.
-    local themes = require("ktui/uidsl").list_theme_files()
-    for _i, t in ipairs(themes) do
-        table.insert(rows, #rows + 1, { text = t.name, icon = "eye",
-            value = function()
-                return t.name == current_css and _("Active") or nil
-            end,
-            callback = function()
-                app:save_setting("debug_theme_css", t.name)
-                app:apply_settings()
-                app:navigate("css_test")
-            end })
-    end
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
@@ -958,6 +1009,10 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
     local btn_w = math.floor((w - pad * 2 - Theme.scale(12)) / 2)
     local reload_cb = function()
         app:apply_settings()
+        -- Force a full tree rebuild (not just a repaint): the sandbox_tree
+        -- cache also keys on appearance settings now, but an explicit
+        -- Reload must never serve stale geometry under any circumstance.
+        app.state.css_force_rebuild = true
         app:refresh(true)
         UIManager:show(InfoMessage:new{
             text = _("CSS reloaded"), timeout = 2 })
@@ -970,12 +1025,30 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
     local actions = {
         reload = function(id)
             app:apply_settings()
+            app.state.css_force_rebuild = true
             app:refresh(true)
             UIManager:show(InfoMessage:new{
                 text = _("CSS reloaded"), timeout = 2 })
         end,
         shot = function(id)
             app:debug_page_shot()
+        end,
+        -- Same verbs as the KtHTML sandbox (html_test): one action
+        -- catalog for both engines, authors learn once. No invalidate
+        -- needed here: bind values re-resolve on every sandbox_tree hit.
+        step = function(id)
+            app.state.sandbox = app.state.sandbox or {}
+            local n = tonumber(app.state.sandbox.conta) or 0
+            n = math.max(0, math.min(9, n + (tonumber(id) or 0)))
+            app.state.sandbox.conta = n
+            app:refresh(true)
+        end,
+        move = function(id)
+            app.state.sandbox = app.state.sandbox or {}
+            local n = tonumber(app.state.sandbox.pos) or 0
+            n = math.max(0, math.min(8, n + (tonumber(id) or 0)))
+            app.state.sandbox.pos = n
+            app:refresh(true)
         end,
     }
     local Storage = require("kt_storage")
@@ -986,7 +1059,10 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
     }
     -- sandbox_tree caches by file mtime + theme sheet identity: edits land
     -- on Reload without re-parsing on every scroll repaint.
-    local tree, merged, sandbox_errors = UiDSL.sandbox_tree(app, actions, vars)
+    local force = app.state.css_force_rebuild == true
+    app.state.css_force_rebuild = nil
+    local tree, merged, sandbox_errors =
+        UiDSL.sandbox_tree(app, actions, vars, force)
     
     -- Errors surface right here (sandbox = error surface too): theme
     -- palette problems first, then sandbox.html ones (missing file, bad
@@ -999,13 +1075,6 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
         errors[#errors + 1] = e
     end
 
-    -- Reserve space for errors at the bottom if any exist.
-    local err_h = 0
-    if #errors > 0 then
-        err_h = Theme.line_h("tiny") + Theme.scale(8)
-        list_h = list_h - err_h
-    end
-
     local node_h = {}
     local gap = Theme.scale(10)
     local total_h = 0
@@ -1013,6 +1082,18 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
     for i = 1, #tree.children do
         node_h[i] = UiDSL.measure(tree.children[i], inner_w)
         total_h = total_h + node_h[i] + ((i > 1) and gap or 0)
+    end
+    -- Island renders resolve during measure above: collect their
+    -- warnings/errors AFTER measuring, then reserve the strip.
+    for _, e in ipairs(UiDSL.html_errors(tree)) do
+        errors[#errors + 1] = e
+    end
+
+    -- Reserve space for errors at the bottom if any exist.
+    local err_h = 0
+    if #errors > 0 then
+        err_h = Theme.line_h("tiny") + Theme.scale(8)
+        list_h = list_h - err_h
     end
     max_scroll = math.max(0, total_h - list_h)
     local inner_scroll = math.max(0, math.min(scroll or 0, max_scroll))
@@ -1028,13 +1109,20 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
     for i = 1, #tree.children do
         local node = tree.children[i]
         if cy + node_h[i] > list_y and cy < list_y + list_h then
-            UiDSL.paint(node, bb, x + pad, cy, inner_w, view)
+            -- Clip = the node's own visible band, NOT the whole list: a
+            -- node that overlaps the toolbar strip only paints inside its
+            -- slice - bleed under the toolbar is gone by construction, no
+            -- opaque overpaint needed (round 3, item 1.2).
+            local top_i = math.max(cy, list_y)
+            local bot_i = math.min(cy + node_h[i], list_y + list_h)
+            UiDSL.paint(node, bb, x + pad, cy, inner_w, view,
+                { x = x, y = top_i, w = w, h = math.max(0, bot_i - top_i) })
         end
         cy = cy + node_h[i] + gap
     end
-    -- Fixed toolbar on top of the list: opaque strip erases any head-item
-    -- bleed, buttons register their hitboxes last so they win the reverse
-    -- hit test in AppView:onTapKotavern.
+    -- Toolbar ABOVE the list items in registration order: hitboxes register
+    -- last so they win the reverse hit test in AppView:onTapKotavern (the
+    -- overpaint rect is now belt-and-suspenders; nothing bleeds anymore).
     P.rect(bb, x, y, w, list_y - y, Theme.bg)
     Widgets.button(view, bb, { x = x + pad, y = y + Theme.scale(4), w = btn_w, h = btn_h,
         icon = "refresh", label = _("Reload"), on_tap = reload_cb })
@@ -1123,13 +1211,11 @@ function Pages.html_test(view, bb, x, y, w, h, scroll)
 
     -- Clear the list background FIRST to wipe old scrolled content.
     P.rect(bb, x, list_y, w, list_h, Theme.bg)
-    if doc then
-        KtHTML.paint_window(doc, bb, x + pad, list_y, inner_w, list_h,
-            inner_scroll, view, actions)
-        view.dithered = true -- bitmap content, same hint as images
-    end
-    -- Single content hitbox (registered after paint so it wins ties that
-    -- are not the scrollbar, which registers later in draw_content).
+    -- Content hitbox registered BEFORE paint on purpose: the native
+    -- overlays (btn/toggle/field hitboxes registered during paint_window)
+    -- must win ties over it, and the scrollbar registered later in
+    -- draw_content wins over everything. Reverse-order hit test reads last
+    -- registered first - this order is load-bearing, do not "fix" it.
     if doc then
         P.hit(view, x + pad, list_y, inner_w, list_h, function(tx, ty)
             local live = KtHTML.current(app, "html_sandbox.html")
@@ -1139,6 +1225,9 @@ function Pages.html_test(view, bb, x, y, w, h, scroll)
             end
             return false
         end, "kthtml:page")
+        KtHTML.paint_window(doc, bb, x + pad, list_y, inner_w, list_h,
+            inner_scroll, view, actions)
+        view.dithered = true -- bitmap content, same hint as images
     end
 
     -- Errors in their reserved bottom strip with a solid background.
@@ -1150,6 +1239,47 @@ function Pages.html_test(view, bb, x, y, w, h, scroll)
             w - pad * 2, "tiny", { color = Theme.muted })
     end
     return max_scroll
+end
+
+-- B-pattern demo: native layout (title + buttons) hosting one MuPDF island.
+-- Proves canvas structure + HTML content compose with no hitbox conflicts:
+-- the island registers its hitbox first, native buttons afterwards win ties.
+function Pages.native_test(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local m = Theme.metrics()
+    local pad = m.pad
+    local btn_h = Theme.btn_h()
+    local gap = Theme.scale(8)
+    P.rect(bb, x, y, w, h, Theme.bg)
+    P.text(bb, "Nativo + ilha HTML", x + pad, y + Theme.scale(6),
+        w - pad * 2, "heading", { bold = true })
+    local title_h = Theme.line_h("heading") + Theme.scale(6)
+    local btn_y = y + h - btn_h - Theme.scale(6)
+    local iy = y + title_h + gap
+    local island_h = math.max(Theme.scale(60), btn_y - gap - iy)
+    local inner_w = w - pad * 2 - Theme.scrollbar_w()
+    local actions = { shot = function() app:debug_page_shot() end }
+    local island_html = [[
+<div class="card"><h2>Ilha HTML em pagina nativa</h2>
+<p>Este bloco e um documento MuPDF dentro de layout canvas: titulo e botoes sao nativos, o resto e HTML de verdade com link funcional.</p>
+<p><a class="pill" href="kt:action:shot">Capturar tela</a></p></div>]]
+    Scroll.set_list_bounds(view, x, iy, w, island_h, nil)
+    Widgets.html_block(view, bb, { x = x + pad, y = iy, w = inner_w,
+        h = island_h, scroll = 0, html = island_html, actions = actions,
+        key = "native_demo" })
+    view.dithered = true
+    local btn_w = math.floor((w - pad * 2 - Theme.scale(12)) / 2)
+    Widgets.button(view, bb, { x = x + pad, y = btn_y, w = btn_w, h = btn_h,
+        icon = "refresh", label = _("Reload"), on_tap = function()
+            require("ktui/kthtml").invalidate(app, "native_demo")
+            app:refresh(true)
+        end })
+    Widgets.button(view, bb, { x = x + pad + btn_w + Theme.scale(12),
+        y = btn_y, w = btn_w, h = btn_h,
+        icon = "camera", label = _("Shot"), on_tap = function()
+            app:debug_page_shot()
+        end })
+    return 0
 end
 
 function Pages.settings_updates(view, bb, x, y, w, h, scroll)
@@ -2082,23 +2212,14 @@ function Pages.prompt_manager(view, bb, x, y, w, h, scroll)
 
         -- Row-wide edit hit FIRST (non-marker prompts); the narrow controls
         -- below register after and win their strips (reverse-order checking).
+        -- NOTE: a kebab hit used to live here (rename/remove), but it had no
+        -- painted affordance and overlapped the Up button by 22px (Up won, so
+        -- only a ~2px sliver was live). Removed as dead; rename/remove belong
+        -- on the edit screen if needed.
         if not is_marker then
             P.hit(view, row_x, cy, row_w, row_h, function()
                 view.app:edit_prompt_item(item.index)
             end, "pm_edit_" .. item.index)
-            -- Kebab (v0.6.7): rename / remove utility prompts. Narrow strip
-            -- registered after the row-wide hit, so it wins on the right edge.
-            P.hit(view, down_x - Theme.scale(24), cy, Theme.scale(24), row_h, function()
-                local Sheets = require("ktui/sheets")
-                Sheets.show(view.app, { title = item.name or "?", actions = {
-                    { label = _("Rename"), icon = "edit", on_tap = function()
-                        view.app:rename_prompt_item(item.index)
-                    end },
-                    { label = _("Remove"), icon = "trash", danger = true, on_tap = function()
-                        view.app:remove_prompt_item(item.index)
-                    end },
-                } })
-            end, "pm_kebab_" .. item.index)
         end
 
         -- Toggle (enable/disable in the order)
@@ -2423,11 +2544,14 @@ function Pages.chats(view, bb, x, y, w, h, scroll)
     local items = {}
     local Storage = require("kt_storage")
     for _, chat in ipairs(chats) do
+        -- Normalize to "" (never nil): list_item picks the legacy 2-line
+        -- layout by key presence, so every chat row gets the same layout
+        -- even with no character name and no preview yet.
         table.insert(items, {
             name = chat.text or chat.name or "Chat",
             path = chat.character_path, -- thumbnail image
-            subtext = chat.character_name,
-            meta = Storage.chat_preview(chat.path),
+            subtext = chat.character_name or "",
+            meta = Storage.chat_preview(chat.path) or "",
             callback = chat.callback,
             chat_ref = chat,
         })
@@ -2788,10 +2912,17 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     local char_name = state.current_character or "?"
     local is_generating = state.is_generating
 
-    -- Bottom action bar metrics
-    local action_bar_h = Theme.scale(54)
-    local content_h = h - action_bar_h
-    local action_y = y + content_h
+    -- Deck bands (round 4, item 1): the composer is an absolute px band
+    -- pinned at the bottom; the message list takes the rest (grow). Same
+    -- contract as the settings pilot - the page declares, the deck lays.
+    local Deck = require("ktui/deck")
+    local rects = Deck.layout(view, {
+        Deck.card("messages", { grow = true }),
+        Deck.px("composer", Theme.scale(54)),
+    }, { x = x, y = y, w = w, h = h })
+    local action_bar_h = rects.composer.h
+    local content_h = rects.messages.h
+    local action_y = rects.composer.y
     local pad = Theme.scale(10)
     -- Swipe step (a few text lines - zenpm row parity).
     local ChatBubblesHead = require("ktui/chat_bubbles")

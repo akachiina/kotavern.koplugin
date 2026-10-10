@@ -403,7 +403,7 @@ end
 
 -- =============================================================== layout ===
 -- Node spec fields: tag ("box"|"row"|"text"|"para"|"image"|"spacer"|
--- "icon"|"toggle"|"avatar"|"button"), id, classes, text, src,
+-- "icon"|"toggle"|"check"|"avatar"|"button"), id, classes, text, src,
 -- w/h/min_h (CSS lengths or px), pad, gap, fill_h, bg, color, radius,
 -- border, border_size, bold, role, align, width, flex, display, valign,
 -- kind, icon_name, icon_size, avatar_name, avatar_src, toggle_value,
@@ -476,6 +476,16 @@ local function resolve_width(val, parent_w)
     return resolve_length(val)
 end
 
+-- Outer margin of a child in a flow (box column or row). CSS-like: margin
+-- applies on BOTH sides of the axis (top+bottom in a column, left+right in
+-- a row); margin-x only horizontal. Columns therefore add margin twice to
+-- the flow height (before + after the child).
+local function child_margin(child, axis)
+    local m = child.margin or 0
+    local mx = child.margin_x or 0
+    return (axis == "x") and (mx + m) or m
+end
+
 -- Row layout: distribute inner_w among children. Fixed-width children first,
 -- flex children share the remainder proportionally (default flex = 1).
 -- Intrinsic width of a row child that has a natural size (icons, toggles,
@@ -489,6 +499,8 @@ local function intrinsic_row_w(node)
         return math.max(sz, 4)
     elseif node.tag == "toggle" then
         return Theme.scale(52)
+    elseif node.tag == "check" then
+        return Theme.scale(26)
     elseif node.tag == "avatar" then
         return node.avatar_size or Theme.scale(48)
     end
@@ -506,7 +518,16 @@ local function row_child_widths(node, inner_w)
         if child.display ~= "none" then visible = visible + 1 end
     end
     local total_gap = gap * math.max(0, visible - 1)
-    local avail = math.max(0, inner_w - total_gap)
+    -- Reserve horizontal margins too: paint offsets each child by its own
+    -- margin, so widths distributed without them overflow the row by the
+    -- margin sum. (Keep in sync with the paint loop below.)
+    local total_margin = 0
+    for _, child in ipairs(children) do
+        if child.display ~= "none" then
+            total_margin = total_margin + child_margin(child, "x")
+        end
+    end
+    local avail = math.max(0, inner_w - total_gap - total_margin)
     local widths = {}
     local flex_total = 0
     local fixed_total = 0
@@ -536,97 +557,386 @@ local function row_child_widths(node, inner_w)
     return widths
 end
 
--- Outer margin of a child in a flow (box column or row). CSS-like: margin
--- applies on BOTH sides of the axis (top+bottom in a column, left+right in
--- a row); margin-x only horizontal. Columns therefore add margin twice to
--- the flow height (before + after the child).
-local function child_margin(child, axis)
-    local m = child.margin or 0
-    local mx = child.margin_x or 0
-    return (axis == "x") and (mx + m) or m
+-- MuPDF content islands (tag "html"): literal HTML rendered to a bitmap
+-- and flowed into the column like any node. Geometry stays native (the
+-- engine measures the bitmap); the bitmap is ink only - V1 registers no
+-- hitboxes and processes no links, so taps pass straight through.
+--
+-- Islands bound by a RAM budget, not a magic height: the cap is a bitmap
+-- BYTE ceiling (round 3, item 1.6) shared with kthtml's TALL_H logic -
+-- w×cap×1B stays under it, so a half-width island owns twice the height.
+-- Taller content still clips with a visible warning (body/json RAM stays
+-- finite); ordinary messages (a few screens tall) now fit whole.
+-- Cache key is the raw source itself (no hash games, zero collision risk)
+-- + width + theme, so edits and theme switches re-render automatically.
+
+local ISLAND_BUDGET = 2000 * 1072 -- bitmap bytes (1 B/px e-ink); matches TALL_H × standard width
+
+local KtHTML_mod -- lazy (kthtml never requires uidsl: no cycle either way)
+local function kthtml()
+    if not KtHTML_mod then KtHTML_mod = require("ktui/kthtml") end
+    return KtHTML_mod
 end
 
-local function children_h(node, w)
-    local total = 0
-    local inner_w = w - node_inset(node)
-    local first = true
-    for _i, child in ipairs(node.children or {}) do
-        if child.display ~= "none" then
-            if not first then total = total + (node.gap or 0) end
-            first = false
-            total = total + child_margin(child, "y") * 2 + UiDSL.measure(child, inner_w)
+local function island_theme_id()
+    return Theme.get_theme() .. "|" .. tostring(Theme.get_base_font_size())
+end
+
+-- Render the island at width w. Returns bb,height (bb owned by the CACHE,
+-- freed by free_html) or nil,err. Never throws.
+local function render_island(raw, w)
+    if not raw or raw == "" then return nil, "empty" end
+    local ok_h, HtmlBoxWidget = pcall(require, "ui/widget/htmlboxwidget")
+    if not ok_h or not HtmlBoxWidget then return nil, "no widget" end
+    local ok_c, Constants = pcall(require, "kt_constants")
+    if not ok_c or not Constants then return nil, "no constants" end
+    local K = kthtml()
+    local css = K.theme_css()
+    -- RAM budget -> height for THIS width (1 byte/px on e-ink BB8).
+    local delta = math.max(64, math.floor(ISLAND_BUDGET / math.max(1, w)))
+    local widget = nil
+    local ok, err = pcall(function()
+        local Geom = require("ui/geometry")
+        widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = w, h = delta } }
+        widget:setContent(raw, css, Theme.scale(Theme.get_base_font_size()),
+            false, nil, Constants.PLUGIN_DIR .. "/assets")
+    end)
+    if not ok or not widget or not widget.document then
+        pcall(function() if widget then widget:free() end end)
+        return nil, tostring(err or "render failed")
+    end
+    -- Single MuPDF page -> the whole doc fits: re-layout at the exact
+    -- content height (cheap: MuPDF paginates by its own metric; here we
+    -- only ask "does it fit in one page at budget height?") then scan the
+    -- bottom. Multi-page -> the doc exceeds the budget: keep page 1 alive
+    -- and warn that the tail clips (visible, never silent).
+    if (widget.page_count or 1) > 1 then
+        return widget, "clipped"
+    end
+    local probe_h = math.max(64, math.floor(delta / 2))
+    pcall(function()
+        widget.dimen = Geom:new{ w = w, h = probe_h }
+        widget:setContent(raw, css, Theme.scale(Theme.get_base_font_size()),
+            false, nil, Constants.PLUGIN_DIR .. "/assets")
+    end)
+    if (widget.page_count or 1) > 1 then
+        -- Content needs more than half the budget: re-layout at the FULL
+        -- budget once (the common "tall but under cap" case) and scan.
+        pcall(function()
+            widget.dimen = Geom:new{ w = w, h = delta }
+            widget:setContent(raw, css, Theme.scale(Theme.get_base_font_size()),
+                false, nil, Constants.PLUGIN_DIR .. "/assets")
+        end)
+        if (widget.page_count or 1) > 1 then
+            -- Even at full budget it paginates (docs beyond cap): fall back
+            -- to the original full-height layout for the page-1 blit.
+            pcall(function()
+                widget.dimen = Geom:new{ w = w, h = delta }
+                widget:setContent(raw, css, Theme.scale(Theme.get_base_font_size()),
+                    false, nil, Constants.PLUGIN_DIR .. "/assets")
+            end)
+            return widget, "clipped"
         end
     end
-    return total
-end
-
--- Height of a row's children: tallest child (horizontal flow).
-local function row_content_h(node, w)
-    local inner_w = w - node_inset(node)
-    local widths = row_child_widths(node, inner_w)
-    local max_h = 0
-    for i, child in ipairs(node.children or {}) do
-        if child.display ~= "none" and widths[i] and widths[i] > 0 then
-            local ch = child_margin(child, "y") * 2 + UiDSL.measure(child, widths[i])
-            if ch > max_h then max_h = ch end
-        end
+    widget:_render()
+    local h = K.scan_bottom(widget.bb, w)
+    if not h then
+        pcall(function() widget:free() end)
+        return nil, "blank"
     end
-    return max_h
+    -- Detach the bitmap for the cache; the widget shell can go.
+    local bb = widget.bb
+    widget.bb = nil
+    pcall(function() widget:free() end)
+    return bb, math.max(1, math.floor(h))
 end
 
--- Height of a node under width w.
-function UiDSL.measure(node, w)
-    if node.display == "none" then return 0 end
-    if node._h_cache and node._h_w == w then return node._h_cache end
-    local h
+-- Fallback placeholder text (shared by measure + paint so both agree).
+local ISLAND_FALLBACK_TEXT = "(conteúdo indisponível)"
+
+-- Height of an island node (cached per source+width+theme).
+function UiDSL.measure_html(node, w)
+    local key = tostring(node.raw or "") .. "\0" .. tostring(w) .. "\0"
+        .. island_theme_id()
+    if node._html_key == key and node._html_h then return node._html_h end
+    UiDSL.free_html(node)
+    node._html_err, node._html_warn = nil, nil
+    local payload, h_or_err = render_island(node.raw, w)
+    if payload == nil then
+        node._html_err = "island render failed"
+        -- Real text metrics + breathing room, never a magic constant: the
+        -- box must fit the placeholder at any base font size.
+        local s = P.text_size(ISLAND_FALLBACK_TEXT, w, "tiny", {})
+        node._html_h = s.h + Theme.scale(16)
+        node._html_key = key
+        return node._html_h
+    end
+    if h_or_err == "clipped" then
+        node._html_widget = payload
+        node._html_warn = "island exceeds cap, clipped"
+        node._html_h, node._html_key = math.max(64,
+            math.floor(ISLAND_BUDGET / math.max(1, w))), key
+        return node._html_h
+    end
+    node._html_bb = payload
+    node._html_h, node._html_key = h_or_err, key
+    return h_or_err
+end
+
+-- Release cached island bitmaps/widgets under a tree (call before dropping
+-- a cached tree, e.g. sandbox_tree rebuild).
+function UiDSL.free_html(node)
+    if not node then return end
+    if node._html_bb then
+        pcall(function() node._html_bb:free() end)
+        node._html_bb = nil
+    end
+    if node._html_widget then
+        pcall(function() node._html_widget:free() end)
+        node._html_widget = nil
+    end
+    node._html_key, node._html_h = nil, nil
+    for _, child in ipairs(node.children or {}) do
+        UiDSL.free_html(child)
+    end
+end
+
+-- Collect island render warnings/errors for the visible error strip.
+function UiDSL.html_errors(node, out)
+    out = out or {}
+    if not node then return out end
+    if node.tag == "html" then
+        if node._html_err then out[#out + 1] = node._html_err end
+        if node._html_warn then out[#out + 1] = node._html_warn end
+    end
+    for _, child in ipairs(node.children or {}) do
+        UiDSL.html_errors(child, out)
+    end
+    return out
+end
+
+-- ================================================== single layout engine ===
+-- THE source of truth for vertical flow: ONE algorithm consumed by BOTH
+-- measure and paint (round 3, item 1.1). Before this, the layout lived in
+-- three copies (children_h for box measure, row_content_h for row measure,
+-- and two paint branches) that drifted apart: text of a flexing row child
+-- measured at one width and painted at another, halign: between distributed
+-- the leftover differently than the widths assumed, and every "crooked"
+-- element on the device traced back to one of those divergences.
+--
+-- Shape: layout_height(node, w) -> the node's total painted height, and
+-- flow_visits(node, w) -> per-visible-child { dx, w } with dx RELATIVE to
+-- the content origin (pad already excluded). Sequential positions (box:
+-- dy stacking) are computed here too, so paint never re-computes an offset
+-- the engine did not compute first.
+
+-- Leaf content height (no inset, no min_h): shared by layout_height and the
+-- legacy measure() wrapper. TEXT/para measure at the EXACT width paint uses
+-- (min(inner_w, px(node.w, w))): item 1.3 - measure and paint must agree on
+-- where lines break, or a padded flex child paints fewer/more lines than
+-- the flow reserved space for.
+local function leaf_h(node, w)
+    local pad2 = node_inset(node)
     if node.tag == "text" or node.tag == "value" then
-        h = P.text_size(node.text or "", px(node.w, w), text_role(node), text_opts(node)).h
+        return P.text_size(node.text or "",
+            math.max(1, math.min(w - pad2, px(node.w, w - pad2))),
+            text_role(node), text_opts(node)).h
     elseif node.tag == "para" then
-        local lines, line_h = P.paragraph_metrics(node.text or "", px(node.w, w), text_role(node), text_opts(node))
-        h = lines * line_h
+        -- Paint-height, not nominal lines*line_h (the widget rounds line
+        -- positions ~1px/line; the product drifts short and tails clip).
+        return P.paragraph_height(node.text or "",
+            math.max(1, math.min(w - pad2, px(node.w, w - pad2))),
+            text_role(node), text_opts(node))
     elseif node.tag == "image" then
-        h = px(node.h, Theme.scale(80))
+        return px(node.h, Theme.scale(80))
     elseif node.tag == "spacer" then
-        h = px(node.h, Theme.scale(12))
+        return px(node.h, Theme.scale(12))
     elseif node.tag == "rule" then
-        h = px(node.h, Theme.scale(10))
+        return px(node.h, Theme.scale(10))
     elseif node.tag == "progress" then
-        h = px(node.h, Theme.scale(10))
+        return px(node.h, Theme.scale(10))
     elseif node.tag == "icon" then
         local sz = node.icon_size or Theme.scale(14)
-        h = get_icons().text_size(node.icon_name or "home", sz).h
+        return get_icons().text_size(node.icon_name or "home", sz).h
     elseif node.tag == "toggle" then
-        h = Theme.scale(26)
+        return Theme.scale(26)
+    elseif node.tag == "check" then
+        return Theme.scale(26)
     elseif node.tag == "avatar" then
-        h = node.avatar_size or Theme.scale(48)
-    elseif node.tag == "button" then
-        h = px(node.h, Theme.btn_h())
-    elseif node.tag == "input" then
-        h = px(node.h, Theme.btn_h())
-    elseif node.tag == "row" then
-        h = row_content_h(node, w)
-        if node.fill_h then h = math.max(h, node.fill_h) end
-        -- Fixed height on a row: never smaller than the content.
-        if node.h then h = math.max(h, px(node.h, 0)) end
-    else -- box
-        local inner = children_h(node, w)
-        h = inner > 0 and inner or px(node.h, 0)
-        if node.fill_h then h = math.max(h, node.fill_h) end
-        -- Fixed height on a box: can be larger OR smaller than the content
-        -- (content overflows visibly when smaller - author's call, like CSS).
-        if node.h then h = px(node.h, h) end
+        return node.avatar_size or Theme.scale(48)
+    elseif node.tag == "button" or node.tag == "input" then
+        return px(node.h, Theme.btn_h())
+    elseif node.tag == "html" then
+        -- Measure at the INNER width (what paint blits), not the outer w:
+        -- otherwise a padded island renders its bitmap wider than the blit
+        -- window and the measured height no longer matches the content.
+        return UiDSL.measure_html(node,
+            math.max(1, px(node.w, w) - node_inset(node))) or 0
     end
-    h = h + node_inset(node)
+    return nil -- container (box) falls through to the flow engine
+end
+
+-- Apply a computed height the way the legacy engine did: cache under the
+-- measuring width, AFTER min_h clamping.
+local function set_height(node, w, h)
     if node.min_h then h = math.max(h, px(node.min_h, 0)) end
     node._h_cache, node._h_w = h, w
     return h
 end
 
+-- Cached-visits probe: same width + same count = the stored visit table is
+-- trustworthy (bind/style passes nil the FIELDS wholesale, so presence of
+-- _vis under a matching _vis_w is enough; no per-table comparison needed).
+local function visit_eq(node, w)
+    return node._vis ~= nil and node._vis_w == w
+end
+
+-- Per-visible-child slot: { dx, w, dy } with dx relative to CONTENT origin.
+-- flow_visits is the ONLY place that decides where a child sits inside its
+-- parent (layout_height uses the widths; paint uses dx/dy verbatim).
+-- halign: between now distributes the leftover space BETWEEN pairs of
+-- children (cumulative exact rounding: the last child lands flush at the
+-- right edge, an odd number of children no longer shifts remainder pixels
+-- one pair at a time - round 3, item 1.5).
+local function flow_visits(node, w)
+    local inset = node_inset(node)
+    if node.tag == "row" then
+        local inner_w = w - inset
+        local widths = row_child_widths(node, inner_w)
+        local gap = node.gap or 0
+        local halign = node.halign or "left"
+        -- Fixed-size budget first: widths + margins + (nvis-1)*gap. `free`
+        -- EXCLUDES the gaps (they already sit in every dx below) - same
+        -- semantics as the legacy paint loop.
+        local used = 0
+        local nvis = 0
+        for i, child in ipairs(node.children or {}) do
+            if child.display ~= "none" and widths[i] and widths[i] > 0 then
+                used = used + widths[i] + child_margin(child, "x")
+                nvis = nvis + 1
+            end
+        end
+        if nvis > 1 then used = used + (nvis - 1) * gap end
+        local free = math.max(0, inner_w - used)
+        if (halign == "between") and (nvis < 2 or free == 0) then
+            halign = "left" -- nothing to distribute: fall back to packing
+        end
+        -- Cursor-walk: dx is the ABSOLUTE content x of each child (the paint
+        -- loop positions from dx alone - no accumulator on the paint side).
+        local vis = {}
+        local cursor = 0
+        local k = 0
+        for i, child in ipairs(node.children or {}) do
+            if child.display ~= "none" and widths[i] and widths[i] > 0 then
+                k = k + 1
+                local d = cursor
+                if k > 1 then d = d + gap end
+                if halign == "between" and k > 1 then
+                    -- space-between: EQUAL spacing per pair, added at every
+                    -- transition EXCEPT before the first child (there is no
+                    -- pair before it); floor per transition keeps the sum
+                    -- <= free, so the row ends flush (any remainder shows
+                    -- as a 1px right slack, never cumulative drift).
+                    d = d + math.floor(free / (nvis - 1))
+                end
+                d = d + child_margin(child, "x")
+                vis[i] = { dx = d + ((halign == "center"
+                    and math.floor(free / 2) or (halign == "right" and free or 0))),
+                    w = widths[i] }
+                cursor = d + widths[i]
+            else
+                vis[i] = false
+            end
+        end
+        return vis
+    end
+    -- box: every child spans the inner width; margins inset both sides.
+    local inner_w = w - inset
+    local vis = {}
+    for i, child in ipairs(node.children or {}) do
+        if child.display ~= "none" then
+            local mx2 = child_margin(child, "x")
+            vis[i] = { dx = mx2, w = math.max(1, inner_w - mx2 * 2) }
+        else
+            vis[i] = false
+        end
+    end
+    return vis
+end
+
+-- Total height under width w + caches the child visits for paint. The cache
+-- pair (_h_cache, _h_w) is the same slot the legacy engine used: binds and
+-- style passes bust it by nil-ing those fields, and the visits cache follows
+-- the height (a stale visits table would paint at outdated positions).
+function UiDSL.layout_height(node, w)
+    if node.display == "none" then return 0 end
+    if node._h_cache and node._h_w == w and node._vis_w == w and node._vis then
+        return node._h_cache
+    end
+    local leaf = leaf_h(node, w)
+    if leaf then
+        node._vis, node._vis_w = nil, nil
+        return set_height(node, w, leaf + node_inset(node))
+    end
+    local visit = flow_visits(node, w)
+    local h = 0
+    if node.tag == "row" then
+        for i, child in ipairs(node.children or {}) do
+            if child.display ~= "none" and visit[i] and visit[i].w > 0 then
+                local ch = UiDSL.layout_height(child, visit[i].w)
+                    + child_margin(child, "y") * 2
+                if ch > h then h = ch end
+            end
+        end
+        if node.fill_h then h = math.max(h, node.fill_h) end
+        if node.h then h = math.max(h, px(node.h, 0)) end
+    else -- box
+        local cy = 0
+        local first = true
+        for i, child in ipairs(node.children or {}) do
+            if child.display ~= "none" then
+                if not first then cy = cy + (node.gap or 0) end
+                first = false
+                local my = child_margin(child, "y")
+                cy = cy + my
+                visit[i].dy = cy
+                cy = cy + UiDSL.layout_height(child, visit[i].w) + my
+            end
+        end
+        h = cy > 0 and cy or px(node.h, 0)
+        if node.fill_h then h = math.max(h, node.fill_h) end
+        if node.h then h = px(node.h, h) end
+    end
+    node._vis, node._vis_w = visit, w
+    return set_height(node, w, h + node_inset(node))
+end
+
+-- Height of a node under width w (legacy public surface; pages and smoke
+-- measured with this signature long before the engine existed).
+function UiDSL.measure(node, w)
+    return UiDSL.layout_height(node, w)
+end
+
+-- Child slots of a node at width w (dx/dy/w), cached by layout_height.
+-- Public: pages/tests inspect WHERE a child will paint before doing so.
+function UiDSL.flow_visits(node, w)
+    UiDSL.layout_height(node, w) -- ensures node._vis is fresh
+    return node._vis
+end
+
 -- Paint a node at (x, y) spanning width w. view registers hitboxes.
-function UiDSL.paint(node, bb, x, y, w, view)
+-- clip (optional): visible rect handed down the parent chain (round 3,
+-- item 1.2): a node fully outside it paints NOTHING (no hitbox, no GifAnim
+-- rect). A node still paints when merely overlapping the clip - the page
+-- caller clips the window per line; clip gates, it never invents coords.
+function UiDSL.paint(node, bb, x, y, w, view, clip)
     if node.display == "none" then return end
     local pad = node.pad or 0
     local h = UiDSL.measure(node, w)
+    if clip and (x >= clip.x + clip.w or y >= clip.y + clip.h
+        or x + w <= clip.x or y + h <= clip.y) then
+        return
+    end
     -- Record where this node last painted: bind taps refresh regionally
     -- (e-ink: changing one digit must not wave the whole panel - see
     -- bind_refresh). Coordinates are screen-relative for the page paints;
@@ -652,6 +962,10 @@ function UiDSL.paint(node, bb, x, y, w, view)
     local inner_h = h - pad * 2
     if node.tag == "text" or node.tag == "value" then
         local opts = text_opts(node)
+        -- Wrap width == the EXACT width leaf_h measured (round 3, item
+        -- 1.3): min(inner_w, px(node.w, inner_w)) with inner_w = w - pad*2.
+        -- Painted line breaks stay identical to the measured ones (no
+        -- "measured 3 lines, painted 2" drift inside padded boxes).
         local tw = math.min(inner_w, px(node.w, inner_w))
         local s = P.text_size(node.text or "", tw, text_role(node), opts)
         local tx = cx
@@ -660,7 +974,15 @@ function UiDSL.paint(node, bb, x, y, w, view)
         elseif node.align == "right" then
             tx = cx + math.max(0, inner_w - math.min(s.w, tw))
         end
-        P.text(bb, node.text or "", tx, cy, tw, text_role(node), opts)
+        -- Vertical placement (round 3, item 1.4): when the node's box is
+        -- TALLER than the measured glyph ink (h / min-h / fill_h space),
+        -- center the text by real face metrics instead of bolting it to
+        -- the top edge - a 30px face inside a 44px row sat top-shifted.
+        local ty = cy
+        if h - node_inset(node) > s.h then
+            ty = cy + math.floor((inner_h - s.h) / 2)
+        end
+        P.text(bb, node.text or "", tx, ty, tw, text_role(node), opts)
     elseif node.tag == "para" then
         P.paragraph(bb, node.text or "", cx, cy, inner_w, inner_h,
             text_role(node), text_opts(node))
@@ -785,6 +1107,20 @@ function UiDSL.paint(node, bb, x, y, w, view)
         local tw = Theme.scale(52)
         local th = Theme.scale(26)
         P.zen_toggle(bb, cx, cy, tw, th, node.toggle_value and true or false)
+    elseif node.tag == "check" then
+        local s = Theme.scale(26)
+        local on = node.toggle_value and true or false
+        P.box(bb, cx, cy, s, s, {
+            border = true, border_size = 2,
+            border_color = on and Theme.ink or Theme.muted,
+            background = on and Theme.soft or Theme.panel,
+            radius = Theme.scale(4),
+        })
+        if on then
+            local isz = Theme.scale(16)
+            get_icons().draw(bb, "check", cx + math.floor((s - isz) / 2),
+                cy + math.floor((s - isz) / 2), isz, { color = Theme.ink })
+        end
     elseif node.tag == "avatar" then
         local sz = node.avatar_size or Theme.scale(48)
         get_widgets().avatar(bb, cx, cy, sz, node.avatar_src, node.avatar_name)
@@ -816,63 +1152,67 @@ function UiDSL.paint(node, bb, x, y, w, view)
             on_tap = node.on_tap,
         })
     elseif node.tag == "row" then
-        -- Horizontal flow: children side by side. halign distributes leftover
-        -- width: left (default, packed at start) | center | right | between.
-        local widths = row_child_widths(node, inner_w)
+        -- Horizontal flow: children side by side. Positions come from the
+        -- layout engine (_vis slots from flow_visits/UiDSL.layout_height):
+        -- paint NEVER re-computes geometry (round 3 item 1.1) - measure and
+        -- paint read the same calculation, so what was measured is exactly
+        -- what is blitted. halign (left/center/right/between) already landed
+        -- in the dx values; valign is the only vertical freedom left here.
+        local visit = node._vis or flow_visits(node, w)
         local valign = node.valign or "top"
-        local halign = node.halign or "left"
-        local used = 0
-        local visible = 0
         for i, child in ipairs(node.children or {}) do
-            if child.display ~= "none" and widths[i] and widths[i] > 0 then
-                used = used + widths[i] + child_margin(child, "x")
-                visible = visible + 1
-            end
-        end
-        if visible > 1 then used = used + (visible - 1) * (node.gap or 0) end
-        local free = math.max(0, inner_w - used)
-        local rx = cx
-        if halign == "center" then
-            rx = cx + math.floor(free / 2)
-        elseif halign == "right" then
-            rx = cx + free
-        end
-        local nvis = 0
-        for i, child in ipairs(node.children or {}) do
-            if child.display ~= "none" and widths[i] and widths[i] > 0 then
-                if nvis > 0 then rx = rx + (node.gap or 0) end
-                if halign == "between" and nvis > 0 then
-                    rx = rx + math.floor(free / (visible - 1))
-                end
-                nvis = nvis + 1
-                rx = rx + child_margin(child, "x")
-                local ch = UiDSL.measure(child, widths[i])
+            local slot = visit[i]
+            if child.display ~= "none" and slot and slot.w > 0 then
+                local ch = UiDSL.layout_height(child, slot.w)
                 local child_y = cy + child_margin(child, "y")
                 if valign == "center" then
                     child_y = child_y + math.floor((inner_h - ch) / 2)
                 elseif valign == "bottom" then
                     child_y = child_y + math.max(0, inner_h - ch)
                 end
-                UiDSL.paint(child, bb, rx, child_y, widths[i], view)
-                rx = rx + widths[i]
+                UiDSL.paint(child, bb, cx + slot.dx, child_y, slot.w, view,
+                    clip)
             end
+        end
+    elseif node.tag == "html" then
+        -- MuPDF ink: blit the cached bitmap (exact measured window).
+        -- Deliberately NO hitbox and NO link handling: V1 islands are
+        -- non-interactive, taps pass straight through to whatever (if
+        -- anything) is painted underneath.
+        local ph = h - node_inset(node)
+        local src = node._html_bb
+        if node._html_widget then
+            node._html_widget:_render()
+            src = node._html_widget.bb
+        end
+        local painted = false
+        if src and ph > 0 and inner_w > 0 then
+            painted = pcall(function()
+                bb:blitFrom(src, cx, cy, 0, 0, inner_w, ph)
+            end) and true or false
+        end
+        if not painted then
+            P.box(bb, cx, cy, inner_w, math.max(ph, 1), {
+                border = true, border_size = 1,
+                border_color = Theme.muted, background = Theme.bg,
+                radius = node.radius,
+            })
+            P.vcenter_text(bb, ISLAND_FALLBACK_TEXT, cx, cy,
+                inner_w, ph, "tiny", { color = Theme.muted })
         end
     elseif node.tag == "spacer" then
         -- nothing to paint
     else
         -- box: vertical flow (margin spaces the child above AND below;
         -- margin_x insets it horizontally, shrinking the child's width).
-        local first = true
-        for _i, child in ipairs(node.children or {}) do
-            if child.display ~= "none" then
-                if not first then cy = cy + (node.gap or 0) end
-                first = false
-                local my = child_margin(child, "y")
-                local mx2 = child_margin(child, "x")
-                cy = cy + my
-                UiDSL.paint(child, bb, cx + mx2, cy,
-                    math.max(1, inner_w - mx2 * 2), view)
-                cy = cy + UiDSL.measure(child, inner_w) + my
+        -- Geometry (dy/dx/w per child) comes from the layout engine's
+        -- _vis table; paint only maps content origin -> screen (cx, cy).
+        local visit = node._vis or flow_visits(node, w)
+        for i, child in ipairs(node.children or {}) do
+            local slot = visit[i]
+            if child.display ~= "none" and slot then
+                UiDSL.paint(child, bb, cx + slot.dx, cy + (slot.dy or 0),
+                    slot.w, view, clip)
             end
         end
     end
@@ -897,14 +1237,14 @@ end
 --
 -- Supported: div (box), row (horizontal box), p (paragraph),
 -- span/h1/h2/h3 (text), img (image, data-anim plays a pre-composited frame
--- directory via GifAnim), br/hr/spacer (spacer), icon, toggle,
+-- directory via GifAnim), br/hr/spacer (spacer), icon, toggle, check,
 -- avatar, button (native pill), value (live readout), input (text field).
 -- Unknown tags become transparent boxes. Attributes: class, id,
 -- src (img/avatar), data-h (img height), data-fit (img cover|contain),
 -- width/flex (row children), name/size (icon/avatar), kind/icon (button),
 -- title/placeholder (input dialog + hint), data-empty (value fallback),
--- data-bind (toggle/button/input read an app.state path; toggle/button
--- flip the bool on tap, button kind follows it; with data-step/data-min/
+-- data-bind (toggle/check/button/input read an app.state path; toggle/check
+-- /button flip the bool on tap, button kind follows it; with data-step/data-min/
 -- data-max the button counts instead; input opens the dialog and saves),
 -- data-bind-width + data-width-scale (spacer width tracks a number -
 -- walks siblings in a row), data-action + data-id (tap callback
@@ -949,6 +1289,22 @@ local function extract_style_blocks(html)
     return html, table.concat(styles, "\n")
 end
 
+-- <htmlblock> bodies are captured RAW (in source order) before parsing so
+-- the node engine never tokenizes real HTML: entities stay encoded, tags
+-- stay tags. Each block is replaced by a self-closing <island> placeholder
+-- carrying its index; open() turns it into a tag="html" node. <script>
+-- stays discarded; an UNCLOSED <htmlblock> never matches here and simply
+-- parses as ordinary (unknown-tag) content downstream.
+local function extract_html_blocks(html)
+    local blocks = {}
+    html = html:gsub("<%s*[Hh][Tt][Mm][Ll][Bb][Ll][Oo][Cc][Kk]([^>]*)>([%s%S]-)<%s*/%s*[Hh][Tt][Mm][Ll][Bb][Ll][Oo][Cc][Kk]%s*>",
+        function(_, body)
+            blocks[#blocks + 1] = body
+            return '<island xmli="' .. tostring(#blocks) .. '"/>'
+        end)
+    return html, blocks
+end
+
 function UiDSL.from_html(html, actions, vars)
     actions = actions or {}
     vars = vars or {}
@@ -957,17 +1313,27 @@ function UiDSL.from_html(html, actions, vars)
     html = stripped
     local css_text = local_css or ""
     local errors = {}
-    html = html:gsub("{{([%w_]+)}}", function(name)
-        return tostring(vars[name] or "")
-    end)
-    html = html:gsub("<%-%-.-%%-%->", " ") -- comments
+    local with_islands, island_blocks = extract_html_blocks(html)
+    html = with_islands
+    local function sub_vars(s)
+        return (s:gsub("{{([%w_]+)}}", function(name)
+            return tostring(vars[name] or "")
+        end))
+    end
+    html = sub_vars(html)
+    for i, body in ipairs(island_blocks) do
+        island_blocks[i] = sub_vars(body)
+    end
+    html = html:gsub("<%-%-.-%%-%->", " ") -- comments (islands already out)
+    local islands = island_blocks
 
     local root = UiDSL.node({ tag = "box", children = {}, html_tag = "body" })
     local stack = { root }
     local function top() return stack[#stack] end
 
     local VOID = { img = true, br = true, hr = true, icon = true, toggle = true,
-        avatar = true, spacer = true, value = true, input = true, progress = true }
+        avatar = true, spacer = true, value = true, input = true, progress = true,
+        island = true, check = true }
     local TEXT_HOST = { p = true, span = true, h1 = true, h2 = true, h3 = true, button = true }
 
     local function add_text(str)
@@ -1047,6 +1413,11 @@ function UiDSL.from_html(html, actions, vars)
                 bind_key = attrs["data-bind"] or attrs.bind,
                 toggle_value = attrs.on == "true" or attrs.checked == "true"
                     or attrs.value == "true" or attrs["data-on"] == "true" })
+        elseif name == "check" then
+            n = UiDSL.node({ tag = "check",
+                bind_key = attrs["data-bind"] or attrs.bind,
+                toggle_value = attrs.on == "true" or attrs.checked == "true"
+                    or attrs.value == "true" or attrs["data-on"] == "true" })
         elseif name == "avatar" then
             n = UiDSL.node({ tag = "avatar",
                 avatar_src = attrs.src,
@@ -1070,6 +1441,12 @@ function UiDSL.from_html(html, actions, vars)
             n = UiDSL.node({ tag = "input",
                 input_title = attrs.title or attrs["data-title"],
                 input_hint = attrs.placeholder or attrs["data-placeholder"] or attrs.hint })
+        elseif name == "island" then
+            -- MuPDF content island: raw HTML captured pre-parse (see
+            -- extract_html_blocks). Never pushed (VOID): V1 is
+            -- non-interactive ink - no hitbox, taps pass through.
+            local raw = islands[tonumber(attrs.xmli) or 0] or ""
+            n = UiDSL.node({ tag = "html", raw = raw })
         else
             n = UiDSL.node({ tag = "box", children = {} }) -- div + unknown tags
         end
@@ -1080,6 +1457,14 @@ function UiDSL.from_html(html, actions, vars)
             for cls in attrs.class:gmatch("%S+") do classes[cls] = true end
             n.classes = classes
             n.class = attrs.class
+        end
+        -- Inline style (round 3, item 2.1): style="prop: value; ..." is
+        -- collected RAW here and applied by apply_styles with the highest
+        -- cascade priority (like CSS: inline style beats any selector).
+        -- Reuses the same declaration parser as the stylesheet.
+        if attrs.style then
+            local decls = parse_declarations(attrs.style)
+            if next(decls) then n.inline_style = decls end
         end
         -- Width / flex may come from attributes (CSS wins later in
         -- apply_styles when both are present).
@@ -1177,12 +1562,12 @@ end
 
 -- Apply the stylesheet onto a node tree: CSS wins over the spec when the
 -- property is present. One level of align inheritance: box -> text children.
-function UiDSL.apply_styles(node, sheet)
-    if not node then return node end
-    if sheet then
-        local st = UiDSL.style_for(sheet, node.html_tag or node.tag,
-            { id = node.id, classes = node.classes })
-        local bg = resolve_color(st["background"] or st["background-color"])
+-- Decoration core extracted so apply_styles can apply a style dict TWICE:
+-- first from the sheet cascade, then from the node's own inline style=
+-- (round 3, item 2.1) with CSS-inline priority (beats every selector).
+local function decorate_one(node, st)
+    if not st then return end
+    local bg = resolve_color(st["background"] or st["background-color"])
         if bg then node.bg = bg end
         local ink = resolve_color(st["color"])
         if ink then node.color = ink end
@@ -1251,6 +1636,21 @@ function UiDSL.apply_styles(node, sheet)
             local rr = resolve_length(st.radius or st["border-radius"])
             if rr then node.radius = rr end
         end
+end
+
+-- Apply the stylesheet onto a node tree: CSS wins over the spec when the
+-- property is present. Inline style= wins over everything (CSS-inline
+-- priority). One level of align inheritance: box -> text children.
+function UiDSL.apply_styles(node, sheet)
+    if not node then return node end
+    if sheet then
+        decorate_one(node, UiDSL.style_for(sheet, node.html_tag or node.tag,
+            { id = node.id, classes = node.classes }))
+    end
+    -- Inline style beats every selector (like CSS specificity of style="
+    -- attributes). Applied AFTER the sheet so it overwrites it.
+    if node.inline_style then
+        decorate_one(node, node.inline_style)
     end
     for _i, child in ipairs(node.children or {}) do
         UiDSL.apply_styles(child, sheet)
@@ -1477,8 +1877,22 @@ local function resolve_binds(tree, app, errors)
                 end
                 node._bind_app = app
             end
-            if node.tag == "toggle" then
-                node.toggle_value = (val == true)
+            if node.tag == "toggle" or node.tag == "check" then
+                -- Attr (checked/on) is the default: state only overrides
+                -- when present, so a fresh bind doesn't wipe it. A true
+                -- default seeds the state once (never writes false).
+                if val == nil then
+                    -- Seed: val is confirmed nil here, so overwrite
+                    -- unconditionally (create-lookup materializes the leaf
+                    -- as {} first - assignment replaces it with true).
+                    if node.toggle_value and node.bind_key then
+                        local _, parent, key =
+                            bind_lookup(app, node.bind_key, true)
+                        if parent and key then parent[key] = true end
+                    end
+                else
+                    node.toggle_value = (val == true)
+                end
                 if not node.on_tap then
                     node.on_tap = flip_bool(node.bind_key, node)
                 end
@@ -1577,7 +1991,10 @@ end
 -- Build the sandbox tree from the user file. Cached by file mtime + theme
 -- sheet identity (edit + Reload picks changes up). Missing/unreadable file
 -- yields an empty tree plus a visible error - never the demo.
-function UiDSL.sandbox_tree(app, actions, vars)
+-- force=true skips the cache (the key is file+theme, NOT the actions
+-- map: on_tap closures capture whichever map parsed first, so a second
+-- consumer with a different map must rebuild explicitly).
+function UiDSL.sandbox_tree(app, actions, vars, force)
     local path = UiDSL.sandbox_path()
     local mtime = nil
     if lfs then
@@ -1585,7 +2002,16 @@ function UiDSL.sandbox_tree(app, actions, vars)
         if ok then mtime = a end
     end
     local theme_sheet = UiDSL.current_sheet(app)
-    if _sbx.tree and _sbx.mtime == mtime and _sbx.sheet_id == theme_sheet then
+    -- Appearance revision: font metrics, Theme.scale output and metrics()
+    -- all feed measure(), so the tree cache must bust when ANY of them
+    -- moves - otherwise every node keeps heights measured under the old
+    -- theme/font/density and the whole page misaligns at once.
+    local appearance_id = Theme.get_theme() .. "|"
+        .. tostring(Theme.get_base_font_size()) .. "|"
+        .. tostring(Theme.get_density())
+    if not force and _sbx.tree and _sbx.mtime == mtime
+        and _sbx.sheet_id == theme_sheet
+        and _sbx.appearance_id == appearance_id then
         -- Binds are live state, not file content: re-resolve on every hit so
         -- a toggle flipped last paint reads the new value (the tree cache
         -- would otherwise freeze toggle_value at first-parse time).
@@ -1615,7 +2041,13 @@ function UiDSL.sandbox_tree(app, actions, vars)
         tree = UiDSL.apply_styles(tree, merged)
         resolve_binds(tree, app, errors)
     end
-    _sbx = { mtime = mtime, sheet_id = theme_sheet, tree = tree,
+    if _sbx.tree then
+        -- Drop cached island bitmaps before replacing the tree (MuPDF
+        -- buffers would otherwise leak one rebuild per file edit).
+        UiDSL.free_html(_sbx.tree)
+    end
+    _sbx = { mtime = mtime, sheet_id = theme_sheet,
+        appearance_id = appearance_id, tree = tree,
         merged = merged, errors = errors }
     return tree, merged, errors
 end
@@ -1717,49 +2149,15 @@ value { text-align: center; }
 .imgredonda { radius: 14px; }
 </style>
 <div class="hero">
-  <h1>HTML + CSS no canvas</h1>
-  <p class="muted">Este arquivo e themes/pages/sandbox.html - edite, salve, Reload. Tags: div row p span h1 h2 h3 img br hr icon toggle avatar button value input. Entidades: &amp; &lt; &gt; &quot;.</p>
+  <h1>Cromo nativo + ilhas MuPDF</h1>
+  <p class="muted">Este arquivo e themes/pages/sandbox.html - edite, salve, Reload. Estrutura e controles sao nativos (div row button toggle check input icon avatar value); conteudo rico vai em &lt;htmlblock&gt; (MuPDF). Tags: div row p span h1 h2 h3 img br hr icon toggle check avatar button value input progress htmlblock. Entidades: &amp; &lt; &gt; &quot;.</p>
 </div>
 <div class="card">
-  <h2>Tipografia</h2>
+  <h2>Tipografia nativa</h2>
   <h3>h3 pequeno e bold</h3>
   <p>Paragrafo com <b>negrito inline vira texto</b> e continua.</p>
   <p><span class="tinta">span com cor e fonte 20px</span></p>
   <p id="unico" class="miolo">seletor #id + classe combinados</p>
-</div>
-<div class="card">
-  <h2>Alinhamento (p e span)</h2>
-  <p class="center">paragrafo centralizado</p>
-  <p class="right muted">paragrafo a direita</p>
-  <span class="center">span centralizado</span>
-</div>
-<div class="card">
-  <h2>Imagem (sonic em tamanhos)</h2>
-  <row class="fila base">
-    <img src="{{sonic_frames}}" data-anim="true" data-h="24px"/>
-    <img src="{{sonic_frames}}" data-anim="true" data-h="32px"/>
-    <img src="{{sonic_frames}}" data-anim="true" data-h="48px"/>
-    <img src="{{sonic_frames}}" data-anim="true" data-h="64px"/>
-    <img src="{{sonic_frames}}" data-anim="true" data-h="80px"/>
-  </row>
-  <p class="muted">5 Sonics animados lado a lado (~8fps, base alinhada). Cada um e 1 timer com refresh so no retangulo.</p>
-  <img src="{{sonic}}" data-h="120px" data-fit="cover"/>
-  <p class="muted">Cover preenche a caixa e corta de proposito (compare com o contain acima).</p>
-  <img src="{{sonic}}" data-h="64px" data-fit="cover" class="imgredonda"/>
-  <p class="muted">radius (CSS ou data-radius) arredonda os cantos da imagem.</p>
-  <img src="/caminho/que/nao/existe.png" data-h="60px" alt="foto do usuario"/>
-  <p class="muted">Ausente = icone de imagem quebrada + texto do alt (como no HTML).</p>
-</div>
-<div class="card">
-  <h2>Linha horizontal (row + width + flex)</h2>
-  <row class="fila">
-    <div class="metade"><p class="center muted">50% fixa</p></div>
-    <div><p class="center muted">flex divide o resto</p></div>
-  </row>
-  <row class="fila">
-    <icon name="search" size="20"/>
-    <p>icone + texto lado a lado, centralizados</p>
-  </row>
 </div>
 <div class="card">
   <h2>Componentes nativos</h2>
@@ -1775,24 +2173,55 @@ value { text-align: center; }
   </row>
 </div>
 <div class="card">
+  <h2>Checks (caixas de marcacao)</h2>
+  <row class="fila">
+    <check data-bind="sandbox.c1"/>
+    <p>modo escuro (data-bind)</p>
+  </row>
+  <row class="fila">
+    <check data-bind="sandbox.c2" checked="true"/>
+    <p>notificacoes (comeca ligado)</p>
+  </row>
+  <p class="muted">Quadrado com check quando ligado; vazio e apagado quando desligado. Toque inverte, como o toggle.</p>
+</div>
+<div class="card">
+  <h2>Imagens (tamanhos + cover)</h2>
+  <img src="{{shot}}" data-h="60px"/>
+  <p class="muted">Captura de tela atual em 60px (contain, sem corte).</p>
+  <img src="{{shot}}" data-h="120px" data-fit="cover"/>
+  <p class="muted">Mesma captura em 120px com cover (preenche e corta).</p>
+  <img src="/caminho/que/nao/existe.png" data-h="60px"/>
+  <p class="muted">Arquivo ausente mostra o placeholder, nunca quebra.</p>
+</div>
+<div class="card">
+  <h2>Conteudo rico (ilha MuPDF)</h2>
+  <htmlblock>
+    <h2>Mensagem com formato</h2>
+    <p>Texto com <b>negrito</b>, <i>italico</i> e <code>codigo()</code> de verdade, quebrado pelo proprio MuPDF.</p>
+    <ul><li>item um</li><li>item dois</li></ul>
+    <table><tr><td style="padding-right: 12px;"><b>Heroi</b></td><td>Luna</td></tr><tr><td style="padding-right: 12px;"><b>Nivel</b></td><td>7</td></tr></table>
+  </htmlblock>
+  <p class="muted">Acima: HTML literal renderizado pelo MuPDF dentro do fluxo nativo. Medido e cacheado por conteudo.</p>
+</div>
+<div class="card">
   <h2>Playground (estado vivo)</h2>
   <button data-bind="sandbox.ligado">Lampada (troca de cor no toque)</button>
   <p class="muted">O botao acima liga/desliga sandbox.ligado: apagado = contorno, aceso = solido.</p>
   <row class="fila">
-    <button data-bind="sandbox.conta" data-step="-1" data-min="0">-1</button>
+    <button data-action="step" data-id="-1">-1</button>
     <value data-bind="sandbox.conta"/>
-    <button data-bind="sandbox.conta" data-step="1" data-max="9">+1</button>
+    <button data-action="step" data-id="1">+1</button>
   </row>
-  <p class="muted">Contador com trava 0..9 (data-step + data-min + data-max).</p>
+  <p class="muted">Contador com trava 0..9 (data-action step + data-id).</p>
   <row class="fila">
-    <button data-bind="sandbox.pos" data-step="-1" data-min="0">esq</button>
-    <button data-bind="sandbox.pos" data-step="1" data-max="8">dir</button>
+    <button data-action="move" data-id="-1">esq</button>
+    <button data-action="move" data-id="1">dir</button>
   </row>
-  <row class="fila">
-    <spacer data-bind-width="sandbox.pos"/>
-    <icon name="star" size="20"/>
-  </row>
-  <p class="muted">esq/dir movem a estrela (largura = pos x 24px). E-ink nao anima: cada toque e um redesenho.</p>
+  <p class="muted">esq/dir movem a estrela na ilha abaixo (margin via estado).</p>
+  <htmlblock>
+    <p>A estrela mora numa fileira nativa acima; aqui dentro o texto e estatico: ilhas nao expandem {{s:..}} do estado nem data-bind.</p>
+  </htmlblock>
+  <p class="muted">Estado vivo e trabalho dos nos nativos ao redor da ilha, nunca dentro dela.</p>
 </div>
 <div class="card">
   <h2>Entrada de texto (input + value)</h2>
@@ -1808,12 +2237,18 @@ value { text-align: center; }
   <p class="muted">A barra acompanha o contador la em cima (0..9): data-max re-escala para 0..100%.</p>
 </div>
 <div class="card">
+  <h2>Ilha vazia (fallback visivel)</h2>
+  <htmlblock></htmlblock>
+  <p class="muted">Bloco vazio de proposito: mostra o placeholder e entra na faixa de erros, nunca some em silencio.</p>
+</div>
+<div class="card">
   <h2>Acoes (data-action + data-id)</h2>
   <div class="btn" data-action="reload"><span>Recarregar</span></div>
   <div class="btn" data-action="shot" data-id="capa"><span>Capturar tela</span></div>
+  <div class="btn" data-action="voar" data-id="1"><span>Acao inexistente (vira erro)</span></div>
 </div>
 <hr/>
-<p class="center muted">sandbox.html - poder maximo do DSL</p>
+<p class="center muted">sandbox.html v3 - cromo nativo, tinta MuPDF</p>
 ]]
 
 return UiDSL

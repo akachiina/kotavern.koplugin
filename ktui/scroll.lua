@@ -186,9 +186,15 @@ function Scroll.scrolled_list_var(view, bb, items, x, y, w, h, scroll, gap, draw
         offs[i + 1] = total_h + (gap or 0)
     end
     local max_scroll = math.max(0, total_h - h)
-    -- Snap to the nearest item start (binary search over offsets)
     scroll = math.max(0, math.min(scroll or 0, max_scroll))
-    if max_scroll > 0 then
+    -- Snap to the nearest item start (binary search over offsets) - BUT
+    -- only when there is enough travel to make snapping meaningful. When
+    -- max_scroll is SMALLER than one item pitch ("fits almost exactly on
+    -- one screen"), the nearest-start snap always reverts to offs[1]=0:
+    -- the scrollbar becomes a dead band (the dashboard bug - thumb moves,
+    -- content snaps back). In that regime scrolling must stay free.
+    local pitch = (#offs > 2) and (offs[2] - offs[1]) or 0
+    if max_scroll >= pitch and max_scroll > 0 then
         local lo, hi = 1, #offs
         while lo < hi do
             local mid = math.floor((lo + hi) / 2)
@@ -199,6 +205,15 @@ function Scroll.scrolled_list_var(view, bb, items, x, y, w, h, scroll, gap, draw
             best = offs[lo - 1]
         end
         scroll = math.min(best, max_scroll)
+    end
+    -- Bottom-out at the LAST ITEM'S START, not total_h - h: the snapped
+    -- bottom shows the tail item flush with the viewport bottom edge.
+    -- total_h - h can exceed that start by up to a row; since scroll then
+    -- snaps BACK, the last ~gap px were unreachable deadband - "Refresh"
+    -- sat cut by the nav bar and the scrollbar's last stop did nothing.
+    if #offs > 1 and max_scroll > offs[#offs - 1] and
+        offs[#offs - 1] > 0 then
+        max_scroll = offs[#offs - 1]
     end
     if view.app and view.app.state and view.app.state.scroll and view.app.scroll_key then
         view.app.state.scroll[view.app:scroll_key()] = scroll

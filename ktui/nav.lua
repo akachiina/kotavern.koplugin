@@ -32,7 +32,10 @@ function Nav.draw(view, bb, x, y, w, h)
     local m = Theme.metrics()
     local pad = m.pad
     local n = #NAV_ITEMS
-    local item_w = math.floor(w / n)
+    -- Distribute the floor remainder 1px over the first tabs instead of
+    -- dumping it all on the last tab (which came out visibly wider).
+    local base_w = math.floor(w / n)
+    local rem = w - base_w * n
 
     -- Background
     P.box(bb, x, y, w, h, { border = false, background = Theme.panel })
@@ -41,9 +44,9 @@ function Nav.draw(view, bb, x, y, w, h)
 
     local current_page = view.app.state.page
 
+    local ix = x
     for i, item in ipairs(NAV_ITEMS) do
-        local ix = x + (i - 1) * item_w
-        local iw = (i == n) and (w - (i - 1) * item_w) or item_w
+        local iw = base_w + (i <= rem and 1 or 0)
         local is_active = (current_page == item.id)
         local is_dashboard = (current_page == "dashboard" and item.id == "dashboard")
 
@@ -87,10 +90,14 @@ function Nav.draw(view, bb, x, y, w, h)
                 local Font = require("ui/font")
                 local badge_face = unseen >= 10
                     and Font:getFace("smallinfofont", Theme.font_scale(12)) or nil
-                P.center_text_box(bb, tostring(unseen), badge_x, badge_y - Theme.scale(3),
+                -- No manual offset: center_text_box already centers the
+                -- measured box, and a hand fudge drifts with font size (it
+                -- also differed per face while using one constant).
+                P.center_text_box(bb, tostring(unseen), badge_x, badge_y,
                     badge_s, badge_s, "tiny", { bold = true, color = Theme.bg, face = badge_face })
             end
         end
+        ix = ix + iw
     end
 end
 

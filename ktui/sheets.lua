@@ -128,9 +128,13 @@ local function panel_geom(view)
 
     local body_h = 0
     if sheet and sheet.confirm then
-        local lines = sheet.text and P.paragraph_line_count(sheet.text, pw - pad * 2, "default") or 0
+        -- Reserve the REAL painted height (TextBoxWidget paints ~1px/line
+        -- taller than the nominal lines*line_h): the nominal budget let long
+        -- confirm text creep into the Cancel/OK row.
+        local text_h = (sheet.text and sheet.text ~= "")
+            and P.paragraph_height(sheet.text, pw - pad * 2, "default") or 0
         body_h = Theme.scale(6) + title_h
-            + (lines > 0 and (lines * Theme.line_h("default") + Theme.scale(12)) or 0)
+            + (text_h > 0 and (text_h + Theme.scale(12)) or 0)
             + Theme.btn_h() + Theme.scale(12)
     else
         local n = sheet and #sheet.actions or 0
@@ -194,9 +198,8 @@ function Sheets.draw(view, bb)
     if sheet.confirm then
         -- Message
         if sheet.text and sheet.text ~= "" then
-            local lines = P.paragraph_line_count(sheet.text, pw - pad * 2, "default")
-            local text_h = lines * Theme.line_h("default")
-            P.paragraph(bb, sheet.text, px + pad, cy, pw - pad * 2, text_h + Theme.line_h("default"), "default")
+            local text_h = P.paragraph_height(sheet.text, pw - pad * 2, "default")
+            P.paragraph(bb, sheet.text, px + pad, cy, pw - pad * 2, text_h, "default")
             cy = cy + text_h + Theme.scale(12)
         end
         -- Cancel / OK
@@ -260,9 +263,11 @@ function Sheets.draw(view, bb)
                     if action.danger and enabled then
                         -- No red on e-ink: a rule under the label is what
                         -- makes destructive rows distinguishable from normal
-                        -- ones (danger == ink in both palettes).
+                        -- ones (danger == ink in both palettes). Anchor it to
+                        -- the same centering P.vcenter_text uses (measured box
+                        -- centered in row_h), not an assumed row_h/2 center.
                         local tsz = P.text_size(Widgets.sanitize(action.label), label_w, "default")
-                        local uy = ay + math.floor(row_h / 2) + math.floor(tsz.h / 2) + Theme.scale(2)
+                        local uy = ay + math.floor((row_h - tsz.h) / 2) + tsz.h + Theme.scale(2)
                         P.rect(bb, tx, uy, math.min(tsz.w, label_w), math.max(1, Theme.scale(1)), color)
                     end
                 end
@@ -273,14 +278,19 @@ function Sheets.draw(view, bb)
                     Icons.draw(bb, "check", cx, ay + math.floor((row_h - isz.h) / 2), icon_size, { color = Theme.ink })
                 end
                 local idx = i
-                P.hit(view, px + 1, ay, pw - 2, row_h, function()
-                    local act = sheet.actions[idx]
-                    app.state.sheet = nil
-                    app.view:refresh()
-                    if act and act.on_tap and act.enabled ~= false then
-                        act.on_tap()
-                    end
-                end, "sheet:" .. tostring(action.label))
+                -- Disabled rows paint muted and register NO hit (same contract
+                -- as W.button / header pills): a visibly disabled row must not
+                -- tear down the sheet on tap.
+                if enabled then
+                    P.hit(view, px + 1, ay, pw - 2, row_h, function()
+                        local act = sheet.actions[idx]
+                        app.state.sheet = nil
+                        app.view:refresh()
+                        if act and act.on_tap then
+                            act.on_tap()
+                        end
+                    end, "sheet:" .. tostring(action.label))
+                end
             end
             ay = ay + row_h
         end
@@ -290,6 +300,7 @@ function Sheets.draw(view, bb)
         Widgets.button(view, bb, {
             x = px + pad, y = cancel_y, w = pw - pad * 2, h = Theme.btn_h(),
             label = _("Cancel"), kind = "secondary",
+            hit_label = "sheet:cancel",
             on_tap = function() Sheets.close(app) end,
         })
     end

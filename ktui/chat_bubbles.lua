@@ -704,15 +704,23 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                             l.is_user and user or char_name, carve)
                         local ny = srow_y + name_off + math.floor((name_row_h - name_h) / 2)
                         local nx = col_text_x
-                        local nw = math.max(1, inner_right - nx)
+                        -- End the sender budget where the ⋯ kebab hit starts
+                        -- (kebab_x - 8): a long name used to run under the dots
+                        -- and the timestamp overprinted them.
+                        local nw = math.max(1, inner_right - kebab_w - Theme.scale(8) - nx)
                         if sender_str ~= "" then
                             P.text(bb, sender_str, nx, ny, nw,
                                 "small", { bold = true, color = Theme.ink })
                             if timestamp then
                                 local nsize = P.text_size(sender_str, nw, "small", { bold = true })
                                 local tx = nx + math.min(nsize.w, nw) + Theme.scale(6)
-                                P.text(bb, timestamp, tx, ny + math.max(0, name_h - Theme.line_h("tiny") - 2),
-                                    math.max(1, inner_right - tx), "tiny", { color = Theme.muted })
+                                -- Bottom-align the measured boxes (no baseline
+                                -- fudge): the old -2 constant detached the rule
+                                -- from the text at other font sizes.
+                                local tsize = P.text_size(timestamp, math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny")
+                                local ty = ny + math.max(0, nsize.h - tsize.h)
+                                P.text(bb, timestamp, tx, ty,
+                                    math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny", { color = Theme.muted })
                             end
                         end
                         name_drawn = true

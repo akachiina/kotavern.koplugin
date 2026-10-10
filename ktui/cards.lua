@@ -66,6 +66,30 @@ function Cards.character(view, bb, item, x, y, w, h)
         or (settings.dashboard_show_star == false and "none" or "always")
     local caption = settings.dashboard_caption or "soft"
 
+    -- Caption line metrics + FIXED band height, computed BEFORE the cover so
+    -- the no-image fallback can center the initial in the art area above it.
+    -- The band height comes from the SETTINGS (which lines are enabled),
+    -- never from per-item content: missing lines paint "" (nothing) but keep
+    -- their slot, so every card's band - and every name - lands at the same
+    -- height. (Per-item bands put "Aria" at the top of a tall band and "B"
+    -- at the bottom of a thin one: "cada um com um tamanho".)
+    local line_small = Theme.line_h("small")
+    local line_tiny = Theme.line_h("tiny")
+    local line_chip = Theme.line_h("chip")
+    local meta = show_meta and meta_text(item) or ""
+    local tags = show_tags and tags_text(item.tags) or ""
+
+    local band_h = Theme.scale(8) -- top + bottom pads
+    if show_name then
+        band_h = band_h + line_small
+    end
+    if show_tags then
+        band_h = band_h + line_chip + Theme.scale(2)
+    end
+    if show_meta then
+        band_h = band_h + line_tiny + Theme.scale(2)
+    end
+
     -- Full-bleed cover: cover-fit (fills the whole card, cropping the
     -- overflow - no white bars), rounded fallback with the initial when
     -- there is no image (or covers are disabled). Covers paint from the
@@ -82,7 +106,9 @@ function Cards.character(view, bb, item, x, y, w, h)
     if not has_image then
         P.rounded_rect(bb, x, y, w, h, Theme.soft, math.floor(Theme.metrics().radius))
         local initial = Widgets.first_glyph(item.name or "?"):upper()
-        P.center_text_box(bb, initial, x, y, w, h - Theme.scale(40), "heading", { bold = true })
+        -- Center in the art area ABOVE the caption band (not a magic 40px):
+        -- the band height is settings-driven so this stays aligned with it.
+        P.center_text_box(bb, initial, x, y, w, math.max(1, h - band_h), "heading", { bold = true })
     end
 
     -- Caption band at the bottom. Iterated 4× with the user: a solid
@@ -90,23 +116,6 @@ function Cards.character(view, bb, item, x, y, w, h)
     -- text illegible over busy art, lighten 0.4 too transparent. Final:
     -- "soft" = lighten 0.7 (art faintly visible, text readable). "solid" and
     -- "none" are opt-in via Settings → Dashboard.
-    local line_small = Theme.line_h("small")
-    local line_tiny = Theme.line_h("tiny")
-    local line_chip = Theme.line_h("chip")
-    local meta = show_meta and meta_text(item) or ""
-    local tags = show_tags and tags_text(item.tags) or ""
-
-    local band_h = Theme.scale(8) -- top + bottom pads
-    if show_name then
-        band_h = band_h + line_small
-    end
-    if tags ~= "" then
-        band_h = band_h + line_chip + Theme.scale(2)
-    end
-    if meta ~= "" then
-        band_h = band_h + line_tiny + Theme.scale(2)
-    end
-
     local band_y = y + h - band_h
     if band_h > 0 and caption ~= "none" then
         if caption == "solid" or Theme.get_theme() == "inverted" then
@@ -121,11 +130,13 @@ function Cards.character(view, bb, item, x, y, w, h)
         P.text(bb, item.display_name or item.name or "?", x + pad, cy, inner_w, "small", { bold = true })
         cy = cy + line_small + Theme.scale(2)
     end
-    if tags ~= "" then
+    -- Reserved slots: paint "" when the item lacks the line so cy advances
+    -- identically on every card (names stay aligned).
+    if show_tags then
         P.text(bb, tags, x + pad, cy, inner_w, "chip", { color = Theme.muted })
         cy = cy + line_chip + Theme.scale(2)
     end
-    if meta ~= "" then
+    if show_meta then
         P.text(bb, meta, x + pad, cy, inner_w, "tiny", { color = Theme.muted })
     end
 
@@ -201,13 +212,16 @@ function Cards.list_item(view, bb, item, x, y, w, h, actions)
     end
 
     -- Rich mode (dashboard): name + tags (# a, b, ...) + meta (tokens ·
-    -- creator). Legacy mode (chats page passes subtext/meta): name + one
+    -- creator). Legacy mode (chats page passes subtext/meta keys): name + one
     -- combined summary line, so its rows keep their compact height.
+    -- Legacy is decided by KEY PRESENCE (chats always pass subtext/meta, even
+    -- empty): testing content emptiness here pushed preview-less chats into
+    -- the rich branch, giving neighbours different layouts.
     local settings = (view.app and view.app.state and view.app.state.settings) or {}
     local show_tags = settings.dashboard_show_tags ~= false
     local show_meta = settings.dashboard_show_meta ~= false
     local tags = show_tags and tags_text(item.tags) or ""
-    local legacy = (item.subtext and item.subtext ~= "") or (item.meta and item.meta ~= "")
+    local legacy = (item.subtext ~= nil) or (item.meta ~= nil)
     local line_name = Theme.line_h("small")
 
     if legacy then
@@ -224,18 +238,38 @@ function Cards.list_item(view, bb, item, x, y, w, h, actions)
         local line_chip = Theme.line_h("chip")
         local line_tiny = Theme.line_h("tiny")
         local meta = (show_meta and meta_text(item) ~= "" and meta_text(item)) or ""
-        local block_h = line_name + Theme.scale(2) + line_chip + Theme.scale(2) + line_tiny
+        -- FIXED slots like the grid caption: budget the enabled lines and
+        -- advance cy unconditionally (missing lines paint ""), so every row's
+        -- name lands at the same height. (Centering only the painted lines
+        -- left tag-less rows with the name floating mid-row.)
+        local gap = Theme.scale(2)
+        local block_h = line_name
+        if show_tags then block_h = block_h + gap + line_chip end
+        if show_meta then block_h = block_h + gap + line_tiny end
         local top = y + math.max(Theme.scale(2), math.floor((h - block_h) / 2))
         P.text(bb, item.display_name or item.name or "?", text_x, top, text_w, "small", { bold = true })
-        local cy = top + line_name + Theme.scale(2)
-        if tags ~= "" then
+        local cy = top + line_name
+        if show_tags then
+            cy = cy + gap
             P.text(bb, tags, text_x, cy, text_w, "chip", { color = Theme.muted })
+            cy = cy + line_chip
         end
-        cy = cy + line_chip + Theme.scale(2)
-        if meta ~= "" then
+        if show_meta then
+            cy = cy + gap
             P.text(bb, meta, text_x, cy, text_w, "tiny", { color = Theme.muted })
         end
     end
+
+    -- Row hit FIRST so the star/action hits registered after it win on
+    -- overlap (reverse-order dispatch: last registered wins). Same pattern
+    -- as Cards.character (full-card hit at :134, star badge after at :153).
+    P.hit(view, x, y, w, h, function()
+        if item.callback then
+            item.callback()
+        elseif item.path then
+            view.app:show_character_actions(item)
+        end
+    end, "list_item:" .. tostring(item.name or item.path or ""))
 
     -- Favorite star: center by the REAL painted size (Icons.text_size covers
     -- the 2x SVG raster and the glyph fallback). Centering by the requested
@@ -249,14 +283,6 @@ function Cards.list_item(view, bb, item, x, y, w, h, actions)
             view.app:toggle_favorite(item)
         end, "favlist:" .. tostring(item.name or item.path or ""))
     end
-
-    P.hit(view, x, y, w, h, function()
-        if item.callback then
-            item.callback()
-        elseif item.path then
-            view.app:show_character_actions(item)
-        end
-    end, "list_item:" .. tostring(item.name or item.path or ""))
 
     if actions then
         local btn_s = Theme.scale(36)
@@ -284,8 +310,15 @@ function Cards.compact(view, bb, item, x, y, w, h, icon)
     local text_x = x + (icon and Theme.scale(40) or Theme.scale(10))
     local label = item.text or item.name or "?"
     if item.subtext then
-        P.text(bb, label, text_x, y + Theme.scale(6), w - text_x - Theme.scale(10), "small", { bold = true })
-        P.text(bb, item.subtext, text_x, y + Theme.scale(22), w - text_x - Theme.scale(10), "tiny", { color = Theme.muted })
+        -- Measured offsets, not magic +6/+22: the two lines detach or collide
+        -- when the small line height changes (base font / DPI).
+        local label_lh = Theme.line_h("small")
+        local gap = Theme.scale(2)
+        local block_h = label_lh + gap + Theme.line_h("tiny")
+        local ty = y + math.max(Theme.scale(2), math.floor((h - block_h) / 2))
+        local tw = math.max(0, w - text_x - Theme.scale(10))
+        P.text(bb, label, text_x, ty, tw, "small", { bold = true })
+        P.text(bb, item.subtext, text_x, ty + label_lh + gap, tw, "tiny", { color = Theme.muted })
     else
         P.vcenter_text(bb, label, text_x, y, w - text_x - Theme.scale(10), h, "small")
     end

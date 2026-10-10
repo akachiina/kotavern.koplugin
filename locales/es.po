@@ -1190,6 +1190,9 @@ msgstr "Reintentos (429/5xx)"
 msgid "Retry"
 msgstr "Reintentar"
 
+msgid "Next"
+msgstr "Siguiente"
+
 msgid "Role"
 msgstr "Rol"
 
@@ -1696,3 +1699,9 @@ msgstr "HTML recargado"
 
 msgid "HTML problems:"
 msgstr "Problemas de HTML:"
+
+msgid "Test Native+HTML"
+msgstr "Probar Nativo+HTML"
+
+msgid "Native layout with an HTML island"
+msgstr "Diseño nativo con una isla HTML"

@@ -18,12 +18,10 @@ local _ = require("gettext")
 
 local Header = {}
 
--- Pill geometry (ZenPM header metrics): 42px-high pills, icon slot 24, gaps 6.
-local PILL_H = 42
+-- Pill geometry (ZenPM header metrics): icon slot 24, gaps 6. Pill height is
+-- Theme.btn_h() (single source of truth - no unscaled duplicates here).
 local PILL_ICON = 24
 local PILL_GAP = 6
--- Toolbar = pill row + breathing room (matches the old pill_toolbar_h()).
-local TOOLBAR_TOTAL = 58
 
 local function toolbar_h()
     return Theme.btn_h() + Theme.scale(16)
@@ -182,7 +180,10 @@ local function pill_width(label, icon)
     local w = Theme.scale(10) + Theme.scale(14)
     local text_w = 0
     if label and label ~= "" then
-        text_w = P.text_size(label, Theme.scale(256), "small", { bold = true }).w
+        -- Unbounded measure: clamping here (e.g. 256px) builds the pill for
+        -- the TRUNCATED width and the paint pass ellipsizes a second time,
+        -- so long labels get narrower pills than their text needs.
+        text_w = P.text_size(label, nil, "small", { bold = true }).w
         w = w + text_w + (icon and Theme.scale(PILL_GAP) or 0)
     end
     if icon then
@@ -253,7 +254,7 @@ function Header.toolbar_spec(view)
             },
             right = {
                 { icon = "search", label = _("Search"), on_tap = function() app:show_dashboard_search() end },
-                { label = "+ " .. _("Import"), on_tap = function() app:show_import() end },
+                { icon = "plus", label = _("Import"), on_tap = function() app:show_import() end },
             },
         }
     elseif page == "chats" then
@@ -268,33 +269,33 @@ function Header.toolbar_spec(view)
     elseif page == "connections" then
         return {
             right = {
-                { label = "+ " .. _("New Connection"), on_tap = function() app:edit_connection(nil) end },
+                { icon = "plus", label = _("New Connection"), on_tap = function() app:edit_connection(nil) end },
             },
         }
     elseif page == "personas" then
         return {
             right = {
-                { label = "+ " .. _("New Persona"), on_tap = function() app:edit_persona(nil) end },
+                { icon = "plus", label = _("New Persona"), on_tap = function() app:edit_persona(nil) end },
             },
         }
     elseif page == "presets" then
         return {
             right = {
-                { label = _("Import"), on_tap = function() app:import_preset() end },
-                { label = "+ " .. _("New Preset"), on_tap = function() app:edit_preset(nil) end },
+                { icon = "download", label = _("Import"), on_tap = function() app:import_preset() end },
+                { icon = "plus", label = _("New Preset"), on_tap = function() app:edit_preset(nil) end },
             },
         }
     elseif page == "lorebooks" then
         return {
             right = {
-                { label = _("Import"), on_tap = function() app:import_lorebook() end },
-                { label = "+ " .. _("New Lorebook"), on_tap = function() app:new_lorebook() end },
+                { icon = "download", label = _("Import"), on_tap = function() app:import_lorebook() end },
+                { icon = "plus", label = _("New Lorebook"), on_tap = function() app:new_lorebook() end },
             },
         }
     elseif page == "regex_scripts" then
         return {
             right = {
-                { label = "+ " .. _("New Script"), on_tap = function() app:new_regex_script() end },
+                { icon = "plus", label = _("New Script"), on_tap = function() app:new_regex_script() end },
             },
         }
     end
@@ -374,12 +375,11 @@ function Header.draw(view, bb, x, y, w)
     P.box(bb, x, y, w, h, { border = false, background = Theme.panel })
     P.rect(bb, x, y + h - Theme.scale(1), w, Theme.scale(1), Theme.soft)
 
-    -- Right side: kebab dots + close. Registered after the title swallow below
-    -- so they win their own zones (hitboxes are checked in reverse order).
+    -- Right side: kebab dots only (the X/close button was removed; exiting
+    -- is via kebab -> Quit). Registered after the title swallow below so it
+    -- wins its own zone (hitboxes are checked in reverse order).
     local kebab_s = Theme.scale(42)
-    local close_w = Theme.scale(44)
-    local close_x = x + w - pad - close_w
-    local kebab_x = close_x - kebab_s - Theme.scale(2)
+    local kebab_x = x + w - pad - kebab_s
 
     -- Brand/title. The swallow hit covers ONLY the text zone: taps on the bare
     -- title area must still reach AppView's KOReader-menu passthrough.
@@ -411,15 +411,10 @@ function Header.draw(view, bb, x, y, w)
         P.hit(view, title_x, y, kebab_x - Theme.scale(6) - title_x, h, function() end, "header_title")
     end
 
-    -- Kebab (3 drawn dots) + close. No background boxes: a full-height box
-    -- under the close button ERASED the hairline (the white notch the user
-    -- reported); icons sit directly on the uniform titlebar.
+    -- Kebab (3 drawn dots). No background box: it sits directly on the
+    -- uniform titlebar (a full-height box here ERASED the hairline - the
+    -- white notch the user reported).
     draw_kebab(view, bb, kebab_x, y + math.floor((h - kebab_s) / 2), kebab_s)
-
-    Icons.center(bb, "times", close_x, y, close_w, h, Theme.scale(15), { color = Theme.ink })
-    P.hit(view, close_x, y, w - close_x, h, function()
-        view:onClose()
-    end, "close")
 
     -- KOReader menu passthrough zone: the whole title bar.
     view.koreader_menu_zone = { x = x, y = y, w = w, h = h }
