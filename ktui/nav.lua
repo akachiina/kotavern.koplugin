@@ -5,6 +5,7 @@
 local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Bar = require("ktui/bar")
+local Geom = require("ktui/geom")
 local _ = require("gettext")
 
 local Nav = {}
@@ -32,10 +33,9 @@ function Nav.draw(view, bb, x, y, w, h)
     local m = Theme.metrics()
     local pad = m.pad
     local n = #NAV_ITEMS
-    -- Distribute the floor remainder 1px over the first tabs instead of
+    -- Spread the floor remainder 1px over the first tabs instead of
     -- dumping it all on the last tab (which came out visibly wider).
-    local base_w = math.floor(w / n)
-    local rem = w - base_w * n
+    local widths = Geom.distribute_remainder(w, n)
 
     -- Background
     P.box(bb, x, y, w, h, { border = false, background = Theme.panel })
@@ -46,7 +46,7 @@ function Nav.draw(view, bb, x, y, w, h)
 
     local ix = x
     for i, item in ipairs(NAV_ITEMS) do
-        local iw = base_w + (i <= rem and 1 or 0)
+        local iw = widths[i]
         local is_active = (current_page == item.id)
         local is_dashboard = (current_page == "dashboard" and item.id == "dashboard")
 

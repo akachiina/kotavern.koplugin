@@ -201,6 +201,7 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                 -- on e-ink, so images clipped by the band edge are skipped.
                 if entry_y >= vis_top and entry_y + entry.h <= vis_bottom then
                     P.image(bb, entry.path, cx, entry_y, entry.w, entry.h, {})
+                    view.dithered = true -- photo bitmap: dithered refresh
                     P.hit(view, cx - Theme.scale(6), entry_y, entry.w + Theme.scale(12), entry.h, function()
                         if view.app.show_character_image_fullscreen then
                             view.app:show_character_image_fullscreen(entry.path)

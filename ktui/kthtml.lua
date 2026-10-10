@@ -716,6 +716,9 @@ function KtHTML.paint_window(doc, bb, x, y, w, h, scroll, view, actions)
             widget:freeBb()
         end
         widget:paintTo(bb, x, y)
+        -- MuPDF bitmap content: mark for a dithered refresh (KOReader honors
+        -- view.dithered on the next refresh; without it bitmaps gray-ghost).
+        if view then view.dithered = true end
         KtHTML.paint_anims(doc, bb, x, y, w, h, pno)
         KtHTML.paint_link_hits(doc, view, doc.page, x, y, w, h, pno,
             actions)
@@ -732,6 +735,8 @@ function KtHTML.paint_window(doc, bb, x, y, w, h, scroll, view, actions)
     pcall(function()
         bb:blitFrom(src, x, y, 0, sy, w, vh)
     end)
+    -- MuPDF bitmap content: mark for a dithered refresh (see above).
+    if view then view.dithered = true end
     KtHTML.paint_anims(doc, bb, x, y - sy, w, h, 1)
     KtHTML.paint_link_hits(doc, view, doc.page, x, y - sy, w, h, 1,
         actions)

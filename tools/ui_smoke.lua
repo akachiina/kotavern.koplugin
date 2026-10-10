@@ -1284,6 +1284,43 @@ do
     os.execute("rm -rf /tmp/bkfix")
 end
 
+-- === 4v. geom: pure layout math (zero requires, headless-safe) ==============
+do
+    local Gm = require("ktui/geom")
+    local w = Gm.distribute_remainder(100, 3)
+    ok(w[1] + w[2] + w[3] == 100 and w[1] == 34 and w[3] == 33,
+        "geom: remainder spread 34/33/33 (sums exactly)")
+    local w1 = Gm.distribute_remainder(7, 4)
+    ok(w1[1] == 2 and w1[4] == 1, "geom: 7 over 4 spreads 2/2/2/1")
+    ok(Gm.center_offset(100, 30) == 35, "geom: center 30 in 100 -> 35")
+    ok(Gm.center_offset(10, 30, 2) == 2, "geom: overflow clamps to min_top")
+    local bh, ys = Gm.stack({ { h = 20 }, { h = 10 } }, 2, 4)
+    ok(bh == 40 and ys[1] == 4 and ys[2] == 26,
+        "geom: stack 20+10 gap2 pad4 -> 40 @4/@26")
+    ok(Gm.stack({}, 2, 4) == 8, "geom: empty stack is just pads")
+    ok(Gm.fit_icon(50, 20, 8, 22, function(s) return s * 2 end) == 15,
+        "geom: fit_icon picks largest fitting (15)")
+    ok(Gm.fit_icon(10, 20, 8, 22, function(s) return s * 2 end) == 8,
+        "geom: fit_icon falls back to min")
+    local xs, tr = Gm.row_slots(300, 10, { 34, 52, 26 })
+    ok(xs[1] == 256 and xs[2] == 204 and xs[3] == 178 and tr == 178,
+        "geom: slots compose right-to-left")
+    ok(Gm.cap_two_rows(606, 8, 400, 163) == 299,
+        "geom: cap is min(desired, viewport) -> 299")
+    ok(Gm.cap_two_rows(2000, 8, 400, 163) == 400,
+        "geom: big viewport keeps desired")
+    ok(Gm.cap_two_rows(100, 8, 400, 163) == 163,
+        "geom: tiny viewport hits readability floor")
+    local p1, m1 = Gm.paginate({ 100, 100, 100 }, 8, 220, 20)
+    ok(#p1 == 3 and m1 and p1[2].first == 2 and p1[2].last == 2,
+        "geom: paginate reserves chevrons (3 pages)")
+    local p2, m2 = Gm.paginate({ 50, 50, 50 }, 8, 200, 0)
+    ok(#p2 == 1 and not m2 and p2[1].last == 3,
+        "geom: paginate fits all when possible (1 page)")
+    local p3, m3 = Gm.paginate({ 50, 60, 50 }, 10, 130, 16)
+    ok(#p3 == 3 and m3, "geom: paginate never strands an item (3 pages)")
+end
+
 -- === 4w. GIF player lifecycle (frames, stop frees, no leak) =======================
 do
     local GifAnim = require("ktui/gifanim")
@@ -4429,8 +4466,9 @@ do
         "kthtml: tall layout measures content (total_h=" .. tostring(total_h) .. ")")
     local hbb = Blitbuffer.new(500, 700, Blitbuffer.TYPE_BB8)
     hbb:fill(Blitbuffer.COLOR_WHITE)
-    KtHTML.paint_window(doc, hbb, 0, 0, 500, 700, 0)
+    KtHTML.paint_window(doc, hbb, 0, 0, 500, 700, 0, hview)
     ok(dark_in(hbb, 0, 0, 500, 700) > 0, "kthtml: tall paint leaves ink")
+    ok(hview.dithered == true, "kthtml: MuPDF paint marks dithered refresh")
 
     -- Link router: find a real kt: link, tap its center.
     local function kt_link(target)

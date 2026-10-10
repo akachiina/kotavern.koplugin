@@ -5,6 +5,7 @@
 local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
+local Geom = require("ktui/geom")
 local _ = require("gettext")
 
 local W = {}
@@ -281,42 +282,37 @@ function W.row(view, bb, o)
         local isz = Icons.text_size(o.icon, icon_size)
         local slot_w = isz.w + Theme.scale(12)
         local color = o.enabled == false and Theme.muted or (o.danger and Theme.danger or Theme.ink)
-        Icons.draw(bb, o.icon, tx + math.floor((slot_w - isz.w) / 2), y + math.floor((h - isz.h) / 2), icon_size, { color = color })
+        Icons.draw(bb, o.icon, tx + math.floor((slot_w - isz.w) / 2), y + Geom.center_offset(h, isz.h), icon_size, { color = color })
         tx = tx + slot_w
     end
 
-    -- Right side: compose slots right-to-left
-    local right = x + w - pad
-    local kebab_w, toggle_w, chev_w, check_w = 0, 0, 0, 0
+    -- Right side: compose slots right-to-left in ONE place (geom): the xs
+    -- double as paint positions and hit rects, so they cannot drift apart
+    -- (the old code painted at tw_x but hit at a stale `right`).
+    local kebab_w = o.kebab and Theme.scale(34) or 0
+    local toggle_w = o.toggle and Theme.scale(52) or 0
+    local chev_w = o.chevron and Theme.scale(26) or 0
+    local check_w = o.check and Theme.scale(26) or 0
+    local slot_xs, right = Geom.row_slots(x + w, pad,
+        { kebab_w, toggle_w, chev_w, check_w })
+    local kx, tw_x, cvx, chx = slot_xs[1], slot_xs[2], slot_xs[3], slot_xs[4]
     if o.kebab then
-        kebab_w = Theme.scale(34)
-        local kx = right - kebab_w
         local icon_size = Theme.scale(12)
         local isz = Icons.text_size("ellipsis-v", icon_size)
-        Icons.draw(bb, "ellipsis-v", kx + math.floor((kebab_w - isz.w) / 2), y + math.floor((h - isz.h) / 2), icon_size, { color = Theme.muted })
-        right = kx
+        Icons.draw(bb, "ellipsis-v", kx + math.floor((kebab_w - isz.w) / 2), y + Geom.center_offset(h, isz.h), icon_size, { color = Theme.muted })
     end
     if o.toggle then
-        toggle_w = Theme.scale(52)
-        local tw_x = right - toggle_w
-        P.zen_toggle(bb, tw_x, y + math.floor((h - Theme.scale(26)) / 2), toggle_w, Theme.scale(26), o.toggle_value and true or false)
-        right = tw_x
+        P.zen_toggle(bb, tw_x, y + Geom.center_offset(h, Theme.scale(26)), toggle_w, Theme.scale(26), o.toggle_value and true or false)
     end
     if o.chevron then
-        chev_w = Theme.scale(26)
-        local cx = right - chev_w
         local icon_size = Theme.scale(11)
         local isz = Icons.text_size("chev-right", icon_size)
-        Icons.draw(bb, "chev-right", cx + math.floor((chev_w - isz.w) / 2), y + math.floor((h - isz.h) / 2), icon_size, { color = Theme.muted })
-        right = cx
+        Icons.draw(bb, "chev-right", cvx + math.floor((chev_w - isz.w) / 2), y + Geom.center_offset(h, isz.h), icon_size, { color = Theme.muted })
     end
     if o.check then
-        check_w = Theme.scale(26)
-        local cx = right - check_w
         local icon_size = Theme.scale(12)
         local isz = Icons.text_size("check", icon_size)
-        Icons.draw(bb, "check", cx + math.floor((check_w - isz.w) / 2), y + math.floor((h - isz.h) / 2), icon_size, { color = Theme.ink })
-        right = cx
+        Icons.draw(bb, "check", chx + math.floor((check_w - isz.w) / 2), y + Geom.center_offset(h, isz.h), icon_size, { color = Theme.ink })
     end
 
     -- Value text (before the right slots). Only strings paint here: callers
@@ -336,7 +332,7 @@ function W.row(view, bb, o)
     local title_color = o.enabled == false and Theme.muted or (o.danger and Theme.danger or Theme.ink)
     if o.subtitle then
         local block_h = title_lh + Theme.scale(2) + sub_lh
-        local by = y + math.floor((h - block_h) / 2)
+        local by = y + Geom.center_offset(h, block_h)
         P.text(bb, W.sanitize(o.title), tx, by, text_w, "default", { bold = true, color = title_color })
         P.text(bb, o.subtitle, tx, by + title_lh + Theme.scale(2), text_w, "tiny", { color = Theme.muted })
     else
@@ -351,13 +347,11 @@ function W.row(view, bb, o)
         P.hit(view, x, y, w, h, o.on_tap, "row:" .. tostring(o.title))
     end
     if o.toggle and o.on_toggle and interactive then
-        -- Hit the painted toggle rect (tw_x), not the post-chevron `right`:
-        -- with chevron/check slots `right` shifts 26-52px left of the paint.
-        local tw_x = x + w - pad - kebab_w - toggle_w
+        -- tw_x is the painted toggle rect (same xs as the paint above).
         P.hit(view, tw_x, y, toggle_w, h, o.on_toggle, "row:toggle")
     end
     if o.kebab and o.on_kebab and interactive then
-        P.hit(view, x + w - pad - kebab_w, y, kebab_w, h, o.on_kebab, "row:kebab")
+        P.hit(view, kx, y, kebab_w, h, o.on_kebab, "row:kebab")
     end
     return h
 end
@@ -409,13 +403,12 @@ function W.segmented(view, bb, o)
     local n = #(o.tabs or {})
     if n == 0 then return 0 end
     local gap = Theme.scale(4)
-    local tw = math.floor((o.w - gap * (n - 1)) / n)
     -- Spread the floor remainder 1px over the first tabs instead of dumping
     -- it all on the last tab (which came out visibly wider).
-    local rem = (o.w - gap * (n - 1)) - tw * n
+    local widths = Geom.distribute_remainder(o.w - gap * (n - 1), n)
     local x = o.x
     for i, tab in ipairs(o.tabs or {}) do
-        local w = tw + (i <= rem and 1 or 0)
+        local w = widths[i]
         local active = (tab.id == o.active)
         if active then
             P.box(bb, x, o.y, w, h, { border = false, background = Theme.button_bg, radius = math.floor(h / 2) })

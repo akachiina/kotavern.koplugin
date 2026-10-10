@@ -5,6 +5,7 @@
 local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
+local Geom = require("ktui/geom")
 local Widgets = require("ktui/widgets")
 local Thumbs = require("ktui/thumbs")
 local _ = require("gettext")
@@ -79,16 +80,13 @@ function Cards.character(view, bb, item, x, y, w, h)
     local meta = show_meta and meta_text(item) or ""
     local tags = show_tags and tags_text(item.tags) or ""
 
-    local band_h = Theme.scale(8) -- top + bottom pads
-    if show_name then
-        band_h = band_h + line_small
-    end
-    if show_tags then
-        band_h = band_h + line_chip + Theme.scale(2)
-    end
-    if show_meta then
-        band_h = band_h + line_tiny + Theme.scale(2)
-    end
+    -- One entry per ENABLED line (fixed slots keep every card's band - and
+    -- every name - at the same height; missing content paints "" below).
+    local cap_lines = {}
+    if show_name then cap_lines[#cap_lines + 1] = { h = line_small } end
+    if show_tags then cap_lines[#cap_lines + 1] = { h = line_chip } end
+    if show_meta then cap_lines[#cap_lines + 1] = { h = line_tiny } end
+    local band_h, cap_ys = Geom.stack(cap_lines, Theme.scale(2), Theme.scale(4))
 
     -- Full-bleed cover: cover-fit (fills the whole card, cropping the
     -- overflow - no white bars), rounded fallback with the initial when
@@ -125,19 +123,20 @@ function Cards.character(view, bb, item, x, y, w, h)
         end
     end
 
-    local cy = band_y + Theme.scale(4)
+    local li = 0
     if show_name then
-        P.text(bb, item.display_name or item.name or "?", x + pad, cy, inner_w, "small", { bold = true })
-        cy = cy + line_small + Theme.scale(2)
+        li = li + 1
+        P.text(bb, item.display_name or item.name or "?", x + pad, band_y + cap_ys[li], inner_w, "small", { bold = true })
     end
     -- Reserved slots: paint "" when the item lacks the line so cy advances
     -- identically on every card (names stay aligned).
     if show_tags then
-        P.text(bb, tags, x + pad, cy, inner_w, "chip", { color = Theme.muted })
-        cy = cy + line_chip + Theme.scale(2)
+        li = li + 1
+        P.text(bb, tags, x + pad, band_y + cap_ys[li], inner_w, "chip", { color = Theme.muted })
     end
     if show_meta then
-        P.text(bb, meta, x + pad, cy, inner_w, "tiny", { color = Theme.muted })
+        li = li + 1
+        P.text(bb, meta, x + pad, band_y + cap_ys[li], inner_w, "tiny", { color = Theme.muted })
     end
 
     -- Full-card hitbox FIRST: hitboxes are checked in reverse registration
@@ -230,33 +229,31 @@ function Cards.list_item(view, bb, item, x, y, w, h, actions)
             summary = (summary and summary ~= "" and (summary .. " · " .. item.meta)) or item.meta
         end
         local line_tiny = Theme.line_h("tiny")
-        local block_h = line_name + Theme.scale(2) + line_tiny
-        local top = y + math.max(Theme.scale(2), math.floor((h - block_h) / 2))
+        local block_h, leg_ys = Geom.stack({ { h = line_name }, { h = line_tiny } },
+            Theme.scale(2), 0)
+        local top = y + Geom.center_offset(h, block_h, Theme.scale(2))
         P.text(bb, item.display_name or item.name or "?", text_x, top, text_w, "small", { bold = true })
-        P.text(bb, summary or "", text_x, top + line_name + Theme.scale(2), text_w, "tiny", { color = Theme.muted })
+        P.text(bb, summary or "", text_x, top + leg_ys[2], text_w, "tiny", { color = Theme.muted })
     else
         local line_chip = Theme.line_h("chip")
         local line_tiny = Theme.line_h("tiny")
         local meta = (show_meta and meta_text(item) ~= "" and meta_text(item)) or ""
-        -- FIXED slots like the grid caption: budget the enabled lines and
-        -- advance cy unconditionally (missing lines paint ""), so every row's
-        -- name lands at the same height. (Centering only the painted lines
-        -- left tag-less rows with the name floating mid-row.)
-        local gap = Theme.scale(2)
-        local block_h = line_name
-        if show_tags then block_h = block_h + gap + line_chip end
-        if show_meta then block_h = block_h + gap + line_tiny end
-        local top = y + math.max(Theme.scale(2), math.floor((h - block_h) / 2))
-        P.text(bb, item.display_name or item.name or "?", text_x, top, text_w, "small", { bold = true })
-        local cy = top + line_name
+        -- FIXED slots like the grid caption: one entry per enabled line, so
+        -- every row's name lands at the same height.
+        local rich_lines = { { h = line_name } }
+        if show_tags then rich_lines[#rich_lines + 1] = { h = line_chip } end
+        if show_meta then rich_lines[#rich_lines + 1] = { h = line_tiny } end
+        local block_h, rich_ys = Geom.stack(rich_lines, Theme.scale(2), 0)
+        local top = y + Geom.center_offset(h, block_h, Theme.scale(2))
+        local ri = 1
+        P.text(bb, item.display_name or item.name or "?", text_x, top + rich_ys[ri], text_w, "small", { bold = true })
         if show_tags then
-            cy = cy + gap
-            P.text(bb, tags, text_x, cy, text_w, "chip", { color = Theme.muted })
-            cy = cy + line_chip
+            ri = ri + 1
+            P.text(bb, tags, text_x, top + rich_ys[ri], text_w, "chip", { color = Theme.muted })
         end
         if show_meta then
-            cy = cy + gap
-            P.text(bb, meta, text_x, cy, text_w, "tiny", { color = Theme.muted })
+            ri = ri + 1
+            P.text(bb, meta, text_x, top + rich_ys[ri], text_w, "tiny", { color = Theme.muted })
         end
     end
 

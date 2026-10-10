@@ -7,6 +7,7 @@ local Theme = require("ktui/theme")
 local Scroll = require("ktui/scroll")
 local Cards = require("ktui/cards")
 local Icons = require("ktui/icons")
+local Geom = require("ktui/geom")
 local Widgets = require("ktui/widgets")
 local Sheets = require("ktui/sheets")
 local UIManager = require("ui/uimanager")
@@ -127,20 +128,13 @@ function Pages.dashboard(view, bb, x, y, w, h, scroll)
     end
 
     local list_h = h - (list_top - y)
-    -- Fixed card heights (ST-style): card_h is the desired height from
-    -- Settings → Dashboard (short / normal / tall), CAPPED at what fills
-    -- exactly 2 rows in this viewport - so 6 cards always fit with zero
-    -- scroll, whatever the screen size. The row count still comes from the
-    -- content (ceil(#items / cols)) and the overflow SCROLLS at the same
-    -- height: 7 cards never shrink, the 3rd row waits below the fold.
-    -- (Cap depends only on the viewport, never on the count: sizes stay
-    -- identical across 6/7/8+. The 0.9×w readability floor only matters on
-    -- very short screens, where even 6 may scroll - accepted extreme.)
-    local card_h = desired_card_h
-    local two_row_cap = math.floor((list_h - card_gap) / 2)
-    if two_row_cap > 0 then
-        card_h = math.min(card_h, math.max(math.floor(card_w * 0.9), two_row_cap))
-    end
+    -- Fixed card heights (ST-style): the desired height from Settings →
+    -- Dashboard, CAPPED at what fills exactly 2 rows - so 6 cards always fit
+    -- with zero scroll. The row count still comes from the content and the
+    -- overflow SCROLLS at the same height. (Cap depends only on the
+    -- viewport, never on the count: sizes stay identical across 6/7/8+.)
+    local card_h = Geom.cap_two_rows(list_h, card_gap, desired_card_h,
+        math.floor(card_w * 0.9))
     if os.getenv("KT_DEBUG_GRID") then
         print("DBG grid: rows=" .. math.max(1, math.ceil(#items / cols))
             .. " card_h=" .. card_h
@@ -1417,6 +1411,7 @@ function Pages.personas(view, bb, x, y, w, h, scroll)
         local tx = row_x + Theme.scale(10)
         local ty = cy + math.floor((row_h - thumb_size) / 2)
         local drawn = persona.avatar and persona.avatar ~= "" and P.image(bb, persona.avatar, tx, ty, thumb_size, thumb_size, { cover = true })
+        if drawn then view.dithered = true end -- photo bitmap: dithered refresh
         if not drawn then
             P.rounded_rect(bb, tx, ty, thumb_size, thumb_size, Theme.soft, math.floor(thumb_size / 2))
             P.center_text_box(bb, Widgets.first_glyph(persona.name or "?"):upper(), tx, ty, thumb_size, thumb_size, "small", { bold = true })
@@ -1936,6 +1931,7 @@ function Pages.character_view(view, bb, x, y, w, h, scroll)
             border_color = Theme.soft, border_size = 1, radius = Theme.scale(8), background = Theme.panel,
         })
         local drawn = P.image(bb, profile.path, av_x, av_y, av_s, av_s, { cover = true })
+        if drawn then view.dithered = true end -- photo bitmap: dithered refresh
         if not drawn then
             P.center_text_box(bb, Widgets.first_glyph(card.name or "?"):upper(),
                 av_x, av_y, av_s, av_s, "title", { bold = true })

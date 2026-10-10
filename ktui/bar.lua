@@ -7,6 +7,7 @@
 local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
+local Geom = require("ktui/geom")
 local Widgets = require("ktui/widgets")
 
 local Bar = {}
@@ -35,17 +36,12 @@ function Bar.item(view, bb, x, y, w, h, item, opts)
     local max_icon = opts.max_icon or Theme.scale(16)
     local min_icon = opts.min_icon or Theme.scale(8)
     local avail = h - indicator_h - pad * 2 - desc_room
-    local icon_font = min_icon
-    for s = max_icon, min_icon, -1 do
-        local icon_h = Icons.text_size(item.icon, s).h
-        if icon_h + label_h <= avail then
-            icon_font = s
-            break
-        end
-    end
+    local icon_font = Geom.fit_icon(avail, label_h, min_icon, max_icon, function(s)
+        return Icons.text_size(item.icon, s).h
+    end)
 
     local stack_h = Icons.text_size(item.icon, icon_font).h + label_h
-    local top = y + pad + math.max(0, math.floor((avail - stack_h) / 2))
+    local top = y + pad + Geom.center_offset(avail, stack_h)
 
     local color = item.active and Theme.ink or Theme.muted
     local label_w = 0  -- drawn label width (for the active underline)

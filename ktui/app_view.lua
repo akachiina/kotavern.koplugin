@@ -516,8 +516,10 @@ function AppView:paintTo(bb, x, y)
     self.swipe_step = nil
     self.scrollbar = nil
     -- Reset per-paint: pages that paint bitmaps (cards, avatars, the GIF
-    -- banner) set this back to true so UIManager dithers the next refresh
-    -- (SimpleUI's page_has_covers hint - avoids gray ghosting on e-ink).
+    -- banner, MuPDF pages) set this back to true so the next refresh carries
+    -- the dither hint (KOReader core honors view.dithered automatically on
+    -- plain "ui" refreshes - uimanager.lua dirty-stack handling; without it
+    -- bitmaps gray-ghost on e-ink, and on Kaleido they lose saturation).
     self.dithered = nil
     -- GIF players re-register their on-screen rects every paint (a full
     -- paintTo means the old rects are stale: the page scrolled, moved or

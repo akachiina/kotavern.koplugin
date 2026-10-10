@@ -9,6 +9,7 @@
 local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
+local Geom = require("ktui/geom")
 local Widgets = require("ktui/widgets")
 local _ = require("gettext")
 
@@ -267,7 +268,7 @@ function Sheets.draw(view, bb)
                         -- the same centering P.vcenter_text uses (measured box
                         -- centered in row_h), not an assumed row_h/2 center.
                         local tsz = P.text_size(Widgets.sanitize(action.label), label_w, "default")
-                        local uy = ay + math.floor((row_h - tsz.h) / 2) + tsz.h + Theme.scale(2)
+                        local uy = ay + Geom.center_offset(row_h, tsz.h) + tsz.h + Theme.scale(2)
                         P.rect(bb, tx, uy, math.min(tsz.w, label_w), math.max(1, Theme.scale(1)), color)
                     end
                 end
