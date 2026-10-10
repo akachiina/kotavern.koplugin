@@ -67,6 +67,7 @@ Issues and pull requests are welcome! If you add or change user-facing strings, 
 
 - [SillyTavern](https://github.com/SillyTavern/SillyTavern): the project KOTavern is modeled on. Feature set, behavior and character-card format follow it. KOTavern is an independent project and is not affiliated with SillyTavern.
 - [KOReader](https://github.com/koreader/koreader): the platform that makes all of this possible.
+- [xZenLabs](https://github.com/orgs/xZenLabs/repositories) ([zen-pm](https://github.com/xZenLabs/zen-pm), [zen-os](https://github.com/xZenLabs/zen-os)): the Zen team, whose plugins served as reference for the canvas UI primitives, scroll engine, theme, modals, markdown and the Deck band layout adapted in this project.
 
 ## 📄 License
 
