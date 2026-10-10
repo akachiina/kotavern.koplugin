@@ -15,7 +15,7 @@ return {
     ASSET_DIR = plugin_dir .. "/assets",
     DATA_DIR = nil, -- resolved at runtime via storage
 
-    VERSION = "0.1.0",
+    VERSION = "0.1.1",
 
     DAEMON_UNAVAILABLE_MESSAGE = "Cannot connect to API. Check your connection settings.",
 }
