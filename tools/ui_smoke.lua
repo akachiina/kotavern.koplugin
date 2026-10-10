@@ -1369,6 +1369,33 @@ do
     ok(#settle_modes >= 1 and settle_modes[#settle_modes] == "ui",
         "gif: stop settles once with ui")
 
+    -- Pacing is device-aware: capture scheduleIn delays on fresh ensures.
+    -- (Headless SDL reports e-ink, so assert the SELECTION, not the device.)
+    local delays = {}
+    local real_schedule = UIManager.scheduleIn
+    UIManager.scheduleIn = function(_, delay) delays[#delays + 1] = delay; return true end
+    local Device = require("device")
+    local real_eink = Device.hasEinkScreen
+    local function fresh_pace(eink, key)
+        delays = {}
+        Device.hasEinkScreen = function() return eink end
+        local a = fake_app({ page = "settings" })
+        local v = { app = a, hitboxes = {} }
+        function v:refresh() end
+        local p = GifAnim.ensure(a, v, key, gif, { w = 32, h = 32 })
+        GifAnim.stop(p)
+        GifAnim.stop_all(a)
+        return delays[1]
+    end
+    local d_off = fresh_pace(false, "pace-lcd")
+    local d_on = fresh_pace(true, "pace-eink")
+    Device.hasEinkScreen = real_eink
+    UIManager.scheduleIn = real_schedule
+    ok(d_off == GifAnim.INTERVAL,
+        "gif: tick pacing is 8fps off e-ink (delay=" .. tostring(d_off) .. ")")
+    ok(d_on == GifAnim.EINK_INTERVAL,
+        "gif: tick pacing is ~2fps on e-ink (delay=" .. tostring(d_on) .. ")")
+
     -- The shared painter clears the box with the page background first:
     -- a smaller synthetic frame in a bigger box proves the margins come back
     -- as bg (white), not as the previous frame's ink (the trail bug).

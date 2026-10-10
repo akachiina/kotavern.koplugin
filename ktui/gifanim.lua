@@ -33,6 +33,18 @@ local GifAnim = {}
 
 GifAnim.MAX_FRAMES = 24
 GifAnim.INTERVAL = 0.12 -- ~8fps: e-ink friendly, still reads as motion
+-- E-ink pacing: the panel cannot finish same-region updates at 8fps - they
+-- collide in the EPDC and the animation strobes (plus never-settling ghosts
+-- like the sonic's foot). At ~2fps each pose lands as a readable hop and
+-- every update completes. Off e-ink (SDL) the full rate stays.
+GifAnim.EINK_INTERVAL = 0.5
+local function tick_interval()
+    local ok, eink = pcall(function() return Device:hasEinkScreen() end)
+    if ok and eink then
+        return GifAnim.EINK_INTERVAL
+    end
+    return GifAnim.INTERVAL
+end
 -- Direct-to-compositor painting. Tests set this false to exercise the
 -- widget-repaint fallback path (fake views are not in the window stack).
 GifAnim.DIRECT = true
@@ -243,15 +255,12 @@ local function push_frame(player)
                         if vis.y + vis.h > chrome.y
                             and vis.y < chrome.y + (chrome.h or 0) then
                             local band_y = math.max(vis.y, chrome.y)
-                            local band_end = math.min(vis.y + vis.h,
-                                chrome.y + (chrome.h or 0))
                             if vis.y >= chrome.y then
                                 vis = nil -- fully inside the band: skip
                             else
                                 vis = { x = vis.x, y = vis.y, w = vis.w,
                                     h = band_y - vis.y } -- above-band part
                             end
-                            _ = band_end
                         end
                     end
                     if vis then
@@ -453,10 +462,10 @@ function GifAnim.ensure(app, view, key, path, opts)
         end
         player.idx = player.idx % player.n + 1
         push_frame(player)
-        UIManager:scheduleIn(GifAnim.INTERVAL, tick)
+        UIManager:scheduleIn(tick_interval(), tick)
     end
     player.tick = tick
-    UIManager:scheduleIn(GifAnim.INTERVAL, tick)
+    UIManager:scheduleIn(tick_interval(), tick)
     return player
 end
 
