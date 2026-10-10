@@ -1348,9 +1348,9 @@ do
     UIManager.setDirty = real_setdirty
     local dnil, dmode, dregion = dirty_args and dirty_args[1],
         dirty_args and dirty_args[2], dirty_args and dirty_args[3]
-    ok(dirty_args ~= nil and dnil == nil and dmode == "ui"
+    ok(dirty_args ~= nil and dnil == nil and dmode == "a2"
         and dregion ~= nil and dregion.x == 10 and dregion.w == 64,
-        "gif: direct tick refreshes only the banner region (no widget repaint)")
+        "gif: direct tick refreshes only the banner region via a2 (no blink)")
     ok(refresh_args == nil, "gif: direct tick bypasses view:refresh entirely")
     local direct_ink = 0
     for yy = 10, 74, 2 do
@@ -1359,6 +1359,15 @@ do
         end
     end
     ok(direct_ink > 20, "gif: direct tick paints the frame into Screen.bb")
+
+    -- Stop settles once with full quality (ticks run pure a2, ghost masked
+    -- by motion): capture the settle mode.
+    local settle_modes = {}
+    UIManager.setDirty = function(_, _, mode) settle_modes[#settle_modes + 1] = mode; return true end
+    GifAnim.stop(player)
+    UIManager.setDirty = real_setdirty
+    ok(#settle_modes >= 1 and settle_modes[#settle_modes] == "ui",
+        "gif: stop settles once with ui")
 
     -- The shared painter clears the box with the page background first:
     -- a smaller synthetic frame in a bigger box proves the margins come back

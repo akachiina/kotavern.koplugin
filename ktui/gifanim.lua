@@ -53,6 +53,16 @@ function GifAnim.stop(player)
         pcall(UIManager.unschedule, UIManager, player.tick)
         player.tick = nil
     end
+    -- Settle once with a full-quality refresh: ticks run pure a2 (no blink,
+    -- ghost masked by motion), so a player stopping with the page standing
+    -- still leaves one crisp region behind. Page changes repaint fully anyway.
+    if player.rects then
+        for _, rect in ipairs(player.rects) do
+            if rect and (rect.w or 0) > 0 and (rect.h or 0) > 0 then
+                pcall(UIManager.setDirty, UIManager, nil, "ui", Geom:new(rect))
+            end
+        end
+    end
     if player.bbs then
         for _, bb in ipairs(player.bbs) do
             free_bb(bb)
@@ -249,7 +259,14 @@ local function push_frame(player)
                             GifAnim.draw(player, bb, vis.x, vis.y, vis.w, vis.h)
                         end)
                         if okd then
-                            UIManager:setDirty(nil, "ui", Geom:new(vis))
+                            -- a2 waveform (not ui): on e-ink every "ui" partial
+                            -- is a visible EPDC ripple, and at ~8fps that reads
+                            -- as constant blinking (fine on SDL, blinks on
+                            -- Kindle). Same precedent as VirtualKey highlights
+                            -- ("We use a2 for the highlights"). No periodic
+                            -- cleaning: motion masks the ghost, page changes
+                            -- repaint fully anyway, and stop() settles once.
+                            UIManager:setDirty(nil, "a2", Geom:new(vis))
                             pushed = true
                         end
                     end
