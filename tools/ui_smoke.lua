@@ -1321,6 +1321,61 @@ do
     ok(#p3 == 3 and m3, "geom: paginate never strands an item (3 pages)")
 end
 
+-- === 4v2. Static guard: no `_()` call inside a `for _,` body =================
+-- `_` is gettext everywhere; a `for _, x` index shadows it, and any nested
+-- `_()` then calls the numeric index ("attempt to call upvalue '_'" - the
+-- quick-reply Edit crash, which needed ≥1 saved reply to fire). Crude block
+-- machine over our own sources; one-liners with balanced ends are skipped.
+do
+    local srcs = { "kt_app.lua", "ktui/app_view.lua", "ktui/bar.lua",
+        "ktui/cards.lua", "ktui/chat_bubbles.lua", "ktui/deck.lua",
+        "ktui/geom.lua", "ktui/gifanim.lua", "ktui/header.lua",
+        "ktui/icons.lua", "ktui/kthtml.lua", "ktui/modals.lua",
+        "ktui/nav.lua", "ktui/pages.lua", "ktui/primitives.lua",
+        "ktui/scroll.lua", "ktui/sheets.lua", "ktui/theme.lua",
+        "ktui/uidsl.lua", "ktui/widgets.lua" }
+    local function strip(l)
+        l = l:gsub('"(?:[^"\\]|\\.)*"', '""')
+        l = l:gsub("'(?:[^'\\]|\\.)*'", "''")
+        return (l:gsub("%-%-.*$", ""))
+    end
+    local bad = {}
+    for _, rel in ipairs(srcs) do
+        local f = io.open(PLUGIN .. "/" .. rel, "r")
+        if f then
+            local lines = {}
+            for line in f:lines() do lines[#lines + 1] = line end
+            f:close()
+            local stack = {}
+            for i, raw in ipairs(lines) do
+                local l = strip(raw)
+                local fvars = l:match("^%s*for%s+(.-)%s+in%s")
+                if fvars and l:find("%f[%w]do%f[%W]") and not l:find("%f[%w]end%f[%W]") then
+                    local under = false
+                    for v in fvars:gmatch("([^,]+)") do
+                        if v:match("^%s*_%s*$") then under = true end
+                    end
+                    stack[#stack + 1] = { under = under, line = i }
+                elseif (l:find("^%s*function%f[%W]") or l:find("%f[%W]then%s*$")
+                        or l:find("%f[%W]do%s*$"))
+                    and not l:find("%f[%W]end%f[%W]") then
+                    stack[#stack + 1] = { under = false }
+                elseif l:find("^%s*end%f[%W]") then
+                    if #stack > 0 then stack[#stack] = nil end
+                elseif l:find("[^%w]_%(") then
+                    for _, fr in ipairs(stack) do
+                        if fr.under then
+                            bad[#bad + 1] = rel .. ":" .. i .. " (for at " .. fr.line .. ")"
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    ok(#bad == 0, "lint: no _() call inside a for_, body (" .. table.concat(bad, "; ") .. ")")
+end
+
 -- === 4w. GIF player lifecycle (frames, stop frees, no leak) =======================
 do
     local GifAnim = require("ktui/gifanim")
@@ -1432,6 +1487,41 @@ do
         "gif: tick pacing is 8fps off e-ink (delay=" .. tostring(d_off) .. ")")
     ok(d_on == GifAnim.EINK_INTERVAL,
         "gif: tick pacing is ~2fps on e-ink (delay=" .. tostring(d_on) .. ")")
+    -- Night ticks use "ui" (A2-night starves input on new panels when
+    -- updates queue: the inverted-only debug-page freeze).
+    local real_theme = Theme.get_theme()
+    Theme.set_theme("inverted")
+    local app_n = fake_app({ page = "settings" })
+    local view_n = { app = app_n, hitboxes = {} }
+    function view_n:refresh() end
+    local player_n = GifAnim.ensure(app_n, view_n, "night", gif, { w = 32, h = 32,
+        rect = { x = 4, y = 4, w = 32, h = 32 } })
+    local night_modes = {}
+    local real_setdirty = UIManager.setDirty
+    UIManager.setDirty = function(_, _, mode) night_modes[#night_modes + 1] = mode; return true end
+    GifAnim.DIRECT = true
+    player_n.idx = 0
+    player_n.tick()
+    UIManager.setDirty = real_setdirty
+    Theme.set_theme(real_theme)
+    ok(night_modes[1] == "ui",
+        "gif: night tick refreshes via ui (got " .. tostring(night_modes[1]) .. ")")
+    GifAnim.stop(player_n)
+    GifAnim.stop_all(app_n)
+    -- Fallback coalesce: back-to-back fallback ticks repaint at most once.
+    GifAnim.DIRECT = false
+    local app_c = fake_app({ page = "settings" })
+    local view_c = { app = app_c, hitboxes = {} }
+    local nfb = 0
+    function view_c:refresh() nfb = nfb + 1 end
+    local player_c = GifAnim.ensure(app_c, view_c, "coal", gif, { w = 32, h = 32,
+        rect = { x = 4, y = 4, w = 32, h = 32 } })
+    player_c.tick()
+    player_c.tick()
+    ok(nfb == 1, "gif: fallback ticks coalesce (repaints=" .. nfb .. ")")
+    GifAnim.stop(player_c)
+    GifAnim.stop_all(app_c)
+    GifAnim.DIRECT = true
 
     -- The shared painter clears the box with the page background first:
     -- a smaller synthetic frame in a bigger box proves the margins come back
@@ -2077,6 +2167,26 @@ do
         "sheets: sublabel rows keep their taps")
     ok(ink_ratio(bb) > 100, "sheets: sublabel sheet paints")
     dump(bb, "sheet_sublabels")
+end
+
+-- Nested sheets (Options -> Select Persona) must not lose the page scroll:
+-- outer zeroes it, inner must carry the outer saved position, close
+-- restores it (the chat "jumped to top" bug).
+do
+    local Sheets = require("ktui/sheets")
+    local app = fake_app({ page = "chat" })
+    app.state.scroll = { chat = 500 }
+    function app:scroll_key() return "chat" end
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    app.view = view
+    Sheets.show(app, { title = "Outer", actions = { { label = "A" } } })
+    ok(app.state.scroll.chat == 0, "sheets: opening zeroes page scroll")
+    Sheets.show(app, { title = "Inner", actions = { { label = "B" } } })
+    Sheets.close(app)
+    ok(app.state.scroll.chat == 500,
+        "sheets: nested close restores outer position (got " ..
+        tostring(app.state.scroll.chat) .. ")")
 end
 
 -- === 5. Icon sheet: every SVG asset rasterizes ==============================

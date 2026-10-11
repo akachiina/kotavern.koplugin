@@ -212,6 +212,24 @@ function GifAnim.invalidate_rects(view)
     end
 end
 
+-- Tick refresh mode. Day: "a2" (fast, no blink - VirtualKey precedent).
+-- Night (screen night_mode or our inverted theme): A2-night on new panels
+-- starves input when updates queue behind each other (the debug-page
+-- freeze: immediate, sonic-visible only, inverted only), so plain "ui"
+-- (GC16_FAST class) which always completes before the next 2fps tick.
+-- Never "fast": 1-bit monochrome bleaches dialogs (bookshelf lesson).
+local function tick_mode()
+    local night = false
+    pcall(function() night = Screen.night_mode and true or false end)
+    if not night then
+        pcall(function() night = Theme.get_theme() == "inverted" end)
+    end
+    if night then
+        return "ui"
+    end
+    return "a2"
+end
+
 -- Advance one frame onto the screen. DIRECT: paint Screen.bb and refresh
 -- only each animation region (no widget repaint). Fallback: the
 -- widget-repaint path (rect-less callers, tests, odd compositors).
@@ -268,14 +286,16 @@ local function push_frame(player)
                             GifAnim.draw(player, bb, vis.x, vis.y, vis.w, vis.h)
                         end)
                         if okd then
-                            -- a2 waveform (not ui): on e-ink every "ui" partial
-                            -- is a visible EPDC ripple, and at ~8fps that reads
-                            -- as constant blinking (fine on SDL, blinks on
-                            -- Kindle). Same precedent as VirtualKey highlights
-                            -- ("We use a2 for the highlights"). No periodic
-                            -- cleaning: motion masks the ghost, page changes
-                            -- repaint fully anyway, and stop() settles once.
-                            UIManager:setDirty(nil, "a2", Geom:new(vis))
+                            -- a2 waveform by day (not ui): on e-ink every "ui"
+                            -- partial is a visible EPDC ripple, and at ~8fps
+                            -- that reads as constant blinking (fine on SDL,
+                            -- blinks on Kindle). Same precedent as VirtualKey
+                            -- highlights ("We use a2 for the highlights"). At
+                            -- night tick_mode() already switched to "ui".
+                            -- No periodic cleaning: motion masks the ghost,
+                            -- page changes repaint fully anyway, and stop()
+                            -- settles once.
+                            UIManager:setDirty(nil, tick_mode(), Geom:new(vis))
                             pushed = true
                         end
                     end
@@ -295,8 +315,15 @@ local function push_frame(player)
             and rect.x < chrome.x + (chrome.w or 0)
             and rect.x + rect.w > chrome.x
         if GifAnim._rect_visible(view, rect) and not under_chrome then
-            if view.refresh then
-                view:refresh(nil, rect)
+            -- Coalesce: never repaint faster than the panel digests, even if
+            -- ticks arrive back-to-back (obscured/fallback storms of full
+            -- repaints starve input on slow EPDCs and look like a freeze).
+            local now = os.clock()
+            if not player._last_fb or now - player._last_fb >= GifAnim.EINK_INTERVAL then
+                player._last_fb = now
+                if view.refresh then
+                    view:refresh(nil, rect)
+                end
             end
             return
         end

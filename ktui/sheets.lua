@@ -31,6 +31,14 @@ function Sheets.show(app, opts)
     if view and view.app and view.app.state then
         local key = view.app:scroll_key()
         saved = { key = key, value = view.app.state.scroll[key] or 0 }
+        -- Nested sheet (Options -> Select Persona): the page scroll is
+        -- ALREADY zeroed by the outer sheet, so saving "current" here would
+        -- snapshot 0 and close() would restore top-of-page. Carry the outer
+        -- sheet's position instead (same page key only).
+        local prev = app.state.sheet
+        if prev and prev._saved_scroll and prev._saved_scroll.key == key then
+            saved = prev._saved_scroll
+        end
     end
     app.state.sheet = {
         title = opts.title,

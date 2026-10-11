@@ -3387,7 +3387,11 @@ function App:manage_quick_replies()
     local actions = {
         { label = _("New Quick Reply"), icon = "plus", on_tap = function() add_or_edit(nil) end },
     }
-    for _, qr in ipairs(qrs) do
+    -- NOTE: the index var is NOT `_` on purpose: `_` is gettext here, and a
+    -- `for _, qr` loop would shadow it (nested on_tap closures would call the
+    -- numeric index → "attempt to call upvalue '_'"). This exact crash fired
+    -- when editing a quick reply with ≥1 saved.
+    for qr_idx, qr in ipairs(qrs) do
         table.insert(actions, {
             label = qr.label or "?",
             icon = "bolt",
