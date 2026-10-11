@@ -282,10 +282,15 @@ local function push_frame(player)
                         end
                     end
                     if vis then
+                        -- Refresh ONLY what draw actually painted: pcall
+                        -- success is not paint success, and refreshing
+                        -- identical pixels wastes EPDC/battery (plus a
+                        -- shimmer source on e-ink).
+                        local painted = false
                         local okd = pcall(function()
-                            GifAnim.draw(player, bb, vis.x, vis.y, vis.w, vis.h)
+                            painted = GifAnim.draw(player, bb, vis.x, vis.y, vis.w, vis.h)
                         end)
-                        if okd then
+                        if okd and painted then
                             -- a2 waveform by day (not ui): on e-ink every "ui"
                             -- partial is a visible EPDC ripple, and at ~8fps
                             -- that reads as constant blinking (fine on SDL,
@@ -463,6 +468,26 @@ function GifAnim.ensure(app, view, key, path, opts)
         -- LuaJIT: blitbuffers are FFI cdata (type() returns "cdata").
         player.bbs[i] = (okb and type(bb) == "cdata") and bb or nil
     end
+    -- Honest count: thunks are promises, not frames. Compact out failed
+    -- decodes so idx never lands on nil (which painted nothing while the
+    -- timer kept refreshing identical pixels - a perfectly static "playing"
+    -- animation with zero diagnostics). Zero live frames = no player: the
+    -- caller falls back to its static frame, also with no phantom timer.
+    local live = {}
+    for i = 1, player.n do
+        if player.bbs[i] then live[#live + 1] = player.bbs[i] end
+    end
+    if #live < 2 then
+        -- Zero live frames, or a single one (no motion possible either way):
+        -- no player, no phantom timer refreshing identical pixels.
+        if needs_doc_free and source.free then
+            pcall(function() source:free() end)
+        end
+        pcall(function() require("logger").warn("GifAnim.ensure: no live frames for", key) end)
+        return nil
+    end
+    player.bbs = live
+    player.n = #live
     -- The thunks reference the decoded GIF document; every buffer we keep
     -- is materialized now, so release the document immediately instead of
     -- pinning the whole decode in RAM for the lifetime of the player.

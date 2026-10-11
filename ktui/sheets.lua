@@ -293,8 +293,13 @@ function Sheets.draw(view, bb)
                 if enabled then
                     P.hit(view, px + 1, ay, pw - 2, row_h, function()
                         local act = sheet.actions[idx]
-                        app.state.sheet = nil
-                        app.view:refresh()
+                        -- Close through Sheets.close (never bare nil): it
+                        -- restores the pre-sheet page scroll on the same page.
+                        -- Bare nil skipped the restore, so a row that opened
+                        -- a nested sheet (Options -> Select Persona) snapshotted
+                        -- the already-zeroed offset and close() put the page
+                        -- back at the top. No on_close side effects exist.
+                        Sheets.close(app)
                         if act and act.on_tap then
                             act.on_tap()
                         end

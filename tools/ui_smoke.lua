@@ -1809,9 +1809,31 @@ do
         ok(okp, "sheets: disabled-action sheet renders (" .. tostring(err) .. ")")
         ok(has_hit(view, "sheet:Here") and not has_hit(view, "sheet:Gone"),
             "sheets: disabled action has no hit, enabled keeps its tap")
-        ok(has_hit(view, "sheet:cancel"),
-            "sheets: non-confirm Cancel registers as sheet:cancel")
+    ok(has_hit(view, "sheet:cancel"),
+        "sheets: non-confirm Cancel registers as sheet:cancel")
+    -- Row tap closes through Sheets.close (restores pre-sheet scroll);
+    -- the old bare-nil skipped the restore and nested sheets stranded top.
+    do
+        local fired = false
+        -- As Sheets.show leaves it: scroll zeroed, position stashed.
+        app.state.scroll = { chat = 0 }
+        function app:scroll_key() return "chat" end
+        app.state.sheet = { title = "T", scroll = 0,
+            _saved_scroll = { key = "chat", value = 500 },
+            actions = { { label = "Go", on_tap = function() fired = true end } } }
+        local v = { app = app, hitboxes = {} }
+        function v:refresh() end
+        app.view = v
+        local bb2 = new_bb()
+        Sheets.draw(v, bb2)
+        for _, b in ipairs(v.hitboxes) do
+            if b.label == "sheet:Go" then b.callback() end
+        end
+        ok(app.state.sheet == nil and fired
+            and app.state.scroll.chat == 500,
+            "sheets: row tap closes via close() (scroll restored, tap fired)")
     end
+end
 
     -- Segmented: tab widths differ by at most 1px (remainder distributed).
     do
@@ -5499,6 +5521,26 @@ do
     end
     ok(bb_up ~= nil and bb_it ~= nil and ink_sig(bb_up) ~= ink_sig(bb_it),
         "uidsl: island italic renders slanted (differs from upright)")
+    -- Dead frames: stubbed decode failure yields no player (no phantom
+    -- timer refreshing identical pixels).
+    local GifAnim = require("ktui/gifanim")
+    local RI = require("ui/renderimage")
+    local real_render = RI.renderImageFile
+    RI.renderImageFile = function() return nil end
+    local app_d = fake_app({ page = "settings" })
+    local view_d = { app = app_d, hitboxes = {} }
+    function view_d:refresh() end
+    local dead = GifAnim.ensure(app_d, view_d, "dead",
+        PLUGIN .. "/assets/debug_banner", { w = 32, h = 32 })
+    RI.renderImageFile = real_render
+    GifAnim.stop_all(app_d)
+    ok(dead == nil, "gif: no live frames yields no player")
+    -- draw() with no live frame reports false (push must not refresh it).
+    local nbb = Blitbuffer.new(32, 32, Blitbuffer.TYPE_BB8)
+    nbb:fill(Blitbuffer.COLOR_WHITE)
+    ok(GifAnim.draw({ bbs = {}, idx = 1, stopped = false },
+        nbb, 0, 0, 32, 32) == false,
+        "gif: draw with no frame reports false")
 end
 
 -- === 19g. Sandbox actions: HTML-editable bounds + regional refresh =========
