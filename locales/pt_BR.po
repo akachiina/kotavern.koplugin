@@ -1193,6 +1193,9 @@ msgstr "Tentar de novo"
 msgid "Next"
 msgstr "Avançar"
 
+msgid "menu not found: "
+msgstr "menu não encontrado: "
+
 msgid "Role"
 msgstr "Papel"
 

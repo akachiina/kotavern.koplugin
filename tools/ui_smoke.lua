@@ -5723,58 +5723,352 @@ end
 do
     local UiDSL = require("ktui/uidsl")
     -- One file, two buttons (the tree cache keys on mtime+theme, not path,
-    -- so two tmp files in the same second would serve a stale tree).
+    -- so two tmp files in the same second would serve a stale tree). Filler
+    -- is single chars (never wraps at any font) with the buttons mid-page.
+    local paras = {}
+    for i = 1, 40 do paras[#paras + 1] = "<p>x" .. i .. "</p>" end
     local tmppath = os.tmpname() .. ".html"
     local f = io.open(tmppath, "w")
-    f:write('<row><button data-action="step" data-id="1" data-min="0" data-max="3">mais</button>' ..
-        '<button data-action="move" data-id="1">dir</button></row>')
+    f:write("<div>" .. table.concat(paras) .. "</div>" ..
+        '<row><button data-action="step" data-id="1" data-min="0" data-max="3">mais</button>' ..
+        '<button data-action="move" data-id="1">dir</button></row><div>' ..
+        table.concat(paras) .. "</div>")
     f:close()
     local real_path = UiDSL.sandbox_path
     UiDSL.sandbox_path = function() return tmppath end
-    local app = fake_app({ page = "css_test", settings = {},
-        sandbox = { pos = 39 }, scroll = {} })
-    local view = { app = app, hitboxes = {} }
-    function view:refresh() end
-    local calls = {}
-    function app:refresh(full, region) calls[#calls + 1] = { full, region } end
-    local bb = new_bb()
-    Pages.css_test(view, bb, 0, 0, VW, VH, 0)
+    local saved_font = Theme.get_base_font_size()
+    for _, fs in ipairs({ 8, 22, 32 }) do
+        Theme.set_base_font_size(fs)
+        for _, dn in ipairs({ "compact", "normal", "spacious" }) do
+            Theme.set_density(dn)
+            local tag = "f" .. tostring(fs) .. "/" .. dn
+            local app = fake_app({ page = "css_test", settings = {},
+                sandbox = { pos = 39 }, scroll = {} })
+            local view = { app = app, hitboxes = {} }
+            function view:refresh() end
+            local calls = {}
+            function app:refresh(full, region) calls[#calls + 1] = { full, region } end
+            local bb = new_bb()
+            local key = app:scroll_key()
+            local function paint_at(scroll)
+                view.hitboxes = {}
+                Pages.css_test(view, bb, 0, 0, VW, VH, scroll)
+            end
+            local function find_btn(label)
+                for _, b in ipairs(view.hitboxes) do
+                    if tostring(b.label or "") == "btn:" .. label then return b end
+                end
+            end
+            -- Scroll the buttons into view (position varies by metrics):
+            -- step the viewport until the hitbox exists.
+            paint_at(0)
+            local at = 0
+            while not find_btn("mais") and at < 4000 do
+                at = at + 200
+                paint_at(at)
+            end
+            ok(find_btn("mais") ~= nil,
+                "uidsl: step button reachable by scrolling at " .. tag)
+            -- Baseline read AFTER the snap, then tap like the device does:
+            -- callback + repaint with the CURRENT scroll.
+            local start_scroll = app.state.scroll[key]
+            local function drive(label, n)
+                local before = #calls
+                for _ = 1, n do
+                    local b = find_btn(label)
+                    if b then b.callback() end
+                    paint_at(app.state.scroll[key] or 0)
+                end
+                return #calls - before
+            end
+            -- Custom bounds from HTML attrs (5 taps at +1 with max 3).
+            ok(drive("mais", 1) == 1, "uidsl: sandbox step button paints one hitbox at " .. tag)
+            drive("mais", 4)
+            ok((app.state.sandbox.conta or -1) == 3,
+                "uidsl: step honors data-min/data-max at " .. tag .. " (got " ..
+                tostring(app.state.sandbox.conta) .. ")")
+            local regional = true
+            for _, c in ipairs(calls) do
+                regional = regional and c[1] == nil and type(c[2]) == "table"
+            end
+            ok(regional and #calls == 5,
+                "uidsl: step refreshes the list band at " .. tag .. " (" .. #calls .. " calls)")
+            -- The page scroll must survive step taps (device: background moved).
+            ok(app.state.scroll[key] == start_scroll,
+                "uidsl: step taps keep the page scroll at " .. tag .. " (" ..
+                tostring(app.state.scroll[key]) .. " vs " .. tostring(start_scroll) .. ")")
+            -- Counter row geometry: value ink vertically centered with the
+            -- buttons (device: digit looked "broken").
+            do
+                local wrapper = UiDSL.from_html(
+                    '<row><button>-1</button><value>2</value><button>+1</button></row>', {})
+                local Row = wrapper.children and wrapper.children[1] or wrapper
+                Row.valign = "center"
+                local valnode, stray = nil, 0
+                for _, ch in ipairs(Row.children or {}) do
+                    if ch.tag == "value" then valnode = ch end
+                    if ch.tag == "text" then stray = stray + 1 end
+                end
+                ok(valnode and valnode.text == "2" and stray == 0,
+                    "uidsl: inline value lands in node.text at " .. tag)
+                local rw = 300
+                local rh = UiDSL.measure(Row, rw)
+                local rbb = Blitbuffer.new(rw, rh, Blitbuffer.TYPE_BB8)
+                rbb:fill(Blitbuffer.COLOR_WHITE)
+                UiDSL.paint(Row, rbb, 0, 0, rw, { hitboxes = {} })
+                local kids = {}
+                for _, ch in ipairs(Row.children or {}) do
+                    if ch._paint_region then kids[#kids + 1] = ch end
+                end
+                local function ink_center(r)
+                    local top, bot = nil, nil
+                    for yy = r.y, r.y + r.h - 1 do
+                        for xx = r.x, r.x + r.w - 1 do
+                            local okp, px = pcall(function() return rbb:getPixel(xx, yy) end)
+                            if okp and px and px:getR() < 200 then
+                                if not top then top = yy end
+                                bot = yy
+                            end
+                        end
+                    end
+                    if not top then return nil end
+                    return (top + bot) / 2
+                end
+                local info = {}
+                for _, k in ipairs(kids) do
+                    info[#info + 1] = k.tag .. "=" .. tostring(ink_center(k._paint_region))
+                end
+                local mid = rh / 2
+                local centered = #kids == 3
+                for _, k in ipairs(kids) do
+                    local c = ink_center(k._paint_region)
+                    if c and math.abs(c - mid) > 4 then centered = false end
+                end
+                ok(centered, "uidsl: counter row ink centered at " .. tag .. " (" ..
+                    table.concat(info, " ") .. " mid=" .. mid .. ")")
+            end
+            -- Default bounds without attrs: star travels 0..40 edge to edge.
+            local before = #calls
+            drive("dir", 2)
+            ok((app.state.sandbox.pos or -1) == 40,
+                "uidsl: move defaults to 0..40 at " .. tag .. " (got " ..
+                tostring(app.state.sandbox.pos) .. ")")
+            local regional2 = true
+            for i = before + 1, #calls do
+                local c = calls[i]
+                regional2 = regional2 and c[1] == nil and type(c[2]) == "table"
+            end
+            ok(regional2 and #calls - before == 2,
+                "uidsl: move refreshes the list band at " .. tag)
+        end
+    end
+    Theme.set_base_font_size(saved_font)
+    Theme.set_density("normal")
     UiDSL.sandbox_path = real_path
     os.remove(tmppath)
-    local function drive(label, n)
-        local before = #calls
-        for _ = 1, n do
-            for _, b in ipairs(view.hitboxes) do
-                if tostring(b.label or "") == "btn:" .. label then b.callback() end
-            end
+end
+
+-- === 20. UIDSL sheets (data-action="menu" + hidden <sheet>) ================
+-- Full UIDSL subtrees inside native sheet panels: hidden blocks paint
+-- nothing, the verb opens with namespaced hits, taps route (set+chain),
+-- unknown ids error visibly, nested menus replace, and stale page hits
+-- stay blocked under the modal policy.
+do
+    local UiDSL = require("ktui/uidsl")
+    local Sheets = require("ktui/sheets")
+    local AppView = require("ktui/app_view")
+    local UIManager = require("ui/uimanager")
+    local html = '<div><p>page</p>' ..
+        '<button data-action="menu" data-id="m1">Abrir</button>' ..
+        '<button data-action="menu" data-id="nope">Quebrado</button>' ..
+        '<sheet id="m1" title="Menu HTML"><row><toggle data-bind="sandbox.ligado"/>' ..
+        '<button data-action="diz" data-id="oi">Dizer</button>' ..
+        '<button data-action="menu" data-id="m2">Ir</button></row>' ..
+        '<sheet id="m2" title="Dentro"><p>fundo</p></sheet></sheet></div>'
+    local fired = {}
+    local tree = UiDSL.from_html(html, { diz = function(id) fired[#fired + 1] = id end })
+    -- Hidden: no sheet node in the page flow, registry holds both.
+    local flow_has_sheet = false
+    local function scan_flow(n)
+        if n.is_sheet then flow_has_sheet = true end
+        for _, ch in ipairs(n.children or {}) do scan_flow(ch) end
+    end
+    scan_flow(tree)
+    ok(not flow_has_sheet and tree._sheets and tree._sheets.m1
+        and tree._sheets.m1.title == "Menu HTML" and tree._sheets.m2 ~= nil,
+        "uidsl-menu: sheet blocks hidden from flow, registered by id")
+    -- Heights exclude the hidden blocks: same flow without sheets measures equal.
+    local plain = UiDSL.from_html('<div><p>page</p>' ..
+        '<button data-action="menu" data-id="m1">Abrir</button>' ..
+        '<button data-action="menu" data-id="nope">Quebrado</button></div>', {})
+    ok(UiDSL.measure(tree, 300) == UiDSL.measure(plain, 300),
+        "uidsl-menu: hidden sheets cost zero height")
+    -- Open: fake app + view (view off the window stack → fallback path).
+    local app = fake_app({ page = "css_test", settings = {}, sandbox = {} })
+    function app:scroll_key() return "css_test" end
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    app.view = view
+    UiDSL.resolve_binds(tree, app, {})
+    local function hit(label)
+        for _, b in ipairs(view.hitboxes) do
+            if tostring(b.label or "") == label then return b end
         end
-        return #calls - before
     end
-    -- Custom bounds from HTML attrs (5 taps at +1 with max 3 -> stays 3).
-    ok(drive("mais", 1) == 1, "uidsl: sandbox step button paints one hitbox")
-    drive("mais", 4)
-    ok((app.state.sandbox.conta or -1) == 3,
-        "uidsl: step honors data-min/data-max from HTML (got " ..
-        tostring(app.state.sandbox.conta) .. ")")
-    local regional = true
-    for _, c in ipairs(calls) do
-        regional = regional and c[1] == nil and type(c[2]) == "table"
+    local bb = new_bb()
+    UiDSL.paint(tree, bb, 0, 0, 300, view)
+    local opener = hit("btn:Abrir")
+    ok(opener ~= nil, "uidsl-menu: opener button paints a hitbox")
+    opener.callback()
+    ok(app.state.sheet and app.state.sheet.tree and app.state.sheet.uidsl == true
+        and app.state.sheet.title == "Menu HTML",
+        "uidsl-menu: tap opens the sheet with its tree")
+    -- Subtree hits are namespaced under the modal policy prefix.
+    local prefixed = true
+    local function scan_prefix(n)
+        if n._hit_prefix ~= "sheet:usheet:" then prefixed = false end
+        for _, ch in ipairs(n.children or {}) do scan_prefix(ch) end
     end
-    ok(regional and #calls == 5,
-        "uidsl: step refreshes the list band, never fullscreen (" .. #calls .. " calls)")
-    -- Default bounds without attrs: star travels 0..40 edge to edge.
-    local before = #calls
-    drive("dir", 2)
-    ok((app.state.sandbox.pos or -1) == 40,
-        "uidsl: move defaults to 0..40 without attrs (got " ..
-        tostring(app.state.sandbox.pos) .. ")")
-    local regional2 = true
-    for i = before + 1, #calls do
-        local c = calls[i]
-        regional2 = regional2 and c[1] == nil and type(c[2]) == "table"
+    scan_prefix(app.state.sheet.tree)
+    ok(prefixed, "uidsl-menu: subtree hits namespaced sheet:usheet:")
+    -- Toggle flips the bind, sheet stays open.
+    local bb2 = new_bb()
+    Sheets.draw(view, bb2)
+    dump(bb2, "sheet_usheet_menu")
+    local tog = hit("sheet:usheet:uidsl:toggle")
+    ok(tog ~= nil, "uidsl-menu: toggle paints a namespaced hitbox")
+    tog.callback()
+    ok(app.state.sandbox.ligado == true and app.state.sheet ~= nil,
+        "uidsl-menu: toggle writes bind, sheet stays open")
+    -- Option button chains its data-action (set+chain).
+    local dizer = hit("sheet:usheet:btn:Dizer")
+    ok(dizer ~= nil, "uidsl: option button paints a namespaced hitbox")
+    dizer.callback()
+    ok(fired[1] == "oi", "uidsl-menu: option chains its data-action")
+    -- Nested menu replaces the sheet (documented v1).
+    local ir = hit("sheet:usheet:btn:Ir")
+    ok(ir ~= nil, "uidsl-menu: nested menu button paints")
+    ir.callback()
+    ok(app.state.sheet and app.state.sheet.title == "Dentro",
+        "uidsl-menu: nested menu replaces the sheet")
+    Sheets.close(app)
+    -- Unknown sheet id: visible error, no sheet (InfoMessage stubbed: assert
+    -- the payload, never a real dialog).
+    local real_im = package.loaded["ui/widget/infomessage"]
+    package.loaded["ui/widget/infomessage"] = nil
+    package.preload["ui/widget/infomessage"] = function()
+        return { new = function(_, o) return o end }
     end
-    ok(regional2 and #calls - before == 2,
-        "uidsl: move refreshes the list band, never fullscreen")
+    local shown = nil
+    local real_show = UIManager.show
+    UIManager.show = function(_, w) shown = w end
+    local broken = hit("btn:Quebrado")
+    if broken then broken.callback() end
+    UIManager.show = real_show
+    package.preload["ui/widget/infomessage"] = nil
+    package.loaded["ui/widget/infomessage"] = real_im
+    ok(app.state.sheet == nil and shown ~= nil
+        and tostring(shown.text or ""):find("nope", 1, true) ~= nil,
+        "uidsl-menu: unknown id errors visibly, opens nothing")
+    -- Policy: a stale native hit inside the panel area does NOT fire while
+    -- the sheet is open (tap dismisses instead). Tap point derived from the
+    -- panel rect (title zone: no control there).
+    opener.callback()
+    Sheets.draw(view, new_bb())
+    local panel = Sheets.panel_rect(app)
+    local stale_fired = false
+    view.hitboxes[#view.hitboxes + 1] = { x = panel.x + 10, y = panel.y + 8,
+        w = 50, h = 20, label = "btn:Save",
+        callback = function() stale_fired = true end }
+    AppView.onTapKotavern(view, nil,
+        { pos = { x = panel.x + 20, y = panel.y + 12 } })
+    ok(stale_fired == false and app.state.sheet == nil,
+        "uidsl-menu: stale page hit blocked under the panel (dismiss closes)")
+
+    -- Regional refresh clamping (device: tapping -1/+1 inside the sheet moved
+    -- the background behind the scrim). Drive the REAL App:refresh with the
+    -- sheet open and capture what reaches UIManager.setDirty:
+    --  * a page-coordinate region (what the sandbox step verb hands over)
+    --    must clamp to the panel - the EPDC wave may never land on the page;
+    --  * a region fully behind the scrim must be dropped (no setDirty call).
+    opener.callback()
+    Sheets.draw(view, new_bb())
+    local panel2 = Sheets.panel_rect(app)
+    local App = require("kt_app")
+    local test_app = setmetatable({ view = view, state = app.state },
+        { __index = App })
+    test_app._noflash_count = nil -- fresh ghost counter
+    local waves = {}
+    local real_setdirty = UIManager.setDirty
+    UIManager.setDirty = function(_, widget, mode, region)
+        waves[#waves + 1] = region
+            and { x = region.x, y = region.y, w = region.w, h = region.h }
+            or "fullscreen"
+    end
+    -- Page-band stepper tap while the sheet is open (the verb's list_box is
+    -- in page coordinates on purpose: that was the bug).
+    test_app:refresh(nil, { x = 0, y = 60, w = 600, h = 700 })
+    local wave = waves[#waves]
+    ok(wave and wave.y >= panel2.y - 1
+        and wave.y + wave.h <= panel2.y + panel2.h + 1,
+        "uidsl-menu: page-band refresh clamps to the panel (App:refresh) (" ..
+        (wave and ("y=" .. wave.y .. " h=" .. wave.h) or "none") ..
+        " panel.y=" .. panel2.y .. " h=" .. panel2.h .. ")")
+    -- Region fully behind the scrim: no wave at all.
+    local before = #waves
+    test_app:refresh(nil, { x = panel2.x, y = math.max(0, panel2.y - 400),
+        w = panel2.w, h = 100 })
+    ok(#waves == before,
+        "uidsl-menu: region fully behind the scrim drops the wave")
+    UIManager.setDirty = real_setdirty
+    Sheets.close(app)
+    -- GifAnim freezes under the open sheet (device: playground display bugs
+    -- and blinks while a menu is open). The panel is not a window, so the
+    -- stack-only obscured check cannot see it: the tick must ask Sheets
+    -- itself. With the sheet OPEN the tick quiesces (no blit, no wave); with
+    -- it CLOSED it animates again. Probe via a REAL player (real frames) +
+    -- stubbed setDirty/screen write hooks.
+    opener.callback()
+    Sheets.draw(view, new_bb())
+    local panel3 = Sheets.panel_rect(app)
+    local GifAnim = require("ktui/gifanim")
+    ok(GifAnim._sheet_paused(view),
+        "uidsl-menu: GifAnim sees the sheet pause (panel not a window)")
+    -- End-to-end tick probe: ensure a player against the real banner frames,
+    -- stub the compositor blit, fire one tick via the scheduled closure's
+    -- push path through a fresh schedule (tick calls push_frame then
+    -- scheduleIn; UIManagers stub absorbs it).
+    app.state.gif_players = {}
+    local real_schedule = UIManager.scheduleIn
+    UIManager.scheduleIn = function() return true end
+    local real_draw2 = GifAnim.draw
+    local my_rect = { x = panel3.x, y = panel3.y + 4, w = 40, h = 40 }
+    local blit_calls = 0
+    GifAnim.draw = function()
+        blit_calls = blit_calls + 1
+        return true
+    end
+    local player2 = GifAnim.ensure(app, view, "smoke_pause",
+        PLUGIN .. "/assets/debug_banner",
+        { w = 40, h = 40, rect = my_rect })
+    ok(player2 ~= nil, "uidsl-menu: probe player built from real frames")
+    if player2 then
+        -- One tick with the sheet open: push_frame bails BEFORE draw.
+        player2.rects = { my_rect }
+        player2.tick()
+        ok(blit_calls == 0,
+            "uidsl-menu: tick under an open sheet paints nothing (blit=" ..
+            blit_calls .. ")")
+        Sheets.close(app)
+        Sheets.drop_snapshot()
+        player2.tick()
+        ok(blit_calls == 1,
+            "uidsl-menu: tick resumes after close (blit=" .. blit_calls .. ")")
+        GifAnim.stop(player2)
+    end
+    GifAnim.draw = real_draw2
+    UIManager.scheduleIn = real_schedule
+    Sheets.close(app)
 end
 
 -- === 9b. UIDSL: stable cascade, tag specificity, palette scoping, inline text ==

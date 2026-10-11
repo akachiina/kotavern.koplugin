@@ -87,6 +87,10 @@ function Sheets.show(app, opts)
         on_close = opts.on_close,
         scroll = 0,
         _saved_scroll = saved,
+        -- UIDSL tree sheet (data-action="menu"): subtree + flag travel with
+        -- the state so draw/scroll/close treat it as content, not actions.
+        tree = opts.tree,
+        uidsl = opts.uidsl,
     }
     -- Drop the page scroll offset: the sheet opens over a scrubbed screen
     -- (no ghost content under the scrim).
@@ -181,6 +185,18 @@ function Sheets.scroll_by(app, delta)
     return true
 end
 
+-- Measured height of a UIDSL tree sheet (0 when unavailable): lazy uidsl
+-- require keeps the module graph acyclic (uidsl only requires sheets lazily
+-- at tap time).
+local function tree_measured(sheet, inner_w)
+    if not sheet or not sheet.tree then return 0 end
+    local ok, UiDSL = pcall(require, "ktui/uidsl")
+    if not ok or not UiDSL or not UiDSL.measure then return 0 end
+    local okm, h = pcall(UiDSL.measure, sheet.tree, inner_w)
+    if not okm or type(h) ~= "number" then return 0 end
+    return math.max(0, math.floor(h))
+end
+
 -- Compute panel geometry (shared by draw and gesture handlers).
 local function panel_geom(view)
     local m = Theme.metrics()
@@ -206,6 +222,7 @@ local function panel_geom(view)
     end
     local title_h = Theme.line_h("small") + Theme.scale(14)
     local pad = Theme.pad or Theme.scale(12)
+    local max_h = sh - m.titlebar_h - Theme.scale(20)
 
     local body_h = 0
     if sheet and sheet.confirm then
@@ -223,7 +240,18 @@ local function panel_geom(view)
             + Theme.btn_h() + Theme.scale(12)
     end
 
-    local max_h = sh - m.titlebar_h - Theme.scale(20)
+    -- UIDSL tree sheet (data-action="menu"): the band shows what fits of the
+    -- measured tree (capped like rows); the rest scrolls. Empty tree still
+    -- gets title + Cancel chrome.
+    if sheet and sheet.tree and not sheet.confirm then
+        local inner_w = math.max(1, pw - pad * 2)
+        local tree_total = tree_measured(sheet, inner_w)
+        local fixed = Theme.scale(6) + title_h + Theme.scale(12)
+            + Theme.btn_h() + Theme.scale(12)
+        local avail = math.max(0, max_h - fixed)
+        body_h = fixed + math.min(tree_total, avail)
+    end
+
     local ph = math.min(body_h, max_h)
     local py = sh - ph - Theme.scale(10)
     return px, py, pw, ph, row_h, title_h, pad, max_h
@@ -245,6 +273,27 @@ function Sheets.panel_rect(app)
     if not view then return nil end
     local px, py, pw, ph = panel_geom(view)
     return { x = px, y = py, w = pw, h = ph }
+end
+
+-- Mini scrollbar affordance (display-only; swipe/wheel already scroll): slim
+-- track at the panel's right edge with a proportional thumb, so cut content
+-- reads as "more below". Shared by action rows and UIDSL tree sheets.
+local function paint_scrollbar(bb, px, pw, pad, list_top, list_bottom,
+    scroll, max_scroll)
+    if max_scroll <= 0 then return end
+    local band_h = list_bottom - list_top
+    if band_h <= 0 then return end
+    local track_x = px + pw - pad - Theme.scale(7)
+    local track_w = Theme.scale(7)
+    P.rect(bb, track_x, list_top, track_w, band_h, Theme.soft)
+    local total = max_scroll + band_h
+    local thumb_h = math.max(Theme.scale(12),
+        math.floor(band_h * band_h / math.max(1, total)))
+    thumb_h = math.min(band_h, thumb_h)
+    local travel = band_h - thumb_h
+    local thumb_y = list_top
+        + (travel > 0 and math.floor(travel * scroll / max_scroll) or 0)
+    P.rect(bb, track_x, thumb_y, track_w, thumb_h, Theme.ink)
 end
 
 function Sheets.draw(view, bb)
@@ -302,14 +351,20 @@ function Sheets.draw(view, bb)
             end,
         })
     else
-        -- Action rows (scrollable when they don't fit). list_bottom matches
-        -- the Cancel button top exactly, and body_h reserves the same band,
-        -- so n rows fit the panel with zero slack (no culling when it fits).
+        -- Content band geometry is shared: action rows size it by row count,
+        -- UIDSL trees by measured height. list_bottom matches the Cancel
+        -- button top exactly, and body_h reserves the same band, so content
+        -- fits the panel with zero slack (no culling when it fits).
         local list_top = cy
         local list_bottom = py + ph - Theme.scale(12) - Theme.btn_h()
-        local list_h = math.max(row_h, list_bottom - list_top)
-
-        local total_h = #sheet.actions * row_h
+        local list_h, total_h
+        if sheet.tree then
+            list_h = math.max(1, list_bottom - list_top)
+            total_h = tree_measured(sheet, math.max(1, pw - pad * 2))
+        else
+            list_h = math.max(row_h, list_bottom - list_top)
+            total_h = #(sheet.actions or {}) * row_h
+        end
         local max_scroll = math.max(0, total_h - list_h)
         sheet._max_scroll = max_scroll
         local scroll = math.min(sheet.scroll or 0, max_scroll)
@@ -319,6 +374,21 @@ function Sheets.draw(view, bb)
         -- width (the list gutter pattern) so ink never underlaps the track.
         local scrollable = max_scroll > 0
         local sb_gutter = scrollable and (Theme.scale(7) + Theme.scale(4)) or 0
+
+        if sheet.tree then
+            -- UIDSL tree sheet (data-action="menu"): binds live per paint
+            -- (sandbox parity), tree painted offset by -scroll and clipped
+            -- to the band; scroll/scrollbar/Cancel behave like action rows.
+            local ok_u, UiDSL = pcall(require, "ktui/uidsl")
+            if ok_u and UiDSL and total_h > 0 then
+                UiDSL.resolve_binds(sheet.tree, app, {})
+                local inner_w = math.max(1, pw - pad * 2)
+                P.rect(bb, px + 1, list_top, pw - 2, list_h, Theme.panel)
+                UiDSL.paint(sheet.tree, bb, px + pad, list_top - scroll,
+                    inner_w, view,
+                    { x = px, y = list_top, w = pw, h = list_h })
+            end
+        else
 
         -- Clip region: paint a bg rect then rows offset by -scroll. Rows that
         -- don't fit are skipped (same culling rule as scrolled_list).
@@ -386,23 +456,10 @@ function Sheets.draw(view, bb)
             end
             ay = ay + row_h
         end
-
-        if scrollable then
-            local band_h = list_bottom - list_top
-            if band_h > 0 then
-                local track_x = px + pw - pad - Theme.scale(7)
-                local track_w = Theme.scale(7)
-                P.rect(bb, track_x, list_top, track_w, band_h, Theme.soft)
-                local total = max_scroll + band_h
-                local thumb_h = math.max(Theme.scale(12),
-                    math.floor(band_h * band_h / math.max(1, total)))
-                thumb_h = math.min(band_h, thumb_h)
-                local travel = band_h - thumb_h
-                local thumb_y = list_top
-                    + (travel > 0 and math.floor(travel * scroll / max_scroll) or 0)
-                P.rect(bb, track_x, thumb_y, track_w, thumb_h, Theme.ink)
-            end
         end
+
+        paint_scrollbar(bb, px, pw, pad, list_top, list_bottom, scroll,
+            max_scroll)
 
         -- Cancel
         local cancel_y = list_bottom

@@ -1159,6 +1159,8 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
             icon_size = node.icon_size,
             kind = node.kind or "secondary",
             on_tap = node.on_tap,
+            hit_label = node._hit_prefix and (node._hit_prefix .. "btn:"
+                .. tostring(node.text or node.icon_name or "")) or nil,
         })
     elseif node.tag == "row" then
         -- Horizontal flow: children side by side. Positions come from the
@@ -1226,9 +1228,12 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
         end
     end
     -- Hitbox for data-action (button registers its own via W.button).
+    -- _hit_prefix namespaces sheet-tree hits ("sheet:usheet:...") so the
+    -- modal tap policy lets them through the panel while stale page hits
+    -- (never prefixed) stay blocked. Unset everywhere else: labels unchanged.
     if view and node.on_tap and node.tag ~= "button" then
         P.hit(view, x, y, w, h, node.on_tap,
-            "uidsl:" .. tostring(node.id or node.class or node.tag))
+            (node._hit_prefix or "") .. "uidsl:" .. tostring(node.id or node.class or node.tag))
     end
 end
 
@@ -1341,9 +1346,15 @@ function UiDSL.from_html(html, actions, vars)
     local function top() return stack[#stack] end
 
     local VOID = { img = true, br = true, hr = true, icon = true, toggle = true,
-        avatar = true, spacer = true, value = true, input = true, progress = true,
+        avatar = true, spacer = true, input = true, progress = true,
         island = true, check = true }
-    local TEXT_HOST = { p = true, span = true, h1 = true, h2 = true, h3 = true, button = true }
+    -- value is NOT void (unlike its siblings above): it hosts a fallback
+    -- label like button does, so `<value>2</value>` lands in node.text
+    -- (centered) instead of escaping as a top-aligned sibling text node
+    -- next to an empty value box. Self-closing <value .../> still works
+    -- (selfclose skips the push) and binds overwrite node.text at resolve.
+    local TEXT_HOST = { p = true, span = true, h1 = true, h2 = true, h3 = true, button = true,
+        value = true }
 
     local function add_text(str)
         str = decode_entities(str)
@@ -1456,6 +1467,14 @@ function UiDSL.from_html(html, actions, vars)
             -- non-interactive ink - no hitbox, taps pass through.
             local raw = islands[tonumber(attrs.xmli) or 0] or ""
             n = UiDSL.node({ tag = "html", raw = raw })
+        elseif name == "sheet" then
+            -- Hidden sheet block: parsed as a normal box (children parse
+            -- into it) but DETACHED from the page flow after parsing and
+            -- stashed in root._sheets by id. Opened via data-action="menu".
+            n = UiDSL.node({ tag = "box", children = {} })
+            n.is_sheet = true
+            n.sheet_id = attrs.id or attrs["data-id"]
+            n.sheet_title = attrs.title or attrs["data-title"]
         else
             n = UiDSL.node({ tag = "box", children = {} }) -- div + unknown tags
         end
@@ -1491,15 +1510,23 @@ function UiDSL.from_html(html, actions, vars)
         if attrs["data-max"] then n.bind_max = tonumber(attrs["data-max"]) end
         if attrs["data-action"] then
             local aname = attrs["data-action"]
-            local fn = actions[aname]
-            if fn then
+            if aname == "menu" then
+                -- Engine verb (not a page action): opens the hidden <sheet>
+                -- block by data-id. Wired in resolve_binds (needs the app);
+                -- never an "unknown action" error.
                 n._has_action = true
-                local aid = attrs["data-id"]
-                n.on_tap = function(...)
-                    return fn(aid, n, ...)
-                end
+                n._menu_id = attrs["data-id"]
             else
-                errors[#errors + 1] = "unknown action: " .. tostring(aname)
+                local fn = actions[aname]
+                if fn then
+                    n._has_action = true
+                    local aid = attrs["data-id"]
+                    n.on_tap = function(...)
+                        return fn(aid, n, ...)
+                    end
+                else
+                    errors[#errors + 1] = "unknown action: " .. tostring(aname)
+                end
             end
         end
         if attrs["data-h"] and n.tag ~= "image" then
@@ -1564,6 +1591,34 @@ function UiDSL.from_html(html, actions, vars)
             end
         end
     end
+    -- Detach hidden sheet blocks from the page flow into the registry
+    -- (root._sheets by id). They parse as normal boxes (so children convert
+    -- identically) but never paint on the page - data-action="menu" opens
+    -- them. Unnamed sheets error and drop; duplicate ids error, first wins.
+    root._sheets = {}
+    local function detach(parent)
+        if not parent.children then return end
+        local kept = {}
+        for _, child in ipairs(parent.children) do
+            -- Recurse first: a sheet nested inside a sheet registers too
+            -- (and leaves the outer tree, so it never paints inside it).
+            detach(child)
+            if child.is_sheet then
+                local sid = child.sheet_id
+                if not sid or sid == "" then
+                    errors[#errors + 1] = "sheet without id: dropped"
+                elseif root._sheets[sid] then
+                    errors[#errors + 1] = "duplicate sheet id: " .. tostring(sid)
+                else
+                    root._sheets[sid] = { title = child.sheet_title, tree = child }
+                end
+            else
+                kept[#kept + 1] = child
+            end
+        end
+        parent.children = kept
+    end
+    detach(root)
     return root, css_text, errors
 end
 
@@ -1679,6 +1734,15 @@ function UiDSL.apply_styles(node, sheet)
     -- stale measure from before the style pass can't leak into paint.
     if node.display == "none" then
         node._h_cache, node._h_w = nil, nil
+    end
+    -- Hidden sheet blocks style with the same sheet (they were detached from
+    -- the flow before this ran, so descend explicitly).
+    if node._sheets then
+        for _, spec in pairs(node._sheets) do
+            if spec.tree then
+                UiDSL.apply_styles(spec.tree, sheet)
+            end
+        end
     end
     return node
 end
@@ -1843,6 +1907,46 @@ end
 --   spacer + data-bind-width: node.width tracks number * scale px - inside
 --     a <row> this walks the siblings (discrete steps per tap; e-ink
 --     never animates, each tap is one full refresh).
+-- data-action="menu" opener (engine verb, wired in resolve_binds so it works
+-- in ANY tree, not just sandbox pages). data-id names a hidden <sheet>
+-- block; the subtree paints inside a native sheet panel with its hits
+-- namespaced "sheet:usheet:" (the modal tap policy only lets "sheet:" hits
+-- through the panel, so stale page hits can never fire through it).
+-- Option taps do whatever their own data-bind/data-action says (set+chain);
+-- binds resolve with the tapping app, like page trees.
+local function make_menu_opener(app, root, node)
+    return function()
+        local id = node._menu_id
+        local spec = root and root._sheets and root._sheets[id]
+        if not spec or not spec.tree then
+            local ok_um, UIManager = pcall(require, "ui/uimanager")
+            local ok_im, InfoMessage = pcall(require, "ui/widget/infomessage")
+            local ok_gt, _ = pcall(require, "gettext")
+            if ok_um and ok_im then
+                local msg = "menu not found: " .. tostring(id)
+                if ok_gt then msg = _("menu not found: ") .. tostring(id) end
+                UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
+            end
+            return
+        end
+        local function mark(n)
+            n._hit_prefix = "sheet:usheet:"
+            for _, child in ipairs(n.children or {}) do
+                mark(child)
+            end
+        end
+        mark(spec.tree)
+        -- Share the page registry downward: nested menus resolve against the
+        -- same table (their own subtree carries no _sheets itself).
+        spec.tree._sheets = root._sheets
+        UiDSL.resolve_binds(spec.tree, app, {})
+        local ok_sh, Sheets = pcall(require, "ktui/sheets")
+        if ok_sh and Sheets then
+            Sheets.show(app, { title = spec.title, tree = spec.tree, uidsl = true })
+        end
+    end
+end
+
 local function resolve_binds(tree, app, errors)
     if not tree then return end
     local function flip_bool(path, node)
@@ -1964,6 +2068,19 @@ local function resolve_binds(tree, app, errors)
         end
         for _, child in ipairs(node.children or {}) do
             if walk(child) then changed = true end
+        end
+        -- Engine menu verb (any tree, any page): wire once, never steal an
+        -- explicit on_tap (a button with its own action keeps it). Like bind
+        -- closures, the opener captures THIS app: rebuild it when the cached
+        -- tree outlives its app, or taps open sheets on a dead instance.
+        if node._menu_id then
+            if node._menu_app ~= app then
+                node.on_tap = nil
+                node._menu_app = app
+            end
+            if not node.on_tap then
+                node.on_tap = make_menu_opener(app, tree, node)
+            end
         end
         if changed then node._h_cache, node._h_w = nil, nil end
         return changed
@@ -2255,6 +2372,23 @@ value { text-align: center; }
   <h2>Ilha vazia (fallback visivel)</h2>
   <htmlblock></htmlblock>
   <p class="muted">Bloco vazio de proposito: mostra o placeholder e entra na faixa de erros, nunca some em silencio.</p>
+</div>
+<div class="card">
+  <h2>Menus (sheet via HTML)</h2>
+  <button data-action="menu" data-id="demo-menu">Abrir menu</button>
+  <p class="muted">O botao abre um sheet montado so de HTML: fileiras, toggle e contador funcionam la dentro.</p>
+  <sheet id="demo-menu" title="Demo via HTML">
+    <row class="fila">
+      <toggle data-bind="sandbox.ligado"/>
+      <p class="muted">liga sandbox.ligado</p>
+    </row>
+    <row class="fila">
+      <button data-action="step" data-id="-1">-1</button>
+      <value data-bind="sandbox.conta"/>
+      <button data-action="step" data-id="1">+1</button>
+    </row>
+    <p class="muted">Tudo aqui dentro e no nativo: paint, hit, scroll e binds do sheet valem.</p>
+  </sheet>
 </div>
 <div class="card">
   <h2>Acoes (data-action + data-id)</h2>

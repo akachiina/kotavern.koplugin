@@ -750,6 +750,36 @@ function App:refresh(full, region)
         return
     end
     if region then
+        -- Sheet is modal: the page pixels behind the scrim are (a) stale from
+        -- before the sheet opened and (b) hidden on purpose. A tap inside the
+        -- sheet (sheet-tree bind/stepper, or a page action chained from it)
+        -- may still hand us a region in PAGE coordinates - repainting it
+        -- would paintTo the page at its zeroed scroll (show() drops the
+        -- offset) and wave that "moved background" through the scrim: the
+        -- device "tapping -1/+1 inside the menu moves the background"
+        -- report. Clamp the wave to the panel; regions fully outside it
+        -- repaint nothing at all (the close() snapshot path owns those
+        -- pixels). Regions inside the panel stay untouched (sheet scrolling).
+        local sheet_active
+        pcall(function()
+            sheet_active = require("ktui/sheets").active(self)
+        end)
+        if sheet_active then
+            local panel
+            pcall(function()
+                panel = require("ktui/sheets").panel_rect(self)
+            end)
+            if panel then
+                local x2 = math.max(region.x, panel.x)
+                local y2 = math.max(region.y or 0, panel.y)
+                local x3 = math.min(region.x + (region.w or 0), panel.x + panel.w)
+                local y3 = math.min((region.y or 0) + (region.h or 0), panel.y + panel.h)
+                if x2 >= x3 or y2 >= y3 then
+                    return -- behind the scrim: skip the wave entirely
+                end
+                region = { x = x2, y = y2, w = x3 - x2, h = y3 - y2 }
+            end
+        end
         -- Regional updates never flash by default: they are incremental
         -- repaints (scrolling, streaming) where a waveform flash would be
         -- jarring — except for the periodic ghost-healing escalation.

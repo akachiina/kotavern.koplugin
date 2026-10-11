@@ -152,7 +152,12 @@ end
 -- True when something sits ABOVE our view in the window stack (a KOReader
 -- modal, dialog, keyboard, or another fullscreen app like the File Manager):
 -- the animation pauses under them instead of blitting into the region they
--- cover. Top-down scan: ANY widget found before ours hides us - it does not
+-- cover. Note the in-app action sheet is NOT a window: it paints last inside
+-- our own view's paintTo, so stack checks cannot see it - ticks must ask
+-- Sheets.active directly (a GIF kept animating under the open sheet's panel,
+-- blitting page pixels over it with a2 waves: the playground "display bugs
+-- and blinks while a menu is open" report).
+-- Top-down scan: ANY widget found before ours hides us - it does not
 -- matter whether it declares covers_fullscreen, modals always paint over
 -- what is below. Our view missing from the stack entirely also means hidden
 -- (plugin closed but a player still ticking). An uninspectable/empty stack
@@ -236,9 +241,27 @@ end
 -- One player may drive several on-screen instances of the same source
 -- (same src + height -> same key): every painted instance registers its
 -- rect via ensure(), and the tick pushes the frame to each visible one.
+-- In-app sheet pause test: the bottom panel is drawn by OUR OWN view's
+-- paintTo (never a window), so stack checks cannot see it. A player ticking
+-- under an open sheet blits page pixels OVER the panel with a2 waves -
+-- the device "playground blinks while a menu is open" report. Public so
+-- tests drive it headlessly.
+function GifAnim._sheet_paused(view)
+    local app = view and view.app
+    if not app then return false end
+    local ok, active = pcall(function()
+        return require("ktui/sheets").active(app)
+    end)
+    return ok and active == true
+end
+
 local function push_frame(player)
     local view = player.view
     if not view then
+        return
+    end
+    -- Pause under an open in-app sheet (see _sheet_paused above).
+    if GifAnim._sheet_paused(view) then
         return
     end
     -- The content region is the clip for EVERY blit: rects registered while
