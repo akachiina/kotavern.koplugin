@@ -2259,9 +2259,14 @@ do
         tostring(app.state.scroll.chat) .. ")")
 end
 
--- Snapshot open/close: with our view topmost, show() photographs the
--- compositor and close() blits it back - no view repaint either way.
--- Fallback (covered view): plain view:refresh as before.
+-- Snapshot open: with our view topmost, show() photographs the compositor
+-- and paints the sheet straight onto Screen.bb - ZERO view repaints (only
+-- the waveform is queued). Close ALWAYS repaints the view: the old blit
+-- fast path queued setDirty(nil,...) which marks NO widget dirty, so the
+-- view kept the sheet's hitboxes alive (device: tapping the closed menu's
+-- area re-fired sheet actions) and the snapshot blit misaligned on real
+-- devices (BB type/rotation mismatch, pcall-swallowed) leaving the scrim
+-- gray the dashboard reported.
 do
     local Sheets = require("ktui/sheets")
     local UIManager = require("ui/uimanager")
@@ -2285,39 +2290,40 @@ do
         return table.concat(out, ",")
     end
     local pts = { { 10, 10 }, { 100, 200 }, { 300, 400 }, { 500, 700 }, { 50, 750 } }
-    -- Topmost: snapshot path (no repaint on show or close).
+    -- Topmost: snapshot open path (no repaint on SHOW).
     local app, view, repaints = snap_app()
-    local before = sample(Screen.bb, pts)
     table.insert(UIManager._window_stack, { widget = view })
     Sheets.show(app, { title = "T", actions = { { label = "A" } } })
+    ok(repaints() == 0, "sheets: snapshot show repaints nothing (open is one wave)")
+    ok(#view.hitboxes > 0, "sheets: snapshot show registers the sheet's hits")
+    -- Close repaints exactly once (the old blit+setDirty(nil) path is gone).
     Sheets.close(app)
-    -- remove our stack entry (identity search, no index assumption)
+    ok(repaints() == 1, "sheets: close repaints the view once (hits die with the paint) (got " .. repaints() .. ")")
+    ok(app.state.sheet == nil, "sheets: close clears the sheet state")
     for i = #UIManager._window_stack, 1, -1 do
         if UIManager._window_stack[i].widget == view then
             table.remove(UIManager._window_stack, i)
         end
     end
-    ok(repaints() == 0, "sheets: snapshot open+close repaints nothing")
-    ok(sample(Screen.bb, pts) == before,
-        "sheets: snapshot roundtrip restores pixels")
     -- Covered: fallback path repaints.
     local app2, view2, repaints2 = snap_app()
     Sheets.show(app2, { title = "T", actions = { { label = "A" } } })
     Sheets.close(app2)
     ok(repaints2() >= 2, "sheets: fallback open+close repaints (got " .. repaints2() .. ")")
-    -- A full paint in between drops the snapshot (stale pixels are worse
-    -- than a repaint).
+    -- A full paint drops the snapshot (paintTo calls drop_snapshot): the
+    -- next close still repaints exactly once - one path for every close.
     local app3, view3, repaints3 = snap_app()
     table.insert(UIManager._window_stack, { widget = view3 })
     Sheets.show(app3, { title = "T", actions = { { label = "A" } } })
-    Sheets.drop_snapshot()
+    Sheets.drop_snapshot() -- e.g. an async thumbnail repaint ran paintTo
     Sheets.close(app3)
     for i = #UIManager._window_stack, 1, -1 do
         if UIManager._window_stack[i].widget == view3 then
             table.remove(UIManager._window_stack, i)
         end
     end
-    ok(repaints3() >= 1, "sheets: dropped snapshot falls back to repaint")
+    ok(repaints3() >= 1,
+        "sheets: close repaints even after the snapshot died (got " .. repaints3() .. ")")
 end
 
 -- Mini scrollbar: long sheets paint track+thumb at the panel edge, short

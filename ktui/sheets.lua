@@ -149,20 +149,16 @@ function Sheets.close(app)
     if sheet and sheet.on_close then
         sheet.on_close()
     end
-    -- Fast path: the snapshot still holds the pre-sheet page (nothing
-    -- repainted while open) - blit it back with no paint and no flash.
-    -- Anything else (action repaints drop it in paintTo) falls through.
-    if snap_bb then
-        local m = Theme.metrics()
-        local ok = pcall(function()
-            Device.screen.bb:blitFrom(snap_bb, 0, 0, 0, 0, m.screen_w, m.screen_h)
-        end)
-        free_snap()
-        if ok then
-            UIManager:setDirty(nil, "ui")
-            return
-        end
-    end
+    -- ALWAYS repaint the view on close. The old fast path blitted the
+    -- pre-sheet snapshot straight into Screen.bb and only queued a waveform
+    -- (UIManager:setDirty(nil, ...) marks NO widget dirty and queues just
+    -- the wave): the view kept the sheet's hitboxes ("tapping Cancel left
+    -- ghost menu actions alive") and the blit silently misaligned on real
+    -- devices (snapshot BB type/rotation vs Screen.bb - pcall swallows it),
+    -- leaving the scrim ghost the dashboard reported. One full "ui"
+    -- repaint owns both: the page repaints at its restored scroll and the
+    -- sheet's hits die with the paint that erased them. The snapshot still
+    -- pays off on open (one wave, no page repaint).
     app.view:refresh()
 end
 
