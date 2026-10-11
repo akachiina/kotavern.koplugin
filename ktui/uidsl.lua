@@ -1051,22 +1051,27 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
             local alt_h = alt and Theme.line_h("tiny") or 0
             local gap = alt and Theme.scale(2) or 0
             -- Icon shrinks to whatever fits with the text inside the box.
-            local ic_sz = math.max(0, math.min(Theme.scale(28),
+            -- Center the RASTER, not the request: SVG icons paint 2x the draw
+            -- size, so centering ic_sz spilled the bottom half past the box
+            -- (device "placeholder glued to caption" torto).
+            local rast = math.max(0, math.min(Theme.scale(28),
                 inner_h - alt_h - gap, inner_w))
-            if ic_sz > 0 then
-                local icon_y = cy + math.floor((inner_h - ic_sz - alt_h - gap) / 2)
-                local icon_x = cx + math.floor((inner_w - ic_sz) / 2)
+            if rast > 0 then
+                local ds = math.max(1, math.floor(rast / 2))
+                local rw, rh = ds * 2, ds * 2
+                local icon_y = cy + math.floor((inner_h - rh - alt_h - gap) / 2)
+                local icon_x = cx + math.floor((inner_w - rw) / 2)
                 local Icons = get_icons()
                 if Icons.has_asset("image") then
-                    Icons.draw(bb, "image", icon_x, icon_y, ic_sz,
+                    Icons.draw(bb, "image", icon_x, icon_y, ds,
                         { color = Theme.muted })
                 else
                     P.text(bb, Icons.glyph("image") or "?", icon_x, icon_y,
-                        ic_sz * 2, "default", { color = Theme.muted })
+                        rw, "default", { color = Theme.muted })
                 end
                 if alt then
                     -- Text inside the box, below the icon.
-                    P.text(bb, alt, cx, icon_y + ic_sz + gap, inner_w,
+                    P.text(bb, alt, cx, icon_y + rh + gap, inner_w,
                         "tiny", { color = Theme.muted })
                 end
             elseif alt then
@@ -1117,9 +1122,13 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
             radius = Theme.scale(4),
         })
         if on then
-            local isz = Theme.scale(16)
-            get_icons().draw(bb, "check", cx + math.floor((s - isz) / 2),
-                cy + math.floor((s - isz) / 2), isz, { color = Theme.ink })
+            -- Center the RASTER, not the request: SVG icons paint 2x the draw
+            -- size, so a 16px request spilled 11px past this 26px box (same
+            -- class as the placeholder torto). 16px raster, 5px padding.
+            local ds = Theme.scale(8)
+            local rw = ds * 2
+            get_icons().draw(bb, "check", cx + math.floor((s - rw) / 2),
+                cy + math.floor((s - rw) / 2), ds, { color = Theme.ink })
         end
     elseif node.tag == "avatar" then
         local sz = node.avatar_size or Theme.scale(48)
@@ -2213,11 +2222,17 @@ value { text-align: center; }
     <button data-action="step" data-id="1">+1</button>
   </row>
   <p class="muted">Contador com trava 0..9 (data-action step + data-id).</p>
-  <row class="fila">
-    <button data-action="move" data-id="-1">esq</button>
-    <button data-action="move" data-id="1">dir</button>
+  <row>
+    <spacer data-bind-width="sandbox.pos"/>
+    <icon name="star"/>
   </row>
-  <p class="muted">esq/dir movem a estrela na ilha abaixo (margin via estado).</p>
+  <!-- Alcance editavel: data-min/data-max no botao (padrao 0..40); a largura
+       do passo vem de data-width-scale no spacer (padrao 24px). -->
+  <row class="fila">
+    <button data-action="move" data-id="-1" data-min="0" data-max="40">esq</button>
+    <button data-action="move" data-id="1" data-min="0" data-max="40">dir</button>
+  </row>
+  <p class="muted">esq/dir movem a estrela acima (margin via estado).</p>
   <htmlblock>
     <p>A estrela mora numa fileira nativa acima; aqui dentro o texto e estatico: ilhas nao expandem {{s:..}} do estado nem data-bind.</p>
   </htmlblock>

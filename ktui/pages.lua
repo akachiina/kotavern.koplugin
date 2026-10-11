@@ -71,6 +71,23 @@ local function fit_row_h(list_h, natural_h, gap)
         math.min(math.floor(natural_h * Deck.ROW_STRETCH_CAP + 0.5), fitted))
 end
 
+-- Sandbox data-action steppers (css_test + html_test share the verbs):
+-- bounds come from the BUTTON's data-min/data-max (same attrs as bind
+-- buttons), so authors tune range in HTML instead of Lua. Refresh is
+-- regional over the list area: paintTo repaints as usual (new layout
+-- included), but the EPDC updates one band instead of reflashing the
+-- whole screen per tap (bind taps already worked this way).
+local function sandbox_step(app, view, list_box, key, id, node, dflt_min, dflt_max)
+    app.state.sandbox = app.state.sandbox or {}
+    local mn = (node and node.bind_min) or dflt_min
+    local mx = (node and node.bind_max) or dflt_max
+    if mn > mx then mn, mx = mx, mn end
+    local n = tonumber(app.state.sandbox[key]) or 0
+    n = math.max(mn, math.min(mx, n + (tonumber(id) or 0)))
+    app.state.sandbox[key] = n
+    app:refresh(nil, list_box)
+end
+
 function Pages.dashboard(view, bb, x, y, w, h, scroll)
     P.rect(bb, x, y, w, h, Theme.bg)
 
@@ -1030,19 +1047,13 @@ function Pages.css_test(view, bb, x, y, w, h, scroll)
         -- Same verbs as the KtHTML sandbox (html_test): one action
         -- catalog for both engines, authors learn once. No invalidate
         -- needed here: bind values re-resolve on every sandbox_tree hit.
-        step = function(id)
-            app.state.sandbox = app.state.sandbox or {}
-            local n = tonumber(app.state.sandbox.conta) or 0
-            n = math.max(0, math.min(9, n + (tonumber(id) or 0)))
-            app.state.sandbox.conta = n
-            app:refresh(true)
+        step = function(id, node)
+            sandbox_step(app, view, { x = x, y = list_y, w = w, h = list_h },
+                "conta", id, node, 0, 9)
         end,
-        move = function(id)
-            app.state.sandbox = app.state.sandbox or {}
-            local n = tonumber(app.state.sandbox.pos) or 0
-            n = math.max(0, math.min(8, n + (tonumber(id) or 0)))
-            app.state.sandbox.pos = n
-            app:refresh(true)
+        move = function(id, node)
+            sandbox_step(app, view, { x = x, y = list_y, w = w, h = list_h },
+                "pos", id, node, 0, 40)
         end,
     }
     local Storage = require("kt_storage")
@@ -1163,21 +1174,15 @@ function Pages.html_test(view, bb, x, y, w, h, scroll)
                 text = _("HTML reloaded"), timeout = 2 })
         end,
         shot = function() app:debug_page_shot() end,
-        step = function(id)
-            app.state.sandbox = app.state.sandbox or {}
-            local n = tonumber(app.state.sandbox.conta) or 0
-            n = math.max(0, math.min(9, n + (tonumber(id) or 0)))
-            app.state.sandbox.conta = n
+        step = function(id, node)
             KtHTML.invalidate(app, "html_sandbox.html")
-            app:refresh(true)
+            sandbox_step(app, view, { x = x, y = list_y, w = w, h = list_h },
+                "conta", id, node, 0, 9)
         end,
-        move = function(id)
-            app.state.sandbox = app.state.sandbox or {}
-            local n = tonumber(app.state.sandbox.pos) or 0
-            n = math.max(0, math.min(8, n + (tonumber(id) or 0)))
-            app.state.sandbox.pos = n
+        move = function(id, node)
             KtHTML.invalidate(app, "html_sandbox.html")
-            app:refresh(true)
+            sandbox_step(app, view, { x = x, y = list_y, w = w, h = list_h },
+                "pos", id, node, 0, 40)
         end,
     }
     -- String-level prepare first (link lint), so the error strip is

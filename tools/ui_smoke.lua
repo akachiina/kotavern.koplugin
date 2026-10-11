@@ -5205,6 +5205,253 @@ do
         "uidsl3: style= width beats sheet + html attr (CSS ladder)")
 end
 
+-- === 19e. UIDSL sandbox tortos: sibling overlap detector ======================
+-- Device report: bordered boxes with text cut at the edge, image placeholder
+-- glued to captions, .btn div struck through its label. Repro shapes mirror
+-- the skeleton cards; the detector flags any sibling pair whose RESERVED
+-- rects overlap interiors (shared edges OK). Paint records every node's
+-- rect in node._paint_region, so no engine changes are needed to audit.
+do
+    local UiDSL = require("ktui/uidsl")
+    local function interiors_hit(a, b)
+        return a.x + 1 < b.x + b.w - 1 and b.x + 1 < a.x + a.w - 1
+            and a.y + 1 < b.y + b.h - 1 and b.y + 1 < a.y + a.h - 1
+    end
+    local function audit_node(node, problems, path)
+        local kids = {}
+        for i, ch in ipairs(node.children or {}) do
+            if ch.display ~= "none" and ch._paint_region then
+                kids[#kids + 1] = { i = i, r = ch._paint_region }
+            end
+        end
+        for a = 1, #kids do
+            for b = a + 1, #kids do
+                local ra, rb = kids[a].r, kids[b].r
+                if node.tag == "row" then
+                    -- y sharing is legit in rows; x overlap is not.
+                    if ra.x + 1 < rb.x + rb.w - 1 and rb.x + 1 < ra.x + ra.w - 1 then
+                        problems[#problems + 1] = path .. " row kids "
+                            .. kids[a].i .. "/" .. kids[b].i .. " x-overlap"
+                    end
+                else
+                    if interiors_hit(ra, rb) then
+                        problems[#problems + 1] = path .. " kids "
+                            .. kids[a].i .. "/" .. kids[b].i .. " overlap"
+                    end
+                end
+            end
+        end
+        for _, ch in ipairs(node.children or {}) do
+            audit_node(ch, problems, path .. "/" .. tostring(ch.tag))
+        end
+    end
+    local lorem = "Todos os botoes acima sao pills CSS puras de proposito com texto "..
+        "suficiente para quebrar em varias linhas dentro da caixa com borda e "..
+        "verificar se alguma linha escapa pela borda de baixo da caixa mae"
+    local function build_shapes()
+        return UiDSL.node({ tag = "box", gap = 6, children = {
+            UiDSL.node({ tag = "box", border = true, pad = 10, children = {
+                UiDSL.node({ tag = "para", text = lorem }),
+            } }),
+            UiDSL.node({ tag = "text", text = "caption above" }),
+            UiDSL.node({ tag = "image", src = "/caminho/que/nao/existe.png", h = 60 }),
+            UiDSL.node({ tag = "text", text = "caption below" }),
+            UiDSL.node({ tag = "box", border = true, border_size = 2, pad = 8, min_h = 44, children = {
+                UiDSL.node({ tag = "text", text = "Recarregar", align = "center" }),
+            } }),
+            UiDSL.node({ tag = "row", gap = 8, children = {
+                UiDSL.node({ tag = "check" }),
+                UiDSL.node({ tag = "text", text = "notificacoes (comeca ligado)" }),
+            } }),
+            UiDSL.node({ tag = "row", children = {
+                UiDSL.node({ tag = "spacer", width = 48 }),
+                UiDSL.node({ tag = "icon", icon_name = "star" }),
+            } }),
+        } })
+    end
+    local saved_font = Theme.get_base_font_size()
+    for _, fs in ipairs({ 8, 22, 32 }) do
+        Theme.set_base_font_size(fs)
+        for _, dn in ipairs({ "compact", "normal", "spacious" }) do
+            Theme.set_density(dn)
+            local tag = "f" .. tostring(fs) .. "/" .. dn
+            local shape = build_shapes()
+            local sh = UiDSL.measure(shape, 300)
+            local sbb = Blitbuffer.new(300, sh + 8, Blitbuffer.TYPE_BB8)
+            sbb:fill(Blitbuffer.COLOR_WHITE)
+            UiDSL.paint(shape, sbb, 0, 0, 300, { hitboxes = {} })
+            if fs == 22 and dn == "normal" then dump(sbb, "uidsl_torto_repro") end
+            local problems = {}
+            audit_node(shape, problems, "root")
+            -- Inter-sibling gap bands (root has gap 6) must be ink-free:
+            -- spilled text/boxes land exactly here on device.
+            local kids = {}
+            for _, ch in ipairs(shape.children or {}) do
+                if ch.display ~= "none" and ch._paint_region then
+                    kids[#kids + 1] = ch._paint_region
+                end
+            end
+            for i = 1, #kids - 1 do
+                local gap_top = kids[i].y + kids[i].h
+                local gap_h = kids[i + 1].y - gap_top
+                if gap_h > 2 then
+                    local ink = dark_in(sbb, 2, gap_top + 1, 296, gap_h - 2)
+                    if ink > 0 then
+                        problems[#problems + 1] = "root gap band " .. i
+                            .. " has ink (" .. ink .. "px)"
+                    end
+                end
+            end
+            ok(#problems == 0, "uidsl: skeleton shapes paint clean at " .. tag .. " (" ..
+                table.concat(problems, "; ") .. ")")
+        end
+    end
+    Theme.set_base_font_size(saved_font)
+    Theme.set_density("normal")
+end
+
+-- === 19f. Island bottom integrity + real italic ============================
+-- Device report: rich-island content looked cut at the bottom; <i> rendered
+-- upright. Checks: (1) island bitmap holds no ink below the reserved height
+-- (measured short = cut tail); (2) italic bitmap differs from upright (a
+-- real slanted face, not fallback).
+do
+    local UiDSL = require("ktui/uidsl")
+    local function find_html(node)
+        if node.tag == "html" then return node end
+        for _, ch in ipairs(node.children or {}) do
+            local f = find_html(ch)
+            if f then return f end
+        end
+        return nil
+    end
+    local function bitmap_bottom_ink(bb)
+        if not bb then return nil end
+        local bw, bh = bb:getWidth(), bb:getHeight()
+        for y = bh - 1, 0, -1 do
+            for x = 0, bw - 1, 4 do
+                local ok, px = pcall(function() return bb:getPixel(x, y) end)
+                if ok and px and px:getR() < 200 then return y end
+            end
+        end
+        return nil
+    end
+    local island_html = '<div><h2>Conteudo rico (ilha MuPDF)</h2>' ..
+        '<htmlblock><h2>Mensagem com formato</h2>' ..
+        '<p>Texto com <b>negrito</b>, <i>italico</i> e <code>codigo()</code> de verdade, quebrado pelo proprio MuPDF.</p>' ..
+        '<ul><li>item um</li><li>item dois</li></ul>' ..
+        '<table><tr><td><b>Heroi</b></td><td>Luna</td></tr>' ..
+        '<tr><td><b>Nivel</b></td><td>7</td></tr></table></htmlblock>' ..
+        '<p>Acima: HTML literal renderizado pelo MuPDF dentro do fluxo nativo.</p></div>'
+    local tree = UiDSL.from_html(island_html, {})
+    tree.gap = 6
+    local iw = 400
+    local ih = UiDSL.measure(tree, iw)
+    local ibb = Blitbuffer.new(iw, ih + 8, Blitbuffer.TYPE_BB8)
+    ibb:fill(Blitbuffer.COLOR_WHITE)
+    UiDSL.paint(tree, ibb, 0, 0, iw, { hitboxes = {} })
+    dump(ibb, "uidsl_island")
+    local isl = find_html(tree)
+    ok(isl ~= nil and isl._paint_region ~= nil, "uidsl: island node painted with a region")
+    if isl and isl._paint_region and isl._html_bb then
+        local r = isl._paint_region
+        -- Bitmap rows map 1:1 onto the region (blit copies from src origin).
+        local last_ink = bitmap_bottom_ink(isl._html_bb)
+        ok(last_ink ~= nil and last_ink <= r.h,
+            "uidsl: island bitmap ends inside the reserved height (ink=" ..
+            tostring(last_ink) .. " reserved=" .. tostring(r.h) .. ")")
+    else
+        ok(false, "uidsl: island has no bitmap to audit (render failed?)")
+    end
+    -- Italic must render slanted: same text upright vs <i> must differ.
+    local function island_ink(inner)
+        local t = UiDSL.from_html('<div><htmlblock><p>' .. inner .. '</p></htmlblock></div>', {})
+        local w = 400
+        UiDSL.measure(t, w)
+        local b = Blitbuffer.new(w, 200, Blitbuffer.TYPE_BB8)
+        b:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(t, b, 0, 0, w, { hitboxes = {} })
+        local n = find_html(t)
+        return (n and n._html_bb) or nil
+    end
+    local bb_up = island_ink("Testando inclinacao de verdade agora")
+    local bb_it = island_ink("<i>Testando inclinacao de verdade agora</i>")
+    local function ink_sig(bb)
+        if not bb then return nil end
+        local n, s = 0, 0
+        for y = 0, bb:getHeight() - 1, 2 do
+            for x = 0, bb:getWidth() - 1, 2 do
+                local ok, px = pcall(function() return bb:getPixel(x, y) end)
+                if ok and px and px:getR() < 200 then n = n + 1; s = s + x + y end
+            end
+        end
+        return n .. ":" .. s
+    end
+    ok(bb_up ~= nil and bb_it ~= nil and ink_sig(bb_up) ~= ink_sig(bb_it),
+        "uidsl: island italic renders slanted (differs from upright)")
+end
+
+-- === 19g. Sandbox actions: HTML-editable bounds + regional refresh =========
+-- data-action step/move honor the button's data-min/data-max (not hardcoded
+-- Lua clamps) and refresh the list band, never the full screen (the device
+-- "whole screen reflashes per tap" complaint).
+do
+    local UiDSL = require("ktui/uidsl")
+    -- One file, two buttons (the tree cache keys on mtime+theme, not path,
+    -- so two tmp files in the same second would serve a stale tree).
+    local tmppath = os.tmpname() .. ".html"
+    local f = io.open(tmppath, "w")
+    f:write('<row><button data-action="step" data-id="1" data-min="0" data-max="3">mais</button>' ..
+        '<button data-action="move" data-id="1">dir</button></row>')
+    f:close()
+    local real_path = UiDSL.sandbox_path
+    UiDSL.sandbox_path = function() return tmppath end
+    local app = fake_app({ page = "css_test", settings = {},
+        sandbox = { pos = 39 }, scroll = {} })
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    local calls = {}
+    function app:refresh(full, region) calls[#calls + 1] = { full, region } end
+    local bb = new_bb()
+    Pages.css_test(view, bb, 0, 0, VW, VH, 0)
+    UiDSL.sandbox_path = real_path
+    os.remove(tmppath)
+    local function drive(label, n)
+        local before = #calls
+        for _ = 1, n do
+            for _, b in ipairs(view.hitboxes) do
+                if tostring(b.label or "") == "btn:" .. label then b.callback() end
+            end
+        end
+        return #calls - before
+    end
+    -- Custom bounds from HTML attrs (5 taps at +1 with max 3 -> stays 3).
+    ok(drive("mais", 1) == 1, "uidsl: sandbox step button paints one hitbox")
+    drive("mais", 4)
+    ok((app.state.sandbox.conta or -1) == 3,
+        "uidsl: step honors data-min/data-max from HTML (got " ..
+        tostring(app.state.sandbox.conta) .. ")")
+    local regional = true
+    for _, c in ipairs(calls) do
+        regional = regional and c[1] == nil and type(c[2]) == "table"
+    end
+    ok(regional and #calls == 5,
+        "uidsl: step refreshes the list band, never fullscreen (" .. #calls .. " calls)")
+    -- Default bounds without attrs: star travels 0..40 edge to edge.
+    local before = #calls
+    drive("dir", 2)
+    ok((app.state.sandbox.pos or -1) == 40,
+        "uidsl: move defaults to 0..40 without attrs (got " ..
+        tostring(app.state.sandbox.pos) .. ")")
+    local regional2 = true
+    for i = before + 1, #calls do
+        local c = calls[i]
+        regional2 = regional2 and c[1] == nil and type(c[2]) == "table"
+    end
+    ok(regional2 and #calls - before == 2,
+        "uidsl: move refreshes the list band, never fullscreen")
+end
+
 -- === 9b. UIDSL: stable cascade, tag specificity, palette scoping, inline text ==
 do
     local UiDSL = require("ktui/uidsl")

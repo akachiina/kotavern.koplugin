@@ -141,6 +141,7 @@ function KtHTML.theme_css()
     local css = string.format([[
 @font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
 @font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
+@font-face { font-family: 'KTSans'; font-style: italic; src: url('sans-italic.ttf'); }
 body { margin: 0; background: %s; color: %s; font-family: 'KTSans', 'Noto Sans', sans-serif; }
 h1 { font-size: %dpx; font-weight: bold; margin: 0 0 6px 0; }
 h2 { font-size: %dpx; font: bold; margin: 0 0 4px 0; }
