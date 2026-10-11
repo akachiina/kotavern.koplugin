@@ -1231,9 +1231,33 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
     -- _hit_prefix namespaces sheet-tree hits ("sheet:usheet:...") so the
     -- modal tap policy lets them through the panel while stale page hits
     -- (never prefixed) stay blocked. Unset everywhere else: labels unchanged.
-    if view and node.on_tap and node.tag ~= "button" then
+    -- data-hold: hit_hold box (tap callback no-op per primitives contract,
+    -- onHoldKotavern dispatches the on_hold closure wired at parse time).
+    -- data-swipe: attached to THIS node's hitbox (hit_swipe amends the
+    -- last registered one), so west/east gestures inside the band route
+    -- to the node's action before the page-level chat-swipe handler.
+    if view and node.on_hold then
+        P.hit_hold(view, x, y, w, h, node.on_hold,
+            (node._hit_prefix or "") .. "uidsl:" .. tostring(node.id or node.class or node.tag)
+            .. ":hold")
+        if node.on_swipe then
+            P.hit_swipe(view, { west = node.on_swipe.west,
+                east = node.on_swipe.east })
+        end
+    elseif view and node.on_tap and node.tag ~= "button" then
         P.hit(view, x, y, w, h, node.on_tap,
             (node._hit_prefix or "") .. "uidsl:" .. tostring(node.id or node.class or node.tag))
+        if node.on_swipe then
+            P.hit_swipe(view, { west = node.on_swipe.west,
+                east = node.on_swipe.east })
+        end
+    elseif view and node.on_swipe then
+        -- Swipe-only node (no tap, no hold, e.g. a swipe row): a no-op tap
+        -- carrier (primitives keeps callback non-nil for onTapKotavern).
+        P.hit_hold(view, x, y, w, h, function() end, -- tap consumed
+            (node._hit_prefix or "") .. "uidsl:" .. tostring(node.id or node.class or node.tag))
+        P.hit_swipe(view, { west = node.on_swipe.west,
+            east = node.on_swipe.east })
     end
 end
 
@@ -1480,6 +1504,11 @@ function UiDSL.from_html(html, actions, vars)
         end
         n.html_tag = name
         n.id = attrs.id
+        -- Parse-time parent link (action callbacks receive only the node):
+        -- sandbox steppers scope their regional refresh to the enclosing
+        -- row's paint band (digit + buttons), not the page-wide list box.
+        local _top = top()
+        if _top and _top ~= root then n._parent = _top end
         if attrs.class then
             local classes = {}
             for cls in attrs.class:gmatch("%S+") do classes[cls] = true end
@@ -1508,6 +1537,44 @@ function UiDSL.from_html(html, actions, vars)
         if attrs["data-step"] then n.bind_step = tonumber(attrs["data-step"]) end
         if attrs["data-min"] then n.bind_min = tonumber(attrs["data-min"]) end
         if attrs["data-max"] then n.bind_max = tonumber(attrs["data-max"]) end
+        -- Long-press action (data-hold="name"[" data-id]): wired in
+        -- resolve_binds (needs the actions map, already captured in the
+        -- closure there); paint registers a hit_hold box for it. Without
+        -- it a node keeps tap-only behavior (chat swipe rows, card taps).
+        if attrs["data-hold"] then
+            local hname = attrs["data-hold"]
+            local hfn = actions[hname]
+            if hfn then
+                local hid = attrs["data-id"]
+                n.on_hold = function(...)
+                    return hfn(hid, n, ...)
+                end
+            else
+                errors[#errors + 1] = "unknown hold action: " .. tostring(hname)
+            end
+        end
+        -- Horizontal swipe actions (chat swipes per message): west = finger
+        -- left, east = finger right (GestureDetector naming). Wired like
+        -- data-hold; AppView:onSwipeKotavern checks these hitboxes BEFORE
+        -- the page-level west/east handler, so a node captures the gesture
+        -- only inside its own painted band. No hitbox of its own: the node's
+        -- tap/hold box doubles as the swipe carrier (registered alongside).
+        for dir, attr in pairs({ west = "data-swipe-left",
+            east = "data-swipe-right" }) do
+            local sname = attrs[attr]
+            if sname then
+                local sfn = actions[sname]
+                if sfn then
+                    local sid = attrs["data-id"]
+                    n.on_swipe = n.on_swipe or {}
+                    n.on_swipe[dir] = function()
+                        return sfn(sid, n)
+                    end
+                else
+                    errors[#errors + 1] = "unknown swipe action: " .. tostring(sname)
+                end
+            end
+        end
         if attrs["data-action"] then
             local aname = attrs["data-action"]
             if aname == "menu" then

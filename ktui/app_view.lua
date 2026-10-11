@@ -239,6 +239,21 @@ function AppView:onSwipeKotavern(_, ges)
         return true
     end
     if direction == "west" or direction == "east" then
+        -- Node-scoped swipe capture (UIDSL data-swipe-left/right): the
+        -- gesture start point inside a node's band routes to that node's
+        -- action BEFORE the page-level chat swipe below. Topmost carrier
+        -- wins (reverse registration, same as taps).
+        for i = #self.hitboxes, 1, -1 do
+            local box = self.hitboxes[i]
+            local handler = (direction == "west" and box.on_swipe_west)
+                or (direction == "east" and box.on_swipe_east)
+                or nil
+            if handler and ges.start_pos
+                and P.contains(box, ges.start_pos.x, ges.start_pos.y) then
+                handler()
+                return true
+            end
+        end
         -- Horizontal swipe on the chat page cycles swipes of the last
         -- assistant message (SillyTavern-style).
         if self.app.state.page == "chat" and not self.app.state.is_generating then

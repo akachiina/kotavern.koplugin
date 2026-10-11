@@ -5305,6 +5305,34 @@ do
     end
     ok(nhtml == 1, "html_test: content hitbox registered")
     ok(ink_ratio(ebb) > 0, "html_test: page ink on screen")
+    -- TALL-CACHE (device: paginated-OFF taps were 11x slower than ON -
+    -- SDL base 22.1ms vs 1.9ms measured): a second ensure of the same
+    -- shape must take the cached-total path - one direct setContent -
+    -- instead of repeating the 3-pass probe.
+    do
+        local KtHTML2 = require("ktui/kthtml")
+        local body = "<p>cache prober</p><p>segundo</p>"
+        local css = "p { margin: 1px 0; }"
+        local app2 = fake_app({ page = "html_test", settings = { debug_mode = true } })
+        local src = { body = body, css = css, mtime = os.time() }
+        local function ensure_count()
+            local d = KtHTML2.ensure(app2, eview, "cache_probe.html",
+                src, 550, 760, { paginated = false })
+            if d then return d.total_h end
+        end
+        KtHTML2._tall_cache = KtHTML2._tall_cache or {}
+        local key = table.concat({ body, "\0", css, "\0",
+            Theme.get_theme() .. "|" .. tostring(Theme.get_base_font_size()), "\0", 550 }, "")
+        KtHTML2._tall_cache[key] = nil
+        ensure_count() -- probe fill
+        ok(KtHTML2._tall_cache[key] ~= nil,
+            "kthtml: tall-cache filled by the first ensure")
+        local h2 = ensure_count() -- cache hit path
+        ok(h2 ~= nil and h2 > 0 and KtHTML2._tall_cache[key] ~= nil,
+            "kthtml: cached ensure still returns a usable total_h (" ..
+            tostring(h2) .. ")")
+        KtHTML2.invalidate(app2, "cache_probe.html")
+    end
 
     -- native_test page end-to-end (native title/buttons + HTML island).
     local napp = fake_app({ page = "native_test", settings = {} })
@@ -5794,11 +5822,21 @@ do
                 "uidsl: step honors data-min/data-max at " .. tag .. " (got " ..
                 tostring(app.state.sandbox.conta) .. ")")
             local regional = true
+            local max_h = 0
             for _, c in ipairs(calls) do
                 regional = regional and c[1] == nil and type(c[2]) == "table"
+                if type(c[2]) == "table" and (c[2].h or 0) > max_h then
+                    max_h = c[2].h
+                end
             end
             ok(regional and #calls == 5,
-                "uidsl: step refreshes the list band at " .. tag .. " (" .. #calls .. " calls)")
+                "uidsl: step refreshes regionally at " .. tag .. " (" .. #calls .. " calls)")
+            -- TAP-STORM scope (device: rapid taps repainted a huge band):
+            -- each wave must be the counter ROW band (digit + buttons +- pad),
+            -- never the full list (a full band here means the row link broke
+            -- and we regressed to the page-wide region).
+            ok(max_h > 0 and max_h < 120,
+                "uidsl: step waves stay row-sized at " .. tag .. " (max h=" .. max_h .. ")")
             -- The page scroll must survive step taps (device: background moved).
             ok(app.state.scroll[key] == start_scroll,
                 "uidsl: step taps keep the page scroll at " .. tag .. " (" ..
@@ -6075,6 +6113,98 @@ do
     GifAnim.draw = real_draw2
     UIManager.scheduleIn = real_schedule
     Sheets.close(app)
+end
+
+-- === 20b. UIDSL interactive gaps: img-tap, data-hold, data-swipe ==========
+-- Chat screen building blocks: tapping a photo opens it fullscreen (the
+-- native avatar behavior), long-press opens message actions, per-node
+-- horizontal swaps replace the page-level chat swipe inside the node.
+do
+    local UiDSL = require("ktui/uidsl")
+    local AppView = require("ktui/app_view")
+    local P = require("ktui/primitives")
+    local fired = {}
+    local html = '<div>' ..
+        '<img src="" data-action="viewphoto" data-id="aria.png"/>' ..
+        '<p data-hold="msgmenu" data-id="7">bubble text</p>' ..
+        '</div>'
+    local tree = UiDSL.from_html(html, {
+        viewphoto = function(id) fired[#fired + 1] = "photo:" .. tostring(id) end,
+        msgmenu = function(id) fired[#fired + 1] = "menu:" .. tostring(id) end,
+    })
+    local app = fake_app({ page = "css_test", settings = {} })
+    local view = { app = app, hitboxes = {} }
+    function view:refresh() end
+    local bb = new_bb()
+    UiDSL.paint(tree, bb, 0, 0, 300, view)
+    local function has(label)
+        for _, b in ipairs(view.hitboxes) do
+            if tostring(b.label or ""):find(label, 1, true) then return b end
+        end
+    end
+    -- img data-action: generic tap hit covers the image node; tap fires.
+    local img_hit = has("uidsl:")
+    ok(img_hit ~= nil, "uidsl2: img data-action registers a tap hit")
+    if img_hit then img_hit.callback() end
+    ok(fired[1] == "photo:aria.png", "uidsl2: img tap fires its action (got " ..
+        tostring(fired[1]) .. ")")
+    -- data-hold: hit_hold box (label uses the node's tag: p -> para).
+    local hold = has("uidsl:para:hold")
+    ok(hold ~= nil and hold.on_hold ~= nil,
+        "uidsl2: data-hold registers a hit_hold box with on_hold")
+    AppView.onTapKotavern(view, nil, { pos = { x = hold.x + 2, y = hold.y + 2 } })
+    ok(fired[2] == nil, "uidsl2: tap on a hold node consumes (no action)")
+    local held = AppView.onHoldKotavern(view, nil,
+        { pos = { x = hold.x + 2, y = hold.y + 2 } })
+    ok(held == true and fired[2] == "menu:7",
+        "uidsl2: hold fires msgmenu (got " .. tostring(fired[2]) .. ")")
+    -- data-swipe: parse maps left/right; swipe dispatch inside the band.
+    local swfired = {}
+    local html3 = '<div><p data-swipe-left="prev" data-swipe-right="next"' ..
+        ' data-id="3">swipeable</p></div>'
+    local tree3 = UiDSL.from_html(html3, {
+        prev = function(id) swfired[#swfired + 1] = "prev:" .. tostring(id) end,
+        next = function(id) swfired[#swfired + 1] = "next:" .. tostring(id) end,
+    })
+    local view3 = { app = app, hitboxes = {} }
+    function view3:refresh() end
+    UiDSL.paint(tree3, bb, 0, 100, 300, view3)
+    local carrier
+    for _, b in ipairs(view3.hitboxes) do
+        if b.on_swipe_west or b.on_swipe_east then carrier = b break end
+    end
+    ok(carrier ~= nil and carrier.on_swipe_west ~= nil
+        and carrier.on_swipe_east ~= nil,
+        "uidsl2: swipeable node carries west+east handlers")
+    view3.hitboxes[#view3.hitboxes + 1] = { x = 0, y = 900, w = 300, h = 20,
+        on_swipe_east = function() swfired[#swfired + 1] = "far-alien" end }
+    AppView.onSwipeKotavern(view3, nil,
+        { direction = "east", start_pos = { x = carrier.x + 5, y = carrier.y + 5 },
+            pos = { x = carrier.x + 40, y = carrier.y + 5 } })
+    ok(swfired[1] == "next:3", "uidsl2: east swipe in-band fires next (got " ..
+        tostring(swfired[1]) .. ")")
+    AppView.onSwipeKotavern(view3, nil,
+        { direction = "west", start_pos = { x = carrier.x + 5, y = carrier.y + 5 },
+            pos = { x = carrier.x - 40, y = carrier.y + 5 } })
+    ok(swfired[2] == "prev:3", "uidsl2: west swipe in-band fires prev (got " ..
+        tostring(swfired[2]) .. ")")
+    -- Out-of-band node must NOT capture (page handler wins; no dispatch):
+    -- fire far below both bands (carrier ~y=100..130, alien at y=900).
+    AppView.onSwipeKotavern(view3, nil,
+        { direction = "east", start_pos = { x = 10, y = 500 },
+            pos = { x = 60, y = 500 } })
+    ok(swfired[3] == nil and swfired[4] == nil,
+        "uidsl2: out-of-band swipe fires no node")
+    AppView.onSwipeKotavern(view3, nil,
+        { direction = "east", start_pos = { x = 10, y = 905 },
+            pos = { x = 60, y = 905 } })
+    ok(swfired[3] == "far-alien",
+        "uidsl2: swipe inside a node's band DOES fire it (got " ..
+        tostring(swfired[3]) .. ")")
+    -- swipe on app_view needs page context: without the chat page state the
+    -- global handler would index messages of a dashboard app - stub page to
+    -- chat so the fallthrough is safe (messages already empty).
+    app.state.page = "chat"
 end
 
 -- === 9b. UIDSL: stable cascade, tag specificity, palette scoping, inline text ==

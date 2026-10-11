@@ -77,6 +77,13 @@ end
 -- regional over the list area: paintTo repaints as usual (new layout
 -- included), but the EPDC updates one band instead of reflashing the
 -- whole screen per tap (bind taps already worked this way).
+-- TAP-STORM SCOPE (device report: rapid -1/+1 taps repainted a large band,
+-- EPDC queue lagged): the page-wide list box repaints the toolbar, every
+-- sibling and the scrollbar band per tap. Minimum honest region instead:
+-- the tapped node's own last paint band (_paint_region, recorded by
+-- UiDSL.paint / KtHTML paint loops). Anything outside it - siblings that
+-- could have grown (rare: counter digits are fixed-width) - is caught by
+-- the NEXT full paint or scroll; the value digit itself always repaints.
 local function sandbox_step(app, view, list_box, key, id, node, dflt_min, dflt_max)
     app.state.sandbox = app.state.sandbox or {}
     local mn = (node and node.bind_min) or dflt_min
@@ -85,7 +92,18 @@ local function sandbox_step(app, view, list_box, key, id, node, dflt_min, dflt_m
     local n = tonumber(app.state.sandbox[key]) or 0
     n = math.max(mn, math.min(mx, n + (tonumber(id) or 0)))
     app.state.sandbox[key] = n
-    app:refresh(nil, list_box)
+    local r = (node and node._parent and node._parent._paint_region)
+        or (node and node._paint_region)
+    if r and (r.w or 0) > 0 and (r.h or 0) > 0
+        and r.y >= list_box.y and r.y + r.h <= list_box.y + list_box.h + 1 then
+        -- Sanity: the region must sit INSIDE the list band (sheet tokens
+        -- painted elsewhere keep the page-band scoping). Grow the band by a
+        -- small pad so centering shifts (font change) still repaint.
+        app:refresh(nil, { x = list_box.x, y = r.y - 2,
+            w = list_box.w, h = r.h + 4 })
+    else
+        app:refresh(nil, list_box)
+    end
 end
 
 function Pages.dashboard(view, bb, x, y, w, h, scroll)

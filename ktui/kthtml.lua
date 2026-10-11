@@ -81,6 +81,10 @@ local KtHTML = {}
 -- small bitmaps and fast scans; past the ceiling the doc paginates and
 -- tall mode auto-falls-back to pagination for that paint.
 KtHTML.TALL_H = 10000
+-- Max cached tall-total shapes (body+css+font+width -> scanned total px).
+-- Each entry is one number; the sandbox/chat keys are naturally few - the
+-- cap only guards pathological churn (e.g. editors looping font changes).
+KtHTML.TALL_CACHE_MAX = 32
 
 -- Content height by pixel scan. Two MuPDF behaviors kill layout-based
 -- measuring, both probe-verified: getUsedBBox reports the FULL page for
@@ -477,10 +481,40 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
         -- scans; past TALL_H the doc paginates (fallback below). Neither
         -- getUsedBBox (full page) nor pagination probing (minimum page
         -- height) measures small docs - both probe-verified dead ends.
+        --
+        -- PERF: the probe was EVERY ensure's work (measured 22.1ms in SDL,
+        -- 11x the paginated 1.9ms: three setContent passes + a tall bitmap
+        -- render per tap). The tall-height RESULT, though, only depends on
+        -- (body, css, font-size, width) - not on which template values sit
+        -- inside. Cache it at module level and skip the probe on every
+        -- subsequent ensure: one direct setContent at the known tall height,
+        -- then the exact-bottom scan alone (rebuilds after invalidate taps,
+        -- the sandbox-stepper case, pay 1 pass instead of 3).
+        local total_key = table.concat({ src.body, "\0", src.css, "\0",
+            theme_id, "\0", w }, "")
+        local cached_total = KtHTML._tall_cache and KtHTML._tall_cache[total_key]
         local want_h = math.max(h, (widget.page_count or 1) * h)
         if want_h > KtHTML.TALL_H then
             doc.paginated = true
             doc.total_h = h
+        elseif cached_total then
+            -- Known shape: size the widget straight at the cached total
+            -- (approximately always >= h; below-TALL_H guard held at probe
+            -- time under identical body/css/font/width, so it holds here).
+            pcall(function()
+                widget.dimen = Geom:new{ w = w, h = cached_total }
+                widget:setContent(src.body, src.css,
+                    Theme.scale(Theme.get_base_font_size()),
+                    false, nil, Constants.PLUGIN_DIR .. "/assets")
+            end)
+            doc.page_count = 1
+            widget:_render()
+            doc.total_h = KtHTML.scan_bottom(widget.bb, w) or cached_total
+            -- Shape changed by drift (font fallback substitutions): refresh
+            -- the cache so the next ensure doesn't repeat the drift.
+            if KtHTML._tall_cache then
+                KtHTML._tall_cache[total_key] = doc.total_h
+            end
         else
             local pages_at_tall = 1
             pcall(function()
@@ -504,6 +538,15 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
             else
                 widget:_render()
                 doc.total_h = KtHTML.scan_bottom(widget.bb, w) or h
+                -- First probe of this shape: remember the tall height so
+                -- later ensures skip the probe entirely.
+                KtHTML._tall_cache = KtHTML._tall_cache or {}
+                local n_entries = 0
+                for _ in pairs(KtHTML._tall_cache) do n_entries = n_entries + 1 end
+                if n_entries >= KtHTML.TALL_CACHE_MAX then
+                    KtHTML._tall_cache = {} -- crude reset; shapes are few
+                end
+                KtHTML._tall_cache[total_key] = doc.total_h
             end
         end
     else

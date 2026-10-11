@@ -850,6 +850,18 @@ function P.hit(app, x, y, w, h, callback, label)
     })
 end
 
+-- Attach horizontal-swipe actions to the MOST RECENT hitbox (UIDSL nodes
+-- register their tap box right before this). AppView:onSwipeKotavern
+-- checks west/east carriers inside the node's band BEFORE the page-level
+-- handler, so chat swipe rows capture the gesture without new hitboxes.
+function P.hit_swipe(app, on_swipe)
+    local box = app and app.hitboxes and app.hitboxes[#app.hitboxes]
+    if box then
+        box.on_swipe_west = on_swipe and on_swipe.west or nil
+        box.on_swipe_east = on_swipe and on_swipe.east or nil
+    end
+end
+
 -- Long-press hitbox: taps are consumed by an explicit no-op (same sweep
 -- semantics as a tap callback); AppView:onHoldKotavern fires on_hold for
 -- the topmost match. Never leave callback nil: onTapKotavern calls it.
