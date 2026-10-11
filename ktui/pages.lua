@@ -1415,12 +1415,12 @@ function Pages.personas(view, bb, x, y, w, h, scroll)
         local thumb_size = math.max(Theme.scale(30), math.floor(row_h * 0.52))
         local tx = row_x + Theme.scale(10)
         local ty = cy + math.floor((row_h - thumb_size) / 2)
-        local drawn = persona.avatar and persona.avatar ~= "" and P.image(bb, persona.avatar, tx, ty, thumb_size, thumb_size, { cover = true })
+        -- Round disc like the chat (not a square photo): fallback paints the
+        -- initial disc itself when there is no avatar file.
+        local drawn = Widgets.avatar(bb, tx, ty, thumb_size,
+            (persona.avatar ~= "" and persona.avatar or nil),
+            persona.name, Theme.panel)
         if drawn then view.dithered = true end -- photo bitmap: dithered refresh
-        if not drawn then
-            P.rounded_rect(bb, tx, ty, thumb_size, thumb_size, Theme.soft, math.floor(thumb_size / 2))
-            P.center_text_box(bb, Widgets.first_glyph(persona.name or "?"):upper(), tx, ty, thumb_size, thumb_size, "small", { bold = true })
-        end
 
         local desc = Widgets.truncate((persona.description or ""):gsub("\n", " "), 60)
         Widgets.row(view, bb, {

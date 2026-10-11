@@ -690,6 +690,10 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- left; the name (bold, ST ch_name) sits beside it with a
                 -- muted timestamp after. Boxed: legacy inline row.
                 local name_drawn = false
+                -- Avatar tap target (filled below when a real photo paints;
+                -- the initial fallback stays untappable). Emitted after the
+                -- hold zone + kebab so the disc wins taps.
+                local av_hit = nil
                 if srow_y >= y - name_row_h - name_off and srow_y < y + h then
                     local sender_str = l.display_name or ""
                     local timestamp = show_timestamps and format_time(l.send_date) or nil
@@ -703,6 +707,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         draw_avatar(view, bb, inner_left, srow_y + name_off, avatar_size,
                             av_img,
                             l.is_user and user or char_name, carve)
+                        if av_img and av_img ~= "" then
+                            av_hit = { x = inner_left, y = srow_y + name_off, img = av_img }
+                        end
                         local ny = srow_y + name_off + math.floor((name_row_h - name_h) / 2)
                         local nx = col_text_x
                         -- End the sender budget where the ⋯ kebab hit starts
@@ -730,6 +737,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local av_x = content_right - pad - avatar_size
                         if show_avatars then
                             draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, user_image, user, Theme.bg)
+                            if user_image and user_image ~= "" then
+                                av_hit = { x = av_x, y = srow_y + av_dy, img = user_image }
+                            end
                         end
                         local name_right = av_x - Theme.scale(4)
                         local name_w = math.max(1, name_right - (x + pad))
@@ -743,6 +753,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local av_x = x + pad
                         if show_avatars and not l.is_thinking then
                             draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, char_image, char_name, Theme.bg)
+                            if char_image and char_image ~= "" then
+                                av_hit = { x = av_x, y = srow_y + av_dy, img = char_image }
+                            end
                         end
                         local name_x = show_avatars and (av_x + avatar_size + Theme.scale(4)) or av_x
                         local name_w = math.max(1, content_right - pad - name_x)
@@ -803,6 +816,16 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                             view.app:show_message_actions(l.idx)
                         end
                     end, "kebab_" .. l.idx)
+                end
+
+                -- Avatar tap: fullscreen photo (lists parity). Registered
+                -- after hold + kebab (reverse order wins the disc); hold and
+                -- kebab keep working everywhere else.
+                if av_hit and view.app.show_character_image_fullscreen then
+                    local ah = av_hit
+                    P.hit(view, ah.x, ah.y, avatar_size, avatar_size, function()
+                        view.app:show_character_image_fullscreen(ah.img)
+                    end, "chat_avatar_" .. l.idx)
                 end
 
                 -- Reasoning (collapsible): muted section with a left rule

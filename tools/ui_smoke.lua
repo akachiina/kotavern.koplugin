@@ -2171,6 +2171,54 @@ do
     ok(#tapped == 1, "hold: plain tap boxes keep working")
 end
 
+-- Chat avatar tap: fullscreen photo (lists parity), only with a photo.
+do
+    local ChatBubbles = require("ktui/chat_bubbles")
+    local AppView = require("ktui/app_view")
+    local msgs = {
+        { role = "user", content = "hello", name = "You" },
+        { role = "assistant", content = "hi there", name = "Aria" },
+    }
+    local function paint_chat(char_img, user_img, fullscreen_fn)
+        local app = fake_app({ page = "chat",
+            settings = { show_avatars = true }, messages = msgs })
+        app.show_message_actions = function() end
+        app.show_character_image_fullscreen = fullscreen_fn
+        if user_img then
+            app._active_persona_avatar = function() return user_img end
+        end
+        local view = { app = app, hitboxes = {} }
+        local bb = new_bb()
+        ChatBubbles.draw(view, bb, 0, 0, VW, VH, 0, msgs,
+            "Aria", false, "You", char_img, nil)
+        return view
+    end
+    local function box_with(view, prefix)
+        for _, b in ipairs(view.hitboxes) do
+            if tostring(b.label or ""):sub(1, #prefix) == prefix then return b end
+        end
+    end
+    -- No photos: no avatar hits (initial fallback stays untappable).
+    local bare = paint_chat(nil, nil, function() end)
+    ok(box_with(bare, "chat_avatar_") == nil, "avatar: no photo, no hitbox")
+    -- Photos: one hit per message; tap opens fullscreen with that path.
+    local opened = {}
+    local fuller = paint_chat(PLUGIN .. "/assets/logo.svg", PLUGIN .. "/assets/logo.svg",
+        function(_, path) opened[#opened + 1] = path end)
+    local n_av, first_av = 0, nil
+    for _, b in ipairs(fuller.hitboxes) do
+        if tostring(b.label or ""):sub(1, 12) == "chat_avatar_" then
+            n_av = n_av + 1
+            first_av = first_av or b
+        end
+    end
+    ok(n_av == 2, "avatar: one tap hitbox per message with photo (got " .. n_av .. ")")
+    AppView.onTapKotavern(fuller, nil,
+        { pos = { x = first_av.x + 1, y = first_av.y + 1 } })
+    ok(#opened == 1 and opened[1] == PLUGIN .. "/assets/logo.svg",
+        "avatar: tap opens the photo fullscreen")
+end
+
 -- Sheets with two-line sublabel rows get a taller slot (Author's Note fix).
 do
     local Sheets = require("ktui/sheets")
