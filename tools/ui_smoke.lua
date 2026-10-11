@@ -2211,6 +2211,131 @@ do
         tostring(app.state.scroll.chat) .. ")")
 end
 
+-- Snapshot open/close: with our view topmost, show() photographs the
+-- compositor and close() blits it back - no view repaint either way.
+-- Fallback (covered view): plain view:refresh as before.
+do
+    local Sheets = require("ktui/sheets")
+    local UIManager = require("ui/uimanager")
+    local Screen = require("device").screen
+    local function snap_app()
+        local a = fake_app({ page = "chat" })
+        a.state.scroll = { chat = 0 }
+        function a:scroll_key() return "chat" end
+        local v = { app = a, hitboxes = {} }
+        local n = 0
+        function v:refresh() n = n + 1 end
+        a.view = v
+        return a, v, function() return n end
+    end
+    local function sample(bb, pts)
+        local out = {}
+        for _, p in ipairs(pts) do
+            local ok, px = pcall(function() return bb:getPixel(p[1], p[2]) end)
+            out[#out + 1] = ok and px and px:getR() or -1
+        end
+        return table.concat(out, ",")
+    end
+    local pts = { { 10, 10 }, { 100, 200 }, { 300, 400 }, { 500, 700 }, { 50, 750 } }
+    -- Topmost: snapshot path (no repaint on show or close).
+    local app, view, repaints = snap_app()
+    local before = sample(Screen.bb, pts)
+    table.insert(UIManager._window_stack, { widget = view })
+    Sheets.show(app, { title = "T", actions = { { label = "A" } } })
+    Sheets.close(app)
+    -- remove our stack entry (identity search, no index assumption)
+    for i = #UIManager._window_stack, 1, -1 do
+        if UIManager._window_stack[i].widget == view then
+            table.remove(UIManager._window_stack, i)
+        end
+    end
+    ok(repaints() == 0, "sheets: snapshot open+close repaints nothing")
+    ok(sample(Screen.bb, pts) == before,
+        "sheets: snapshot roundtrip restores pixels")
+    -- Covered: fallback path repaints.
+    local app2, view2, repaints2 = snap_app()
+    Sheets.show(app2, { title = "T", actions = { { label = "A" } } })
+    Sheets.close(app2)
+    ok(repaints2() >= 2, "sheets: fallback open+close repaints (got " .. repaints2() .. ")")
+    -- A full paint in between drops the snapshot (stale pixels are worse
+    -- than a repaint).
+    local app3, view3, repaints3 = snap_app()
+    table.insert(UIManager._window_stack, { widget = view3 })
+    Sheets.show(app3, { title = "T", actions = { { label = "A" } } })
+    Sheets.drop_snapshot()
+    Sheets.close(app3)
+    for i = #UIManager._window_stack, 1, -1 do
+        if UIManager._window_stack[i].widget == view3 then
+            table.remove(UIManager._window_stack, i)
+        end
+    end
+    ok(repaints3() >= 1, "sheets: dropped snapshot falls back to repaint")
+end
+
+-- Mini scrollbar: long sheets paint track+thumb at the panel edge, short
+-- sheets paint none, and the thumb slides with sheet.scroll.
+do
+    local Sheets = require("ktui/sheets")
+    local function paint_sheet(n, scroll)
+        local app = fake_app({ page = "chat" })
+        app.state.scroll = { chat = 0 }
+        function app:scroll_key() return "chat" end
+        local acts = {}
+        for i = 1, n do acts[i] = { label = "Action " .. i } end
+        app.state.sheet = { title = "T", scroll = scroll or 0, actions = acts }
+        local view = { app = app, hitboxes = {} }
+        function view:refresh() end
+        local bb = new_bb()
+        Sheets.draw(view, bb)
+        local cancel_y = nil
+        for _, b in ipairs(view.hitboxes) do
+            if b.label == "sheet:cancel" then cancel_y = b.y end
+        end
+        return bb, cancel_y or 700
+    end
+    local function strip_ink(bb, cancel_y)
+        -- rows in the right-edge strip inside the rows band: above the
+        -- full-width Cancel button, below the rounded panel corner (its
+        -- anti-aliased arc reads gray). Threshold 220 counts the soft
+        -- track (0xCC) but not the white panel.
+        local rows = {}
+        for yy = cancel_y - 130, cancel_y - 15 do
+            local hit = false
+            for xx = 565, 574 do
+                local okp, px = pcall(function() return bb:getPixel(xx, yy) end)
+                if okp and px and px:getR() < 220 then hit = true break end
+            end
+            if hit then rows[#rows + 1] = yy end
+        end
+        return rows
+    end
+    local short_bb, short_cancel = paint_sheet(2, 0)
+    ok(#strip_ink(short_bb, short_cancel) == 0, "sheets: short list paints no scrollbar")
+    local long_bb, long_cancel = paint_sheet(40, 0)
+    local r0 = strip_ink(long_bb, long_cancel)
+    ok(#r0 > 100, "sheets: long list paints track+thumb (" .. #r0 .. " rows)")
+    local scrolled_bb = paint_sheet(40, 10000)
+    -- Thumb ink (near-black) vs track (soft gray): centroid of the dark
+    -- Thumb ink (near-black) vs track (soft gray): centroid of the dark
+    -- rows slides down with sheet.scroll (borders contribute equally).
+    local function dark_centroid(bb)
+        local sum, n = 0, 0
+        for yy = 200, 799 do
+            local dark = false
+            for xx = 565, 574 do
+                local okp, px = pcall(function() return bb:getPixel(xx, yy) end)
+                if okp and px and px:getR() < 100 then dark = true break end
+            end
+            if dark then sum, n = sum + yy, n + 1 end
+        end
+        return n > 0 and sum / n or nil
+    end
+    local c0, c1 = dark_centroid(long_bb), dark_centroid(scrolled_bb)
+    ok(c0 and c1 and c1 > c0 + 20,
+        "sheets: thumb slides with scroll (centroid " .. tostring(c0) .. " -> " .. tostring(c1) .. ")")
+    dump(long_bb, "sheet_scrollbar")
+end
+
 -- === 5. Icon sheet: every SVG asset rasterizes ==============================
 do
     -- Direct probe: capture the raw failure for any asset NanoSVG rejects.

@@ -727,6 +727,7 @@ end
 function App:close()
     self:_cancel_generation()
     require("ktui/gifanim").stop_all(self)
+    require("ktui/sheets").drop_snapshot()
     if self.view then
         UIManager:close(self.view)
     end

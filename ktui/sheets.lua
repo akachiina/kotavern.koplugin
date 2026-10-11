@@ -11,9 +11,49 @@ local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
 local Geom = require("ktui/geom")
 local Widgets = require("ktui/widgets")
+local UIManager = require("ui/uimanager")
+local Device = require("device")
+local Blitbuffer = require("ffi/blitbuffer")
 local _ = require("gettext")
 
 local Sheets = {}
+
+-- Compositor snapshot for open/close without repainting the page: opening a
+-- sheet used to run a full paintTo (every message/card re-measured) plus a
+-- full-screen EPDC wave, which is the "takes a while on e-ink" report. The
+-- page pixels are already composed on Screen.bb, so show() photographs them,
+-- paints scrim+panel over, and close() blits back - zero Lua paint, zero
+-- flash, one EPDC wave each way. ~1 screen BB transient (~1.5MB BB8).
+local snap_bb = nil
+
+local function free_snap()
+    if snap_bb then
+        pcall(function() snap_bb:free() end)
+        snap_bb = nil
+    end
+end
+
+-- Drop the snapshot: any full paint makes it stale (action taps repaint,
+-- scroll repaints, navigation). Called from AppView:paintTo and App:close.
+function Sheets.drop_snapshot()
+    free_snap()
+end
+
+-- True when our view is the topmost window: only then is Screen.bb known to
+-- hold exactly our last paint (a dialog/modal on top would be photographed
+-- instead and restored as a ghost later - those cases use the repaint path).
+local function top_is_view(app)
+    local view = app and app.view
+    if not view then return false end
+    local stack = UIManager._window_stack
+    if type(stack) ~= "table" or #stack == 0 then return false end
+    for i = #stack, 1, -1 do
+        local w = stack[i] and stack[i].widget
+        if w == view then return true end
+        if w then return false end
+    end
+    return false
+end
 
 function Sheets.active(app)
     return app.state.sheet ~= nil
@@ -53,6 +93,24 @@ function Sheets.show(app, opts)
     if saved then
         view.app.state.scroll[saved.key] = 0
     end
+    -- Fast path: photograph the composed page and paint over it (no page
+    -- repaint at all). Falls back to a full refresh when anything covers us.
+    if top_is_view(app) then
+        free_snap()
+        local m = Theme.metrics()
+        local ok, shot = pcall(function()
+            local bb = Blitbuffer.new(m.screen_w, m.screen_h, Blitbuffer.TYPE_BB8)
+            bb:blitFrom(Device.screen.bb, 0, 0, 0, 0, m.screen_w, m.screen_h)
+            return bb
+        end)
+        if ok and shot then
+            snap_bb = shot
+            Sheets.draw(view, Device.screen.bb)
+            UIManager:setDirty(nil, "ui")
+            return
+        end
+        free_snap()
+    end
     view:refresh()
 end
 
@@ -86,6 +144,20 @@ function Sheets.close(app)
     end
     if sheet and sheet.on_close then
         sheet.on_close()
+    end
+    -- Fast path: the snapshot still holds the pre-sheet page (nothing
+    -- repainted while open) - blit it back with no paint and no flash.
+    -- Anything else (action repaints drop it in paintTo) falls through.
+    if snap_bb then
+        local m = Theme.metrics()
+        local ok = pcall(function()
+            Device.screen.bb:blitFrom(snap_bb, 0, 0, 0, 0, m.screen_w, m.screen_h)
+        end)
+        free_snap()
+        if ok then
+            UIManager:setDirty(nil, "ui")
+            return
+        end
     end
     app.view:refresh()
 end
@@ -241,6 +313,12 @@ function Sheets.draw(view, bb)
         local max_scroll = math.max(0, total_h - list_h)
         sheet._max_scroll = max_scroll
         local scroll = math.min(sheet.scroll or 0, max_scroll)
+        -- Mini scrollbar affordance (display-only; swipe/wheel already
+        -- scroll): slim track at the panel's right edge with a proportional
+        -- thumb, so a cut bottom row reads as "more below". Rows yield its
+        -- width (the list gutter pattern) so ink never underlaps the track.
+        local scrollable = max_scroll > 0
+        local sb_gutter = scrollable and (Theme.scale(7) + Theme.scale(4)) or 0
 
         -- Clip region: paint a bg rect then rows offset by -scroll. Rows that
         -- don't fit are skipped (same culling rule as scrolled_list).
@@ -252,7 +330,7 @@ function Sheets.draw(view, bb)
                 local enabled = action.enabled ~= false
                 local color = (not enabled) and Theme.muted or (action.danger and Theme.danger or Theme.ink)
                 local tx = px + pad
-                local text_right = px + pw - pad - Theme.scale(30)
+                local text_right = px + pw - pad - Theme.scale(30) - sb_gutter
                 if action.icon then
                     local icon_size = Theme.scale(13)
                     local isz = Icons.text_size(action.icon, icon_size)
@@ -283,7 +361,7 @@ function Sheets.draw(view, bb)
                 if action.checked then
                     local icon_size = Theme.scale(12)
                     local isz = Icons.text_size("check", icon_size)
-                    local cx = px + pw - pad - isz.w - Theme.scale(4)
+                    local cx = px + pw - pad - isz.w - Theme.scale(4) - sb_gutter
                     Icons.draw(bb, "check", cx, ay + math.floor((row_h - isz.h) / 2), icon_size, { color = Theme.ink })
                 end
                 local idx = i
@@ -307,6 +385,23 @@ function Sheets.draw(view, bb)
                 end
             end
             ay = ay + row_h
+        end
+
+        if scrollable then
+            local band_h = list_bottom - list_top
+            if band_h > 0 then
+                local track_x = px + pw - pad - Theme.scale(7)
+                local track_w = Theme.scale(7)
+                P.rect(bb, track_x, list_top, track_w, band_h, Theme.soft)
+                local total = max_scroll + band_h
+                local thumb_h = math.max(Theme.scale(12),
+                    math.floor(band_h * band_h / math.max(1, total)))
+                thumb_h = math.min(band_h, thumb_h)
+                local travel = band_h - thumb_h
+                local thumb_y = list_top
+                    + (travel > 0 and math.floor(travel * scroll / max_scroll) or 0)
+                P.rect(bb, track_x, thumb_y, track_w, thumb_h, Theme.ink)
+            end
         end
 
         -- Cancel

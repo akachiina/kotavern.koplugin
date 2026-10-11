@@ -511,6 +511,9 @@ end
 
 function AppView:paintTo(bb, x, y)
     self.hitboxes = {}
+    -- Any full paint invalidates the sheet snapshot (it holds pre-sheet
+    -- pixels; see ktui/sheets.lua).
+    require("ktui/sheets").drop_snapshot()
     self.list_bounds = nil
     self.scroll_step = nil
     self.swipe_step = nil
