@@ -1145,7 +1145,21 @@ function Pages.experimental_screen(view, bb, x, y, w, h, scroll, page)
     local m = Theme.metrics()
     local pad = m.pad
     local inner_w = w - pad * 2 - Theme.scrollbar_w()
+
+    -- Slot (chat stream): the DOM treats a data-slot node as a ZERO-height
+    -- placeholder; the real band is "everything the HTML chrome doesn't
+    -- claim". Measure the chrome (slot measures 0), then the slot paints in
+    -- the leftover band so the composer at the bottom of the HTML sits EXACTLY
+    -- where the native chat puts it - pinned to the bottom, bubbles above.
+    local slot = find_slot(tree, page == "chat" and "chat:messages" or nil)
+    local slot_h = 0
     local total_h = UiDSL.measure(tree, inner_w)
+    if slot then
+        -- Chrome height = everything EXCEPT the (0-height) slot: total - 0.
+        -- Band = viewport minus the chrome's claim (capped minimum for the
+        -- empty-stream message so the composer never eats it).
+        slot_h = math.max(Theme.btn_h() * 2, h - total_h)
+    end
     local max_scroll = math.max(0, total_h - h)
     local sc = math.max(0, math.min(scroll or 0, max_scroll))
     if app.state.scroll and app.scroll_key then
@@ -1159,21 +1173,10 @@ function Pages.experimental_screen(view, bb, x, y, w, h, scroll, page)
         app.state.scroll[app:scroll_key()] = sc
     end
 
-    -- Slot: the messages stream spot (chat). The stream painter gets the
-    -- full content area minus the screen's own chrome above it - v1 keeps
-    -- the slot full-width-below-the-HTML (the composer lives UNDER the
-    -- slot in the HTML but paints after; the slot painter clips to the
-    -- remaining height so nothing bleeds).
-    local slot = find_slot(tree, page == "chat" and "chat:messages" or nil)
-    local slot_h = 0
-    if slot then
-        slot_h = math.max(Theme.btn_h() * 3, h - (total_h - UiDSL.measure(slot, inner_w)))
-        -- The slot's native content scrolls INSIDE its band: publish (and
-        -- reset per paint) the stream's own max so the page scrollbar and
-        -- swipes track the bubbles, not the HTML chrome around them.
-        view._slot_max_scroll = 0
-    end
-
+    -- Repaint with the slot ADDED to the flow: after the slot painter runs
+    -- (fired inside UiDSL.paint via extras), the page tells the engine the
+    -- real band height so the composer below it lands at the right dy AND
+    -- the page's max_scroll adopts the stream's (both DOM-correct).
     local okp, perr = pcall(function()
         UiDSL.paint(tree, bb, x + pad, y - sc, inner_w, view,
             { x = x, y = y, w = w, h = h },
@@ -1185,13 +1188,18 @@ function Pages.experimental_screen(view, bb, x, y, w, h, scroll, page)
     if not okp then
         errors[#errors + 1] = "paint: " .. tostring(perr)
     end
+    -- Repaint now counts the slot band (set_slot_h propagated it): refresh
+    -- chrome geometry and max_scroll so the scrollbar/swipes track the full
+    -- DOM (stream + chrome) instead of the slot-less skeleton.
+    local total_h_after = UiDSL.measure(tree, inner_w)
+    max_scroll = math.max(0, total_h_after - h)
     -- A live slot is the scrollable part of the screen (the HTML chrome is
     -- usually shorter than the viewport): the page's max adopts the stream's.
     if slot and view._slot_max_scroll and view._slot_max_scroll > max_scroll then
         max_scroll = view._slot_max_scroll
-        app.state.scroll[app:scroll_key()] =
-            math.max(0, math.min(app.state.scroll[app:scroll_key()] or 0, max_scroll))
     end
+    app.state.scroll[app:scroll_key()] =
+        math.max(0, math.min(app.state.scroll[app:scroll_key()] or 0, max_scroll))
     if #errors > 0 then
         local strip = Theme.line_h("tiny") + Theme.scale(6)
         P.rect(bb, x, y + h - strip, w, strip, Theme.bg)

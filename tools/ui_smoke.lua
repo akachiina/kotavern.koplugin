@@ -4214,6 +4214,28 @@ do
         UiDSL.resolve_binds(ta, iapp)
         ok(echo2.text == "linha1\nlinha2",
             "uidsl: textarea bind round-trips multiline text")
+        -- Dialog OK closure captures the dialog instance (local dialog;
+        -- dialog = new{...}): firing OK must not index a nil global.
+        do
+            local InputDialog = require("ui/widget/inputdialog")
+            local RealNew = InputDialog.new
+            local UIManager = require("ui/uimanager")
+            local real_show, real_close = UIManager.show, UIManager.close
+            UIManager.show = function() end
+            UIManager.close = function() end
+            local captured = nil
+            InputDialog.new = function(_, o) captured = o return { getInputText = function() return "via dialog" end, onShowKeyboard = function() end } end
+            local okcall, err = pcall(UiDSL.open_textarea, iapp, field2)
+            ok(okcall, "uidsl: open_textarea builds dialog without error (" .. tostring(err) .. ")")
+            local okok, errok = pcall(function()
+                captured.buttons[1][1].callback()
+            end)
+            ok(okok, "uidsl: textarea dialog OK saves without nil dialog (" .. tostring(errok) .. ")")
+            ok(iapp.state.sandbox.draft == "via dialog",
+                "uidsl: textarea dialog OK writes the bind path")
+            InputDialog.new = RealNew
+            UIManager.show, UIManager.close = real_show, real_close
+        end
         local ta_h = UiDSL.measure(field2, 300)
         local tbb = Blitbuffer.new(300, ta_h + 4, Blitbuffer.TYPE_BB8)
         tbb:fill(Blitbuffer.COLOR_WHITE)
@@ -6617,6 +6639,85 @@ do
     ok(row_hits >= 3, "screens: gallery rows registered via settings_section (rows="
         .. tostring(row_hits) .. ")")
     dump(bb, "screens_gallery")
+
+    -- Sheet wiring: the gallery row opens a sheet whose actions must use
+    -- on_tap (Sheets.draw only fires on_tap; a `callback` key is silently
+    -- ignored and "Enable" appears to do nothing).
+    do
+        local RealApp = require("kt_app")
+        pcall(os.remove, Screens.html_path("chat"))
+        pcall(os.remove, Screens.html_path("dashboard"))
+        Screens._page_cache = nil
+        local sheet_app = fake_app({ page = "experimental_screens", debug_mode = true })
+        local sheet_view = { app = sheet_app, hitboxes = {} }
+        function sheet_view:refresh() end
+        sheet_app.view = sheet_view
+        sheet_app.show_screen_actions = RealApp.show_screen_actions
+        sheet_app:show_screen_actions("chat")
+        local sheet = sheet_app.state.sheet
+        ok(sheet ~= nil and sheet.actions ~= nil and #sheet.actions >= 1,
+            "screens: enable sheet opens with actions")
+        ok(sheet.actions[1].on_tap ~= nil,
+            "screens: enable action exposes on_tap (not callback)")
+        ok(sheet.actions[1].callback == nil,
+            "screens: enable action carries no stale callback key")
+        -- Simulate the sheet tap handler (Sheets.close + on_tap): the file
+        -- must actually be installed.
+        if sheet.actions[1].on_tap then
+            sheet_app.state.sheet = nil
+            sheet.actions[1].on_tap()
+        end
+        ok(Screens.exists("chat"),
+            "screens: enable sheet on_tap installs chat.html")
+        -- Installed state: Edit + Disable rows, both tappable.
+        sheet_app:show_screen_actions("chat")
+        local sheet2 = sheet_app.state.sheet
+        ok(sheet2 ~= nil and sheet2.actions ~= nil and #sheet2.actions == 2,
+            "screens: installed sheet offers Edit + Disable")
+        ok(sheet2.actions[1].on_tap ~= nil and sheet2.actions[2].on_tap ~= nil,
+            "screens: installed sheet actions expose on_tap")
+        -- Disable opens a confirm sheet (destructive path stays confirmed).
+        sheet2.actions[2].on_tap()
+        local confirm = sheet_app.state.sheet
+        ok(confirm ~= nil and confirm.confirm == true and confirm.on_ok ~= nil,
+            "screens: disable asks for confirmation")
+        if confirm and confirm.on_ok then
+            sheet_app.state.sheet = nil
+            confirm.on_ok()
+        end
+        ok(not Screens.exists("chat"),
+            "screens: confirmed disable removes chat.html")
+        sheet_app.state.sheet = nil
+        Screens._page_cache = nil
+    end
+
+    -- Experimental chat send: pages.lua chat:send calls
+    -- app:send_user_message(draft); the real App must provide it (nil here
+    -- crashed the device on Enviar).
+    do
+        local RealApp = require("kt_app")
+        ok(type(RealApp.send_user_message) == "function",
+            "screens: App:send_user_message exists (chat:send target)")
+        local tapp = setmetatable({
+            state = { settings = {}, messages = {}, scroll = {},
+                is_generating = false, chat = { draft = "oi" } },
+            sent = {},
+        }, { __index = RealApp })
+        function tapp:_do_send_message(text) table.insert(self.sent, text) end
+        function tapp:refresh() end
+        function tapp:scroll_key() return "chat" end
+        local okc, errc = pcall(tapp.send_user_message, tapp, "oi")
+        ok(okc, "screens: send_user_message fires without error (" .. tostring(errc) .. ")")
+        ok(#tapp.sent == 1 and tapp.sent[1] == "oi",
+            "screens: send_user_message routes text to _do_send_message")
+        pcall(tapp.send_user_message, tapp, "   ")
+        ok(#tapp.sent == 1,
+            "screens: empty draft sends nothing without send_if_empty")
+        tapp.state.is_generating = true
+        pcall(tapp.send_user_message, tapp, "bloqueado")
+        ok(#tapp.sent == 1,
+            "screens: send_user_message respects is_generating guard")
+    end
 
     -- Install the chat screen through the app API (file write + nav).
     app:install_experimental_screen("chat")

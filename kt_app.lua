@@ -682,7 +682,8 @@ function App:edit_experimental_screen(name)
     if f then f:close() end
     local Modals = require("ktui/modals")
     local _ = require("gettext")
-    local dialog = require("ui/widget/inputdialog"):new{
+    local dialog
+    dialog = require("ui/widget/inputdialog"):new{
         title = tostring(name) .. ".html",
         input = body,
         text_multiline = true,
@@ -733,14 +734,14 @@ function App:show_screen_actions(name)
     if not Screens.exists(name) then
         actions = {
             { label = _("Enable (use the HTML screen)"), icon = "plus",
-              callback = function() self:install_experimental_screen(name) end },
+              on_tap = function() self:install_experimental_screen(name) end },
         }
     else
         actions = {
             { label = _("Edit in device editor"), icon = "edit",
-              callback = function() self:edit_experimental_screen(name) end },
+              on_tap = function() self:edit_experimental_screen(name) end },
             { label = _("Disable (back to native)"), icon = "times",
-              callback = function()
+              on_tap = function()
                   Sheets.confirm(self, {
                       title = tostring(name) .. ".html",
                       text = _("Disable this experimental screen?\nThe current file is backed up as .bak."),
@@ -2349,6 +2350,23 @@ function App:send_message()
         end
         self:_do_send_message(text)
     end, nil, true)
+end
+
+-- Experimental chat screen (themes/screens/chat.html): the composer is an
+-- inline <textarea data-bind="chat.draft"> + <button data-action="chat:send">,
+-- so there is no Modals.input round-trip. Same send contract as send_message
+-- (generating guard + ST send_if_empty), minus the popup.
+function App:send_user_message(text)
+    if self.state.is_generating then return end
+    text = tostring(text or "")
+    if Util.trim(text) == "" then
+        local placeholder = self.state.settings.send_if_empty
+        if type(placeholder) == "string" and placeholder ~= "" then
+            self:_do_send_message(placeholder)
+        end
+        return
+    end
+    self:_do_send_message(text)
 end
 
 -- Regenerate the last assistant reply, keeping the current one as a swipe so

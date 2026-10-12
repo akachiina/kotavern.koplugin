@@ -37,26 +37,34 @@ page { background: gray(0.04); }
 -- content area). The message stream is a chat:messages SLOT - the engine
 -- paints the native bubble list there (streaming + holds + swipes keep
 -- their native behavior); bubbles draw their rich text via KtHTML islands.
--- The composer row uses <textarea> + send/continue actions. The pilot
--- overlay keeps the native stream: data-slot="chat:messages" is painted
--- by Pages.chat directly (documented engine verb, UIDSL passes it through
--- as unknown-tag box = transparent).
+-- LAYOUT MIRRORS THE NATIVE CHAT (Pages.chat): the slot is a flex=10 filler
+-- (measured ~0 tall, expands at paint time to fill everything ABOVE the
+-- composer), the composer is a full-border-zero row with a flex=3 textarea
+-- + flex=1 Enviar (kind=primary, Exchange-like), and the bottom row is the
+-- ST action bar (Continuar / Opcoes) with halign between (dividers come
+-- from the engine's painted sheet-shape, not a fake bar).
 Defaults.chat = [[
 <style>
-.composer { border: true; border-size: 1px; border-color: gray(0.3);
-  background: gray(0); radius: 21px; pad: 6px; }
+.composer { border: true; border-size: 1px; border-color: gray(0.45);
+  background: gray(0); radius: 21px; pad: 6px; gap: 8px; }
 .muted { color: gray(0.45); }
+.center { text-align: center; }
+.stream { flex: 10; }
+.msg-input { flex: 3; }
+.send { flex: 1; }
+.bar { halign: between; gap: 8px; }
+.bar .bar-cell { flex: 1; }
 </style>
 <div>
-  <p class="muted center">Chat experimental (UIDSL)</p>
-  <div data-slot="chat:messages"></div>
-  <row class="composer">
-    <textarea data-h="48px" data-bind="chat.draft" placeholder="Mensagem..." title="Mensagem"></textarea>
-    <button data-action="chat:send">Enviar</button>
-  </row>
+  <div class="stream" data-slot="chat:messages"></div>
   <row>
-    <button data-action="chat:continue">Continuar</button>
-    <button data-action="chat:options">Opcoes</button>
+    <textarea class="msg-input" data-h="54px" data-bind="chat.draft"
+      placeholder="Mensagem..." title="Mensagem"/>
+    <button class="send" kind="primary" data-action="chat:send">Enviar</button>
+  </row>
+  <row class="bar">
+    <button class="bar-cell" kind="ghost" icon="forward" data-action="chat:continue">Continuar</button>
+    <button class="bar-cell" kind="ghost" icon="bars" data-action="chat:options">Opcoes</button>
   </row>
 </div>
 ]]

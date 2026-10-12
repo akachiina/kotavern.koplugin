@@ -874,6 +874,17 @@ function UiDSL.layout_height(node, w)
     if node._h_cache and node._h_w == w and node._vis_w == w and node._vis then
         return node._h_cache
     end
+    -- Native-delegate slot (data-slot): zero-height placeholder in the flow
+    -- measured phase. The PAINT pass calls UiDSL.set_slot_h() with the real
+    -- band height so both the DOM (dy of the composer below) and the page
+    -- scroll max stay in sync; measure() here returns 0 so the sheet doesn't
+    -- reserve ink the slot doesn't yet own.
+    if node.data_slot and node.data_slot ~= "" then
+        node._is_slot = true
+        node._h_cache, node._h_w = 0, w
+        node._vis, node._vis_w = {}, w
+        return 0
+    end
     local leaf = leaf_h(node, w)
     if leaf then
         node._vis, node._vis_w = nil, nil
@@ -912,6 +923,18 @@ function UiDSL.layout_height(node, w)
     return set_height(node, w, h + node_inset(node))
 end
 
+-- Public slot-band setter (experimental screens): after the slot painter
+-- runs, the page tells the engine the real band height. The slot then
+-- "knows" its own size for anything that re-measures the subtree later
+-- (bind-refresh repaint with a stale _slot_band is caught by the page's
+-- explicit re-measure back in Pages.experimental_screen). Returns nil
+-- (informational API for now; kept public for tests).
+function UiDSL.set_slot_h(node, band_h)
+    if not node or not node._is_slot then return nil end
+    node._slot_band = math.max(0, band_h or 0)
+    return nil
+end
+
 -- Height of a node under width w (legacy public surface; pages and smoke
 -- measured with this signature long before the engine existed).
 function UiDSL.measure(node, w)
@@ -933,7 +956,7 @@ end
 -- extras (optional, experimental screens): { slot = { painter, band_h } }: a
 -- node with data_slot set paints through the given native painter instead
 -- of the node tree (streaming messages stay native inside full-HTML pages).
-function UiDSL.paint(node, bb, x, y, w, view, clip, extras)
+function UiDSL.paint(node, bb, x, y, w, view, clip, extras, stretch_h)
     if node.display == "none" then return end
     if extras and extras.slot and node.data_slot and node.data_slot ~= "" then
         local s = extras.slot
@@ -943,7 +966,10 @@ function UiDSL.paint(node, bb, x, y, w, view, clip, extras)
         return
     end
     local pad = node.pad or 0
-    local h = UiDSL.measure(node, w)
+    -- stretch_h (row passthrough): the layout engine already sized this
+    -- child to the row height (row children measure AT the row h); trust it
+    -- instead of re-measuring (identical value - zero behavioral drift).
+    local h = (stretch_h and stretch_h > 0) and stretch_h or UiDSL.measure(node, w)
     if clip and (x >= clip.x + clip.w or y >= clip.y + clip.h
         or x + w <= clip.x or y + h <= clip.y) then
         return
@@ -1233,8 +1259,8 @@ function UiDSL.paint(node, bb, x, y, w, view, clip, extras)
                 elseif valign == "bottom" then
                     child_y = child_y + math.max(0, inner_h - ch)
                 end
-                UiDSL.paint(child, bb, cx + slot.dx, child_y, slot.w, view,
-                    clip, extras)
+            UiDSL.paint(child, bb, cx + slot.dx, child_y, slot.w, view,
+                clip, extras, ch)
             end
         end
     elseif node.tag == "html" then
@@ -2266,7 +2292,8 @@ function UiDSL.open_textarea(app, node)
     local ok_um, UIManagerL = pcall(require, "ui/uimanager")
     if not ok_um or not UIManagerL then return end
     local current = tostring((bind_lookup(app, node.bind_key)) or "")
-    local dialog = require("ui/widget/inputdialog"):new{
+    local dialog
+    dialog = require("ui/widget/inputdialog"):new{
         title = node.input_title or "",
         input = current,
         input_hint = node.input_hint,
