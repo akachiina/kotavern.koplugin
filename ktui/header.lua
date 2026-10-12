@@ -49,8 +49,6 @@ local function page_title(view)
         return _("%s %s %s"):format(_("Welcome"), _("to"), _("KOTavern"))
     elseif page == "css_test" then
         return _("CSS Test")
-    elseif page == "experimental_screens" then
-        return _("Experimental screens")
     elseif page == "chats" then
         local visible = view.app:chats_visible()
         local total = tostring(#(state.chats_index or {}))

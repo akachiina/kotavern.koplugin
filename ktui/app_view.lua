@@ -627,28 +627,6 @@ function AppView:draw_content(bb, x, y, w, h)
         return
     end
 
-    -- Experimental screens (UIDSL ports): when themes/screens/<page>.html
-    -- exists it REPLACES the native paint for that page. Ported so far:
-    -- chat, dashboard. The file's data-slot="chat:messages" node delegates
-    -- to the native stream painter (Pages.chat_stream_slot keeps streaming,
-    -- holds, swipes native); everything else is HTML-user-owned.
-    local ok_scr, Screens = pcall(require, "ktui/screens")
-    if ok_scr and Screens and Screens.exists(page)
-        and (page == "chat" or page == "dashboard") then
-        local ok2, err = pcall(Pages.experimental_screen, self, bb, x, y, w, h,
-            scroll, page)
-        if ok2 then
-            self.max_scroll = err or 0
-            return
-        end
-        -- Broken screen file: fall through to the native page (the gallery
-        -- surfaces the file errors; the app must never dead-end on a bad
-        -- user edit).
-        pcall(function()
-            require("logger").warn("experimental screen failed; native fallback: ", err)
-        end)
-    end
-
     if page == "dashboard" then
         max_scroll = Pages.dashboard(self, bb, x, y, w, h, scroll)
     elseif page == "chats" then
@@ -673,8 +651,6 @@ function AppView:draw_content(bb, x, y, w, h)
         max_scroll = Pages.settings_updates(self, bb, x, y, w, h, scroll)
     elseif page == "settings_debug" then
         max_scroll = Pages.settings_debug(self, bb, x, y, w, h, scroll)
-    elseif page == "experimental_screens" then
-        max_scroll = Pages.experimental_screens(self, bb, x, y, w, h, scroll)
     elseif page == "css_test" then
         max_scroll = Pages.css_test(self, bb, x, y, w, h, scroll)
     elseif page == "html_test" then
