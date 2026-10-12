@@ -721,6 +721,38 @@ function App:reset_experimental_screens()
     self:refresh(true)
 end
 
+-- Gallery row tap: native action sheet per screen. Not installed -> Enable
+-- (writes the default) goes live immediately; installed -> Edit (device
+-- text editor) + Disable (back to native, .bak kept)." confirmed dialogs
+-- for the destructive ones (disable/reset) per the app's Sheets.confirm.
+function App:show_screen_actions(name)
+    local Screens = require("ktui/screens")
+    local Sheets = require("ktui/sheets")
+    local _ = require("gettext")
+    local actions
+    if not Screens.exists(name) then
+        actions = {
+            { label = _("Enable (use the HTML screen)"), icon = "plus",
+              callback = function() self:install_experimental_screen(name) end },
+        }
+    else
+        actions = {
+            { label = _("Edit in device editor"), icon = "edit",
+              callback = function() self:edit_experimental_screen(name) end },
+            { label = _("Disable (back to native)"), icon = "times",
+              callback = function()
+                  Sheets.confirm(self, {
+                      title = tostring(name) .. ".html",
+                      text = _("Disable this experimental screen?\nThe current file is backed up as .bak."),
+                      ok_label = _("Disable"),
+                      on_ok = function() self:disable_experimental_screen(name) end,
+                  })
+              end },
+        }
+    end
+    Sheets.show(self, { title = _("Screen:") .. " " .. tostring(name), actions = actions })
+end
+
 -- Write the sandbox demo CSS to <data>/themes so users have a starting file.
 function App:install_demo_theme()
     local Storage = require("kt_storage")

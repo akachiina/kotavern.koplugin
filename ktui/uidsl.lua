@@ -2261,8 +2261,11 @@ end
 -- bind written, caller refreshes).
 function UiDSL.open_textarea(app, node)
     if not node then return end
+    -- lazy require: uidsl loads before the UIManager global exists in
+    -- KOReader boot order only via plugin load; direct require always safe.
+    local ok_um, UIManagerL = pcall(require, "ui/uimanager")
+    if not ok_um or not UIManagerL then return end
     local current = tostring((bind_lookup(app, node.bind_key)) or "")
-    local UIManagerL = UIManager
     local dialog = require("ui/widget/inputdialog"):new{
         title = node.input_title or "",
         input = current,
@@ -2280,7 +2283,7 @@ function UiDSL.open_textarea(app, node)
             }},
         },
     }
-    UIManager:show(dialog)
+    UIManagerL:show(dialog)
     dialog:onShowKeyboard()
 end
 

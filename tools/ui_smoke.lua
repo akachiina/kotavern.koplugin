@@ -6606,10 +6606,16 @@ do
 
     local app, view, bb = paint_gallery()
     ok(app ~= nil and dark_in(bb, 0, 0, VW, VH) > 30, "screens: gallery paints ink")
-    ok(has_hit(view, "exp_row_dashboard") and has_hit(view, "exp_row_chat"),
-        "screens: gallery rows register hitboxes for both ports")
-    ok(has_hit(view, "exp_install_dashboard"),
-        "screens: not-installed rows show an Install button")
+    -- Settings-row gallery: a row hit per port (row:轨迹label by index -
+    -- count them, then the app's sheet method resolves the ports).
+    local row_hits = 0
+    for _, b in ipairs(view.hitboxes) do
+        if tostring(b.label or ""):find("row:", 1, true) == 1 then
+            row_hits = row_hits + 1
+        end
+    end
+    ok(row_hits >= 3, "screens: gallery rows registered via settings_section (rows="
+        .. tostring(row_hits) .. ")")
     dump(bb, "screens_gallery")
 
     -- Install the chat screen through the app API (file write + nav).

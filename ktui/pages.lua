@@ -1048,7 +1048,16 @@ local function experimental_actions(view, page)
                 end
             end,
             ["chat:continue"] = function()
-                app:continue_generation()
+                -- Same contract the native Continue bar cell honors: nudge
+                -- the last assistant reply, or plain-generate when the last
+                -- message is the user's (interrupted before the reply).
+                local messages = app.state.messages or {}
+                local last = messages[#messages]
+                if last and last.role == "assistant" then
+                    app:continue_message(#messages)
+                else
+                    app:generate_reply()
+                end
             end,
             ["chat:options"] = function()
                 app:show_chat_options()
@@ -1192,89 +1201,33 @@ function Pages.experimental_screen(view, bb, x, y, w, h, scroll, page)
     return max_scroll
 end
 
--- Experimental screens gallery (Debug > Experimental): one row per port
--- (dashboard, chat). Row state: "Not installed" (tap = install the file
--- and go live), "Installed ✓" (tap = open the editor) + a Disable action
--- that backs the file to .bak (native screen returns). Top row: Reset-all
--- (deep link into the page lives in the Debug settings list).
+-- Experimental screens gallery (Debug > Experimental): settings rows via
+-- Pages.settings_section (consistent taps/dividers/value slot - the hand-
+-- rolled two-column row grid drifted on narrow screens). Rows tap into a
+-- native action sheet: Install (not installed) / Edit · Disable (built).
+-- Top of the list: Reset all (kept as .bak backups).
 function Pages.experimental_screens(view, bb, x, y, w, h, scroll)
     local app = view.app
     local Screens = require("ktui/screens")
-    P.rect(bb, x, y, w, h, Theme.bg)
-    local row_h = Theme.scale(64)
-    local pad = Theme.scale(12)
-    local cy = y + pad - math.max(0, scroll or 0)
-
-    -- Reset-all button (browsers files after: the gallery re-reads via
-    -- Screens.exists on the next paint, no cache state kept).
-    local reset_btn_w = Theme.scale(120)
-    Widgets.button(view, bb, {
-        x = x + w - pad - reset_btn_w, y = cy,
-        w = reset_btn_w, h = Theme.btn_h(),
-        label = _("Reset all"), kind = "secondary",
-        on_tap = function() app:reset_experimental_screens() end,
-        hit_label = "exp_reset_all",
-    })
-    P.text(bb, _("Experimental screens"), x + pad, cy + math.floor((Theme.btn_h() - Theme.line_h("default")) / 2),
-        w - pad * 2 - reset_btn_w - Theme.scale(8), "default", { bold = true })
-    cy = cy + Theme.btn_h() + Theme.scale(6)
-
-    local WidgetsL = require("ktui/widgets")
+    local rows = {
+        { section = true, text = _("Experimental screens") },
+        { text = _("Reset all"), icon = "refresh",
+          subtext = _("Remove every screen file (backups kept as .bak)"),
+          callback = function() app:reset_experimental_screens() end },
+    }
     for _pi, port in ipairs(Screens.PORTS) do
         local installed = Screens.exists(port.name)
-        P.box(bb, x + pad, cy, w - pad * 2, row_h, {
-            border = true, border_size = 1, border_color = Theme.soft,
-            background = Theme.panel, radius = Theme.scale(6),
+        table.insert(rows, {
+            text = port.label,
+            icon = installed and "check" or "plus",
+            subtext = installed and _("Installed - tap for Edit / Disable")
+                or _("Not installed - tap to enable"),
+            callback = function()
+                app:show_screen_actions(port.name)
+            end,
         })
-        -- Column 1: label + desc + status.
-        P.text(bb, port.label, x + pad + Theme.scale(10), cy + Theme.scale(8),
-            (w - pad * 2) * 0.6, "default", { bold = true })
-        P.text(bb, tostring(port.desc or ""), x + pad + Theme.scale(10),
-            cy + Theme.scale(8) + Theme.line_h("default"), (w - pad * 2) * 0.6, "tiny", { color = Theme.muted })
-        P.text(bb, installed and _("Installed ✓") or _("Not installed"),
-            x + pad + Theme.scale(10), cy + row_h - Theme.scale(20),
-            (w - pad * 2) * 0.6, "tiny", { color = installed and Theme.button_bg or Theme.muted })
-
-        -- Column 2: Edit (only when installed).
-        if installed then
-            WidgetsL.button(view, bb, {
-                x = x + w - pad * 2 - Theme.scale(48) - Theme.scale(92), y = cy + Theme.scale(10),
-                w = Theme.scale(92), h = Theme.scale(44),
-                label = _("Edit"), kind = "secondary",
-                on_tap = function() app:edit_experimental_screen(port.name) end,
-                hit_label = "exp_edit_" .. tostring(port.name),
-            })
-            WidgetsL.button(view, bb, {
-                x = x + w - pad - Theme.scale(48) - Theme.scale(92), y = cy + Theme.scale(10),
-                w = Theme.scale(92), h = Theme.scale(44),
-                label = _("Disable"), kind = "secondary",
-                on_tap = function() app:disable_experimental_screen(port.name) end,
-                hit_label = "exp_disable_" .. tostring(port.name),
-            })
-        else
-            WidgetsL.button(view, bb, {
-                x = x + w - pad - Theme.scale(92), y = cy + Theme.scale(10),
-                w = Theme.scale(92), h = Theme.scale(44),
-                label = _("Install"), kind = "primary",
-                on_tap = function() app:install_experimental_screen(port.name) end,
-                hit_label = "exp_install_" .. tostring(port.name),
-            })
-        end
-        -- Row hitbox LAST installs when off / opens the editor when on
-        -- (registered after the button hitboxes: reverse order wins).
-        P.hit(view, x + pad, cy, w - pad * 2, row_h, function()
-            if installed then
-                app:edit_experimental_screen(port.name)
-            else
-                app:install_experimental_screen(port.name)
-            end
-        end, "exp_row_" .. tostring(port.name))
-        cy = cy + row_h + Theme.scale(10)
     end
-
-    local total_h = cy - y + scroll + Theme.scale(pad)
-    Scroll.set_list_bounds(view, x, y, w, h, nil)
-    return math.max(0, total_h - h)
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
 -- CSS sandbox: a page painted entirely by the UI DSL node engine. The body
