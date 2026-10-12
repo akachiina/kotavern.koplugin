@@ -975,6 +975,9 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
     local app = view.app
     local rows = {
         { section = true, text = _("Experimental") },
+        { text = _("Experimental screens"), icon = "grid",
+          subtext = _("UIDSL ports of chat/dashboard from themes/screens/"),
+          callback = function() app:experimental_screens_page() end },
         { text = _("Test CSS"), icon = "magic",
           subtext = _("Sandbox page painted by the UI DSL engine"),
           callback = function() app:navigate("css_test") end },
@@ -1010,6 +1013,268 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
           callback = function() app:toggle_debug_mode() end },
     }
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+-- === Experimental screens (UIDSL ports) ====================================
+-- Paint the <page>.html overlay from themes/screens/. Slots: a node marked
+-- data-slot="chat:messages" delegates its band to the native stream painter
+-- (streaming/holds/swipes stay native - the "100% HTML" v1 keeps those hot
+-- paths native for e-ink responsiveness); everything else is user HTML.
+-- ACTIONS per port: the catalog below (native behaviors the HTML calls by
+-- data-action); themes/screens/<page>.actions.lua merges over it (custom
+-- hooks win ties; parsing errors surface in the error strip, never crash).
+local function experimental_actions(view, page)
+    local app = view.app
+    if page == "dashboard" then
+        return {
+            ["dash:search"] = function()
+                app:show_dashboard_search()
+            end,
+            ["dash:import"] = function()
+                app:show_import()
+            end,
+        }
+    elseif page == "chat" then
+        return {
+            ["chat:send"] = function()
+                -- Read the draft send buffer, clear it, send.
+                local draft = app.state.chat
+                    and app.state.chat.draft or nil
+                if draft and draft ~= "" then
+                    app.state.chat.draft = ""
+                    app:send_user_message(draft)
+                else
+                    app:send_user_message(nil)
+                end
+            end,
+            ["chat:continue"] = function()
+                app:continue_generation()
+            end,
+            ["chat:options"] = function()
+                app:show_chat_options()
+            end,
+        }
+    end
+    return {}
+end
+
+-- Locate the FIRST data-slot node in a tree (the stream slot).
+local function find_slot(node, name)
+    if node.data_slot == name then return node end
+    for _, child in ipairs(node.children or {}) do
+        local hit = find_slot(child, name)
+        if hit then return hit end
+    end
+    return nil
+end
+
+-- Native stream slot painter (experimental chat screen): paints the SAME
+-- content the native chat does in its messages band - bubbles via
+-- ChatBubbles.draw (streaming, holds, swipes all stay native), never
+-- extending over other chrome. Empty stream keeps the native empty state.
+function Pages.chat_stream_slot(view, bb, x, y, w, h)
+    local state = view.app.state
+    local messages = state.messages or {}
+    local char_name = state.current_character or "?"
+    local is_generating = state.is_generating
+    -- Same paper tint the native chat uses, so an HTML screen with its own
+    -- bg doesn't double-paint over it (slot paints its own ground first).
+    P.rect(bb, x, y, w, h, Theme.chat_bg)
+    local ChatBubbles = require("ktui/chat_bubbles")
+    if #messages == 0 then
+        if state.chat_first_mes and state.chat_first_mes ~= "" then
+            local pad = Theme.scale(10)
+            local preview_y = y + Theme.scale(12)
+            local bubble_w = math.min(math.floor(w * 0.85), w - pad * 4)
+            P.box(bb, x + pad, preview_y, bubble_w, Theme.scale(60), {
+                border_color = Theme.soft, radius = Theme.scale(6), background = Theme.panel,
+            })
+            P.text(bb, char_name, x + pad + Theme.scale(10), preview_y + Theme.scale(4),
+                bubble_w - Theme.scale(20), "tiny", { bold = true })
+            local Widgets = require("ktui/widgets")
+            P.paragraph(bb, Widgets.truncate(state.chat_first_mes, 200),
+                x + pad + Theme.scale(10), preview_y + Theme.scale(22),
+                bubble_w - Theme.scale(20), Theme.scale(32), "default")
+        else
+            require("ktui/widgets").empty_state(view, bb, {
+                x = x, y = y, w = w, h = h,
+                icon = "chat",
+                text = _("Starting a new conversation. Tap Write to send a message!"),
+            })
+        end
+        Scroll.set_list_bounds(view, x, y, w, h, ChatBubbles.line_step())
+        view.swipe_step = ChatBubbles.line_step() * 8
+        return
+    end
+    local user_name = view.app._active_persona_name and view.app:_active_persona_name() or "You"
+    local char_image = (state.current_character_data and state.current_character_data.png_path)
+        or state.current_character_file
+    local scroll = (view.app.state.scroll and view.app:scroll_key()
+        and view.app.state.scroll[view.app:scroll_key()]) or 0
+    local total_h = ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages,
+        char_name, is_generating, user_name, char_image, state.thinking_frame)
+    local max_scroll = math.max(0, total_h - h)
+    -- Publish scroll bounds for the page-level swipe machinery (the slot
+    -- replaces the native messages card, so the page reads the same keys).
+    view._slot_max_scroll = max_scroll
+    view.swipe_step = ChatBubbles.line_step() * 8
+    Scroll.set_list_bounds(view, x, y, w, h, ChatBubbles.line_step())
+end
+
+function Pages.experimental_screen(view, bb, x, y, w, h, scroll, page)
+    local app = view.app
+    local Screens = require("ktui/screens")
+    local UiDSL = require("ktui/uidsl")
+    P.rect(bb, x, y, w, h, Theme.bg)
+    local tree, merged, errors = Screens.page(app, page, experimental_actions(view, page))
+    if not tree then
+        P.text(bb, _("Screen file missing: ") .. tostring(page),
+            x + Theme.scale(16), y + Theme.scale(16), w - Theme.scale(32), "default")
+        Scroll.set_list_bounds(view, x, y, w, h, h)
+        return 0
+    end
+    local m = Theme.metrics()
+    local pad = m.pad
+    local inner_w = w - pad * 2 - Theme.scrollbar_w()
+    local total_h = UiDSL.measure(tree, inner_w)
+    local max_scroll = math.max(0, total_h - h)
+    local sc = math.max(0, math.min(scroll or 0, max_scroll))
+    if app.state.scroll and app.scroll_key then
+        app.state.scroll[app:scroll_key()] = sc
+    end
+    Scroll.set_list_bounds(view, x, y, w, h, nil)
+    -- Pin-bottom (chat): when generating and the user hasn't scrolled up,
+    -- chase the newest content. Same contract the native chat honors.
+    if app.state.is_generating and not app.state.user_scrolled_up and page == "chat" then
+        sc = max_scroll
+        app.state.scroll[app:scroll_key()] = sc
+    end
+
+    -- Slot: the messages stream spot (chat). The stream painter gets the
+    -- full content area minus the screen's own chrome above it - v1 keeps
+    -- the slot full-width-below-the-HTML (the composer lives UNDER the
+    -- slot in the HTML but paints after; the slot painter clips to the
+    -- remaining height so nothing bleeds).
+    local slot = find_slot(tree, page == "chat" and "chat:messages" or nil)
+    local slot_h = 0
+    if slot then
+        slot_h = math.max(Theme.btn_h() * 3, h - (total_h - UiDSL.measure(slot, inner_w)))
+        -- The slot's native content scrolls INSIDE its band: publish (and
+        -- reset per paint) the stream's own max so the page scrollbar and
+        -- swipes track the bubbles, not the HTML chrome around them.
+        view._slot_max_scroll = 0
+    end
+
+    local okp, perr = pcall(function()
+        UiDSL.paint(tree, bb, x + pad, y - sc, inner_w, view,
+            { x = x, y = y, w = w, h = h },
+            { slot = slot and {
+                painter = Pages.chat_stream_slot,
+                band_h = slot_h,
+            } or nil })
+    end)
+    if not okp then
+        errors[#errors + 1] = "paint: " .. tostring(perr)
+    end
+    -- A live slot is the scrollable part of the screen (the HTML chrome is
+    -- usually shorter than the viewport): the page's max adopts the stream's.
+    if slot and view._slot_max_scroll and view._slot_max_scroll > max_scroll then
+        max_scroll = view._slot_max_scroll
+        app.state.scroll[app:scroll_key()] =
+            math.max(0, math.min(app.state.scroll[app:scroll_key()] or 0, max_scroll))
+    end
+    if #errors > 0 then
+        local strip = Theme.line_h("tiny") + Theme.scale(6)
+        P.rect(bb, x, y + h - strip, w, strip, Theme.bg)
+        P.text(bb, _("Screen problems:") .. " " .. table.concat(errors, "; "),
+            x + pad, y + h - strip + 2, w - pad * 2, "tiny", { color = Theme.muted })
+    end
+    return max_scroll
+end
+
+-- Experimental screens gallery (Debug > Experimental): one row per port
+-- (dashboard, chat). Row state: "Not installed" (tap = install the file
+-- and go live), "Installed ✓" (tap = open the editor) + a Disable action
+-- that backs the file to .bak (native screen returns). Top row: Reset-all
+-- (deep link into the page lives in the Debug settings list).
+function Pages.experimental_screens(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local Screens = require("ktui/screens")
+    P.rect(bb, x, y, w, h, Theme.bg)
+    local row_h = Theme.scale(64)
+    local pad = Theme.scale(12)
+    local cy = y + pad - math.max(0, scroll or 0)
+
+    -- Reset-all button (browsers files after: the gallery re-reads via
+    -- Screens.exists on the next paint, no cache state kept).
+    local reset_btn_w = Theme.scale(120)
+    Widgets.button(view, bb, {
+        x = x + w - pad - reset_btn_w, y = cy,
+        w = reset_btn_w, h = Theme.btn_h(),
+        label = _("Reset all"), kind = "secondary",
+        on_tap = function() app:reset_experimental_screens() end,
+        hit_label = "exp_reset_all",
+    })
+    P.text(bb, _("Experimental screens"), x + pad, cy + math.floor((Theme.btn_h() - Theme.line_h("default")) / 2),
+        w - pad * 2 - reset_btn_w - Theme.scale(8), "default", { bold = true })
+    cy = cy + Theme.btn_h() + Theme.scale(6)
+
+    local WidgetsL = require("ktui/widgets")
+    for _pi, port in ipairs(Screens.PORTS) do
+        local installed = Screens.exists(port.name)
+        P.box(bb, x + pad, cy, w - pad * 2, row_h, {
+            border = true, border_size = 1, border_color = Theme.soft,
+            background = Theme.panel, radius = Theme.scale(6),
+        })
+        -- Column 1: label + desc + status.
+        P.text(bb, port.label, x + pad + Theme.scale(10), cy + Theme.scale(8),
+            (w - pad * 2) * 0.6, "default", { bold = true })
+        P.text(bb, tostring(port.desc or ""), x + pad + Theme.scale(10),
+            cy + Theme.scale(8) + Theme.line_h("default"), (w - pad * 2) * 0.6, "tiny", { color = Theme.muted })
+        P.text(bb, installed and _("Installed ✓") or _("Not installed"),
+            x + pad + Theme.scale(10), cy + row_h - Theme.scale(20),
+            (w - pad * 2) * 0.6, "tiny", { color = installed and Theme.button_bg or Theme.muted })
+
+        -- Column 2: Edit (only when installed).
+        if installed then
+            WidgetsL.button(view, bb, {
+                x = x + w - pad * 2 - Theme.scale(48) - Theme.scale(92), y = cy + Theme.scale(10),
+                w = Theme.scale(92), h = Theme.scale(44),
+                label = _("Edit"), kind = "secondary",
+                on_tap = function() app:edit_experimental_screen(port.name) end,
+                hit_label = "exp_edit_" .. tostring(port.name),
+            })
+            WidgetsL.button(view, bb, {
+                x = x + w - pad - Theme.scale(48) - Theme.scale(92), y = cy + Theme.scale(10),
+                w = Theme.scale(92), h = Theme.scale(44),
+                label = _("Disable"), kind = "secondary",
+                on_tap = function() app:disable_experimental_screen(port.name) end,
+                hit_label = "exp_disable_" .. tostring(port.name),
+            })
+        else
+            WidgetsL.button(view, bb, {
+                x = x + w - pad - Theme.scale(92), y = cy + Theme.scale(10),
+                w = Theme.scale(92), h = Theme.scale(44),
+                label = _("Install"), kind = "primary",
+                on_tap = function() app:install_experimental_screen(port.name) end,
+                hit_label = "exp_install_" .. tostring(port.name),
+            })
+        end
+        -- Row hitbox LAST installs when off / opens the editor when on
+        -- (registered after the button hitboxes: reverse order wins).
+        P.hit(view, x + pad, cy, w - pad * 2, row_h, function()
+            if installed then
+                app:edit_experimental_screen(port.name)
+            else
+                app:install_experimental_screen(port.name)
+            end
+        end, "exp_row_" .. tostring(port.name))
+        cy = cy + row_h + Theme.scale(10)
+    end
+
+    local total_h = cy - y + scroll + Theme.scale(pad)
+    Scroll.set_list_bounds(view, x, y, w, h, nil)
+    return math.max(0, total_h - h)
 end
 
 -- CSS sandbox: a page painted entirely by the UI DSL node engine. The body

@@ -604,6 +604,123 @@ function App:install_html_sandbox_file()
     end
 end
 
+-- === Experimental screens (UIDSL ports of native pages) =====================
+-- Debug > Experimental > "Experimental screens" opens the gallery: one row
+-- per port (dashboard, chat) with Installed ✓/Edit, a Reset-all at the top,
+-- and tapping a row toggles the screen ON (installs the default file) or
+-- shows its editor when already installed. Files live in themes/screens/:
+-- <name>.html renders the WHOLE screen; <name>.actions.lua adds hooks.
+function App:experimental_screens_page()
+    self:navigate("experimental_screens")
+end
+
+-- Install (or restore from .bak) the built-in default HTML for a port and
+-- navigate to its native host page with the overlay live.
+function App:install_experimental_screen(name)
+    local Screens = require("ktui/screens")
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+    local path = Screens.html_path(name)
+    if not path then return end
+    if Screens.exists(name) then
+        -- reinstalar without resetting: just confirm (toggle-off lives in
+        -- the gallery rows; this action is for the currently-off state).
+        return
+    end
+    Screens.ensure_dir()
+    local defaults = require("ktui/screen_defaults")
+    local html = defaults[name]
+    if not html then
+        UIManager:show(InfoMessage:new{ text = _("No default screen for: ")
+            .. tostring(name), timeout = 3 })
+        return
+    end
+    local f = io.open(path, "w")
+    if not f then
+        UIManager:show(InfoMessage:new{ text = _("Could not write: ")
+            .. tostring(path), timeout = 3 })
+        return
+    end
+    f:write(html)
+    f:close()
+    require("ktui/screens")._page_cache = nil
+    UIManager:show(InfoMessage:new{ text = _("Screen enabled: ") .. tostring(name),
+        timeout = 2 })
+    self:navigate(name)
+end
+
+-- Remove (with .bak backup) the overlay file: the native screen returns.
+function App:disable_experimental_screen(name)
+    local Screens = require("ktui/screens")
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+    local path = Screens.html_path(name)
+    if path and Screens.exists(name) then
+        local src = io.open(path, "r")
+        if src then
+            local body = src:read("*a")
+            src:close()
+            local dst = io.open(path .. ".bak", "w")
+            if dst then dst:write(body) dst:close() end
+        end
+        pcall(os.remove, path)
+        require("ktui/screens")._page_cache = nil
+        UIManager:show(InfoMessage:new{ text = _("Screen disabled (backup kept)"),
+            timeout = 2 })
+        self:navigate("experimental_screens")
+    end
+end
+
+-- Device text editor for a screen's HTML (Modals multiline): saves back
+-- with a .bak; the page cache busts on mtime so the next paint rebuilds.
+function App:edit_experimental_screen(name)
+    local Screens = require("ktui/screens")
+    local path = Screens.html_path(name)
+    if not path or not Screens.exists(name) then return end
+    local f = io.open(path, "r")
+    local body = f and f:read("*a") or ""
+    if f then f:close() end
+    local Modals = require("ktui/modals")
+    local _ = require("gettext")
+    local dialog = require("ui/widget/inputdialog"):new{
+        title = tostring(name) .. ".html",
+        input = body,
+        text_multiline = true,
+        buttons = {
+            {{
+                text = _("Save"),
+                is_enter_default = true,
+                callback = function()
+                    local text = dialog:getInputText()
+                    UIManager:close(dialog)
+                    local bak = io.open(path .. ".bak", "w")
+                    if bak then bak:write(body) bak:close() end
+                    local out = io.open(path, "w")
+                    if out then
+                        out:write(text)
+                        out:close()
+                    end
+                    require("ktui/screens")._page_cache = nil
+                    self:refresh(true)
+                end,
+            }},
+        },
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+-- Gallery top button: reset ALL screen files (each kept as .bak first).
+function App:reset_experimental_screens()
+    local Screens = require("ktui/screens")
+    local n = Screens.reset_all(self)
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+    UIManager:show(InfoMessage:new{ text = _("Screens reset (backups kept): ")
+        .. tostring(n), timeout = 3 })
+    self:refresh(true)
+end
+
 -- Write the sandbox demo CSS to <data>/themes so users have a starting file.
 function App:install_demo_theme()
     local Storage = require("kt_storage")

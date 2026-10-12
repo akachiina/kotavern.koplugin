@@ -36,6 +36,7 @@
 -- css_test sandbox page is its proving ground.
 
 local P = require("ktui/primitives")
+local TextBoxWidget = require("ui/widget/textboxwidget")
 local Theme = require("ktui/theme")
 
 local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
@@ -929,8 +930,18 @@ end
 -- item 1.2): a node fully outside it paints NOTHING (no hitbox, no GifAnim
 -- rect). A node still paints when merely overlapping the clip - the page
 -- caller clips the window per line; clip gates, it never invents coords.
-function UiDSL.paint(node, bb, x, y, w, view, clip)
+-- extras (optional, experimental screens): { slot = { painter, band_h } }: a
+-- node with data_slot set paints through the given native painter instead
+-- of the node tree (streaming messages stay native inside full-HTML pages).
+function UiDSL.paint(node, bb, x, y, w, view, clip, extras)
     if node.display == "none" then return end
+    if extras and extras.slot and node.data_slot and node.data_slot ~= "" then
+        local s = extras.slot
+        local bh = math.max(1, s.band_h or 200)
+        node._paint_region = { x = x, y = y, w = w, h = bh }
+        pcall(s.painter, view, bb, x, y, w, bh)
+        return
+    end
     local pad = node.pad or 0
     local h = UiDSL.measure(node, w)
     if clip and (x >= clip.x + clip.w or y >= clip.y + clip.h
@@ -1136,6 +1147,9 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
         if view then view.dithered = true end
     elseif node.tag == "input" then
         -- Text-field look: muted border, current value or placeholder hint.
+        -- multiline (textarea): paint the TAIL of the draft (the caret lives
+        -- at the end) through paragraph-height-capped clipping, so long
+        -- drafts show the end of the text they are editing.
         local txt = node.input_text or ""
         P.box(bb, cx, cy, inner_w, inner_h, {
             border = true, border_size = 1,
@@ -1143,7 +1157,45 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
             radius = node.radius,
         })
         local txp = Theme.scale(10)
-        if txt == "" then
+        if node.multiline then
+            local nlines, lh = P.paragraph_metrics(txt,
+                inner_w - txp * 2, "default", {})
+            if txt == "" then
+                P.vcenter_text(bb, node.input_hint or "...", cx + txp, cy,
+                    inner_w - txp * 2, inner_h, "small", { color = Theme.muted })
+            elseif nlines > 1 then
+                -- Show the TAIL lines (caret side): re-solving tail-clips
+                -- with a TextBoxWidget virtualize-start is v2; the practical
+                -- draft is short, and while editing the keyboard shows all.
+                local n = math.max(1, math.floor((inner_h - txp) / (lh or Theme.line_h("default"))))
+                local buf = TextBoxWidget:new{
+                    text = txt,
+                    face = Theme.face("default"),
+                    fgcolor = Theme.ink,
+                    alignment = "left",
+                    width = inner_w - txp * 2,
+                    height = inner_h - txp * 2,
+                    height_adjust = false,
+                }
+                -- Paint with a virtualized start: scroll to the last screen.
+                local ok_v = pcall(function()
+                    buf.virtual_line_num = math.max(1, nlines - n + 1)
+                    buf:_render()
+                    bb:blitFrom(buf.bb, cx + txp, cy + txp, 0, 0,
+                        inner_w - txp * 2, inner_h - txp * 2)
+                end)
+                if not ok_v then
+                    pcall(function() buf:free() end)
+                    P.paragraph(bb, txt, cx + txp, cy + txp,
+                        inner_w - txp * 2, inner_h - txp * 2, "default", {})
+                else
+                    pcall(function() buf:free() end)
+                end
+            else
+                P.vcenter_text(bb, txt, cx + txp, cy,
+                    inner_w - txp * 2, inner_h, "default", {})
+            end
+        elseif txt == "" then
             P.vcenter_text(bb, node.input_hint or "...", cx + txp, cy,
                 inner_w - txp * 2, inner_h, "small", { color = Theme.muted })
         else
@@ -1182,7 +1234,7 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
                     child_y = child_y + math.max(0, inner_h - ch)
                 end
                 UiDSL.paint(child, bb, cx + slot.dx, child_y, slot.w, view,
-                    clip)
+                    clip, extras)
             end
         end
     elseif node.tag == "html" then
@@ -1223,7 +1275,7 @@ function UiDSL.paint(node, bb, x, y, w, view, clip)
             local slot = visit[i]
             if child.display ~= "none" and slot then
                 UiDSL.paint(child, bb, cx + slot.dx, cy + (slot.dy or 0),
-                    slot.w, view, clip)
+                    slot.w, view, clip, extras)
             end
         end
     end
@@ -1485,6 +1537,14 @@ function UiDSL.from_html(html, actions, vars)
             n = UiDSL.node({ tag = "input",
                 input_title = attrs.title or attrs["data-title"],
                 input_hint = attrs.placeholder or attrs["data-placeholder"] or attrs.hint })
+        elseif name == "textarea" then
+            -- Multiline draft field (chat): same "input" node with the
+            -- multiline flag - leaf_h honors data-h (taller box), resolve
+            -- reads the string bind, tap opens the multiline keyboard.
+            n = UiDSL.node({ tag = "input", multiline = true,
+                h = attrs["data-h"] or "56px",
+                input_title = attrs.title or attrs["data-title"],
+                input_hint = attrs.placeholder or attrs["data-placeholder"] or attrs.hint })
         elseif name == "island" then
             -- MuPDF content island: raw HTML captured pre-parse (see
             -- extract_html_blocks). Never pushed (VOID): V1 is
@@ -1537,6 +1597,10 @@ function UiDSL.from_html(html, actions, vars)
         if attrs["data-step"] then n.bind_step = tonumber(attrs["data-step"]) end
         if attrs["data-min"] then n.bind_min = tonumber(attrs["data-min"]) end
         if attrs["data-max"] then n.bind_max = tonumber(attrs["data-max"]) end
+        -- Slot marker (experimental screens): data-slot="name" marks the
+        -- node as a native-painter delegate (chat:messages stream). parse
+        -- keeps the key as-is; paint honors it when the caller passes extras.
+        if attrs["data-slot"] then n.data_slot = attrs["data-slot"] end
         -- Long-press action (data-hold="name"[" data-id]): wired in
         -- resolve_binds (needs the actions map, already captured in the
         -- closure there); paint registers a hit_hold box for it. Without
@@ -2114,11 +2178,20 @@ local function resolve_binds(tree, app, errors)
                 end
             elseif node.tag == "input" then
                 node.input_text = tostring(val == nil and "" or val)
-                if not node.on_tap then
+            if not node.on_tap then
+                -- Dynamic lookup (UiDSL.open_input) keeps the tests'
+                -- override-ability: a resolve BEFORE the stub must still hit
+                -- the stub at tap time.
+                if node.multiline then
+                    node.on_tap = function()
+                        UiDSL.open_textarea(app, node)
+                    end
+                else
                     node.on_tap = function()
                         UiDSL.open_input(app, node)
                     end
                 end
+            end
             end
         end
         if node.bind_width then
@@ -2179,6 +2252,36 @@ function UiDSL.open_input(app, node)
         current, node.input_hint, nil, function(text)
             UiDSL.save_input(app, node, text)
         end)
+end
+
+-- Open the system MULTI-LINE input dialog for a <textarea> node (chat
+-- draft): same save-back contract as open_input, free keyboard reuse.
+-- The OK callback writes the bind THEN fires the node's on_send action
+-- (so a send button action can chain off this path, v1 keeps it simple:
+-- bind written, caller refreshes).
+function UiDSL.open_textarea(app, node)
+    if not node then return end
+    local current = tostring((bind_lookup(app, node.bind_key)) or "")
+    local UIManagerL = UIManager
+    local dialog = require("ui/widget/inputdialog"):new{
+        title = node.input_title or "",
+        input = current,
+        input_hint = node.input_hint,
+        text_multiline = true,
+        buttons = {
+            {{
+                text = "OK",
+                is_enter_default = true,
+                callback = function()
+                    local text = dialog:getInputText()
+                    UIManagerL:close(dialog)
+                    UiDSL.save_input(app, node, text)
+                end,
+            }},
+        },
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
 end
 
 -- Build the sandbox tree from the user file. Cached by file mtime + theme

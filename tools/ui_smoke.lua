@@ -141,9 +141,47 @@ local function fake_app(state_overrides)
             { name = "Kai", path = nil, tags = { "elfo" }, tokens = 999, creator = "Zed" },
             { name = "Mira", path = nil, tags = {}, tokens = 42, creator = "Ada" },
             { name = "Nox", path = nil, tags = {}, tokens = 7, creator = "Eve" },
-            { name = "Sol", path = nil, tags = {}, tokens = 1, creator = "Sol" },
+            { name = "Sol", path = nil, tokens = 1, creator = "Sol" },
         }
     end
+    -- Screen methods used by the experimental gallery/slot blocks (installs,
+    -- editor dialogs, persona name, sends - all surface as captured calls).
+    app.screen_files = {}
+    function app:install_experimental_screen(name)
+        local Screens = require("ktui/screens")
+        Screens.ensure_dir()
+        local defaults = require("ktui/screen_defaults")
+        local html = defaults[name]
+        if not html then return end
+        local f = io.open(Screens.html_path(name), "w")
+        if f then f:write(html) f:close() end
+        Screens._page_cache = nil
+        self.state.page = name
+    end
+    function app:disable_experimental_screen(name)
+        local Screens = require("ktui/screens")
+        local path = Screens.html_path(name)
+        if path and Screens.exists(name) then
+            local src = io.open(path, "r")
+            local body = src and src:read("*a") or ""
+            if src then src:close() end
+            local dst = io.open(path .. ".bak", "w")
+            if dst then dst:write(body) dst:close() end
+            os.remove(path)
+            Screens._page_cache = nil
+        end
+        self.state.page = "experimental_screens"
+    end
+    function app:reset_experimental_screens()
+        require("ktui/screens").reset_all(self)
+    end
+    function app:_active_persona_name() return "You" end
+    function app:send_user_message(text) self.last_sent = text end
+    function app:continue_generation() self.continued = true end
+    function app:show_chat_options() self.options_opened = true end
+    function app:show_dashboard_search() self.search_opened = true end
+    function app:show_import() self.import_opened = true end
+    function app:apply_settings() end
     return app
 end
 
@@ -4152,6 +4190,36 @@ do
         at.children[1].on_tap()
         ok(fired == true and iapp.state.sandbox.x == nil,
             "uidsl: input data-action wins, no dialog state written")
+        -- <textarea>: same input node with multiline=true, taller default
+        -- box (data-h or 56px), and the SAME dynamic hook contract (tap
+        -- routes through UiDSL.open_textarea, overridable by tests).
+        local ta = UiDSL.from_html(
+            '<textarea data-bind="sandbox.draft" title="Mensagem" placeholder="escreva"/>' ..
+            '<value data-bind="sandbox.draft" data-empty="(vazio)"/>', {})
+        UiDSL.apply_styles(ta, UiDSL.parse(""))
+        UiDSL.resolve_binds(ta, iapp)
+        local field2, echo2 = ta.children[1], ta.children[2]
+        ok(field2.tag == "input" and field2.multiline == true
+            and field2.input_title == "Mensagem",
+            "uidsl: textarea parses as a multiline input")
+        ok(UiDSL.measure(field2, 300) > Theme.btn_h() * 1.2,
+            "uidsl: textarea measures taller than a button (multiline box)")
+        local real_ta = UiDSL.open_textarea
+        local got_ta = nil
+        UiDSL.open_textarea = function(app2, node) got_ta = node end
+        field2.on_tap()
+        ok(got_ta == field2, "uidsl: textarea tap opens the multiline hook")
+        UiDSL.open_textarea = real_ta
+        UiDSL.save_input(iapp, field2, "linha1\nlinha2")
+        UiDSL.resolve_binds(ta, iapp)
+        ok(echo2.text == "linha1\nlinha2",
+            "uidsl: textarea bind round-trips multiline text")
+        local ta_h = UiDSL.measure(field2, 300)
+        local tbb = Blitbuffer.new(300, ta_h + 4, Blitbuffer.TYPE_BB8)
+        tbb:fill(Blitbuffer.COLOR_WHITE)
+        UiDSL.paint(field2, tbb, 0, 0, 300, { hitboxes = {} })
+        ok(dark_in(tbb, 0, 0, 300, ta_h) > 0,
+            "uidsl: multiline field paints ink (border + tail text)")
     end
 
     -- Sonic GIF at several sizes: the real asset measures + paints ink
@@ -4608,8 +4676,9 @@ do
         if lb == "row:toggle" then ntog = ntog + 1 end
     end
     -- Toggle rows register twice (row tap + toggle slot); plain rows once.
-    -- Test CSS/HTML + both installs + pagination/Debug row taps = 6.
-    ok(nrow == 6, "debug page: both sandboxes rows present (got " .. tostring(nrow) .. ")")
+    -- Experimental screens + Test CSS/HTML + both installs + pagination/Debug
+    -- row taps = 7.
+    ok(nrow == 7, "debug page: sandboxes + experimental screens rows present (got " .. tostring(nrow) .. ")")
     ok(ntog == 2, "debug page: Debug Mode + HTML pagination toggles (got " .. tostring(ntog) .. ")")
     -- Debug rows: UIDSL sandbox restored alongside KtHTML.
     local labels = {}
@@ -6498,6 +6567,110 @@ do
     AppView.onTapKotavern(view, nil, { pos = { x = 20, y = 20 } })
     ok(page_hit_fired == false and app.state.sheet == nil,
         "sheets: tap on dimmed page content closes the sheet without firing page hits")
+end
+
+-- === Experimental screens: gallery, chat slot, reset ========================
+-- Minimal helper: like AppView:draw_content (chrome + content dispatch).
+local function draw_content_page(view, bb, page)
+    view.app.state.page = page
+    local content_top = Header.height(view)
+    local list_h = VH - content_top - Theme.metrics().nav_h
+    require("ktui/app_view").draw_content(view, bb, 0, content_top, VW, list_h)
+    Nav.draw(view, bb, 0, VH - Theme.metrics().nav_h, VW, Theme.metrics().nav_h)
+    Header.draw(view, bb, 0, 0, VW)
+end
+
+do
+    local DataStorage = require("datastorage")
+    local sdir = DataStorage:getSettingsDir() .. "/kotavern"
+    os.execute("mkdir -p '" .. sdir .. "/themes/screens'")
+    local Screens = require("ktui/screens")
+    local UiDSL = require("ktui/uidsl")
+    local Defaults = require("ktui/screen_defaults")
+
+    ok(Screens.PORTS ~= nil and #Screens.PORTS >= 2, "screens: gallery ports registered (dashboard, chat)")
+
+    -- Helper: paint the gallery page with a fresh fake app.
+    local function paint_gallery()
+        local app = fake_app({ page = "experimental_screens", debug_mode = true })
+        local view = { app = app, hitboxes = {} }
+        function view:refresh() end
+        app.view = view
+        local bb = new_bb()
+        local content_top = Header.height(view)
+        local list_h = VH - content_top - Theme.metrics().nav_h
+        Pages.experimental_screens(view, bb, 0, content_top, VW, list_h, 0)
+        Header.draw(view, bb, 0, 0, VW)
+        return app, view, bb
+    end
+
+    local app, view, bb = paint_gallery()
+    ok(app ~= nil and dark_in(bb, 0, 0, VW, VH) > 30, "screens: gallery paints ink")
+    ok(has_hit(view, "exp_row_dashboard") and has_hit(view, "exp_row_chat"),
+        "screens: gallery rows register hitboxes for both ports")
+    ok(has_hit(view, "exp_install_dashboard"),
+        "screens: not-installed rows show an Install button")
+    dump(bb, "screens_gallery")
+
+    -- Install the chat screen through the app API (file write + nav).
+    app:install_experimental_screen("chat")
+    ok(Screens.exists("chat"), "screens: install writes chat.html into themes/screens/")
+
+    -- The chat page now paints through the experimental overlay WITHOUT
+    -- crashing, and the stream slot keeps hitboxes (bubbles/send live).
+    local chat_app = fake_app({ page = "chat", debug_mode = true })
+    chat_app.state.messages = {
+        { role = "assistant", content = "Olá da tela experimental!", name = "Aria" },
+    }
+    local chat_view = { app = chat_app, hitboxes = {} }
+    function chat_view:refresh() end
+    chat_app.view = chat_view
+    local chat_bb = new_bb()
+    local okp, perr = pcall(function()
+        draw_content_page(chat_view, chat_bb, "chat")
+    end)
+    ok(okp, "screens: chat overlay paints via draw_content (" .. tostring(perr) .. ")")
+    ok(#chat_view.hitboxes > 3, "screens: chat overlay registers hitboxes (slot + html actions)")
+    ok(dark_in(chat_bb, 0, 0, VW, VH) > 30, "screens: chat overlay paints ink (slot bubbles)")
+    dump(chat_bb, "screens_chat")
+
+    -- Messy-file fallback: a broken screen file falls back to the native
+    -- chat page instead of dead-ending (draw_content catches paint errors).
+    local broken_path = Screens.html_path("chat")
+    local f = io.open(broken_path, "w")
+    f:write("<html><div id=a>broken<style>no{close")
+    f:close()
+    Screens._page_cache = nil
+    chat_view = { app = chat_app, hitboxes = {} }
+    function chat_view:refresh() end
+    chat_app.view = chat_view
+    chat_bb = new_bb()
+    local okb = pcall(function()
+        draw_content_page(chat_view, chat_bb, "chat")
+    end)
+    ok(okb, "screens: broken screen file still paints (native or error strip)")
+
+    -- Disable: .bak backup + native return.
+    local body_before = io.open(Screens.html_path("chat"), "r"):read("*a")
+    chat_app:disable_experimental_screen("chat")
+    ok(not Screens.exists("chat"), "screens: disable removes the screen file")
+    local bak = io.open(broken_path .. ".bak", "r")
+    ok(bak ~= nil and bak:read("*a") == body_before, "screens: disable keeps a .bak backup")
+    if bak then bak:close() end
+
+    -- Install both ports, then Reset-all: files removed, .baks kept.
+    chat_app:install_experimental_screen("chat")
+    chat_app:install_experimental_screen("dashboard")
+    ok(Screens.exists("chat") and Screens.exists("dashboard"),
+        "screens: both ports install (defaults present in screen_defaults)")
+    ok(Defaults.chat ~= nil and Defaults.dashboard ~= nil, "screens: screen_defaults ships both defaults")
+    local removed = Screens.reset_all(chat_app)
+    ok(removed >= 2, "screens: reset_all removes the installed files (removed=" .. tostring(removed) .. ")")
+    ok(not Screens.exists("chat") and not Screens.exists("dashboard"),
+        "screens: after reset_all both ports render natively again")
+    ok(io.open(Screens.html_path("chat") .. ".bak", "r") ~= nil, "screens: reset_all keeps .bak backups")
+    -- Cleanup (headless state hygiene for later runs of other blocks).
+    os.execute("rm -f '" .. Screens.dir() .. "'/*.html* ")
 end
 
 print(string.format("\n%d checks, %d failures", checks, fails))
