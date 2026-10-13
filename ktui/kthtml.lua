@@ -152,18 +152,37 @@ function KtHTML.chat_css()
     -- body bg = the chat panel surface (chat_bubbles blits the opaque MuPDF
     -- bitmap over the panel; assistant panels are Theme.bg-tinted) and
     -- scan_bottom compares against Theme.bg - one color everywhere.
-    -- The @font-face block is REQUIRED here too (not only theme_css): w/o
-    -- it 'KTSans' resolves to MuPDF's built-in fallback (serif look the
-    -- device report showed next to the sans chrome around the bubbles).
+    -- The @font-face block is REQUIRED here (not only theme_css): without
+    -- it 'KTSans' resolves to MuPDF's built-in fallback (serif look).
+    -- PROBE-VERIFIED limits of this MuPDF: span background paints ONLY with
+    -- display:inline-block AND stretches the full line when the box is
+    -- alone on its row (fine for the spoiler mask, wrong for code - so
+    -- code spans stay plain mono and only FENCE rows get the shaded band,
+    -- emitted as contiguous <p> blocks: backgrounds touch, no gaps).
+    -- Inline (non-block) span backgrounds are IGNORED. <s> does
+    -- line-through. <a> needs !important on color - MuPDF's own blue UA
+    -- rule beats a plain a{color} (same specificity quirk theme_css hits).
     return string.format([[
 @font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
 @font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
 @font-face { font-family: 'KTSans'; font-style: italic; src: url('sans-italic.ttf'); }
 @page { margin: 0; }
 body { margin: 0; padding: 0; background: %s; color: %s; font-family: 'KTSans', sans-serif; }
+p { margin: 0; }
 b { font-weight: bold; }
+s { text-decoration: line-through; }
+.ktcode { font-family: monospace; }
+p.ktfence { background: %s; font-family: monospace; }
+.ktspl { display: inline-block; background: %s; color: %s !important; }
+.ktq { color: %s; }
+a { color: %s !important; text-decoration: underline; }
 ]],
         KtHTML.css_hex(Theme.bg, "#ffffff"),
+        KtHTML.css_hex(Theme.ink, "#000000"),
+        KtHTML.css_hex(Theme.soft, "#d8d8d8"),
+        KtHTML.css_hex(Theme.muted, "#999999"),
+        KtHTML.css_hex(Theme.muted, "#999999"),
+        KtHTML.css_hex(Theme.muted, "#999999"),
         KtHTML.css_hex(Theme.ink, "#000000"))
 end
 

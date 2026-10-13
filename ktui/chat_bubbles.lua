@@ -66,51 +66,112 @@ end
 local html_mode_cache = nil -- { key -> { h, widget } } attached to app.state
 
 -- Compact + re-express the message for MuPDF. Model text is NOT trusted as
--- HTML: it is fully escaped first; only WE emit tags (<b>, <br>) out of the
--- same markdown the canvas path handles. Without the <br>s MuPDF collapses
--- newlines into spaces (the crooked-chat report); without the <b>s the raw
--- **asterisks** stay visible. The canvas path's PTF bold markers are NOT
--- used: MuPDF has no such protocol and draws them as tofu boxes.
-local function chat_html_bold(line)
+-- HTML: block structure is detected on the RAW line, then the line is
+-- escaped and only WE emit tags (<b>, <s>, <br>, <a>, span classes) out of
+-- the same markdown the canvas path handles. Without the <br>s MuPDF
+-- collapses newlines into spaces (the crooked-chat report); without the
+-- tag spans the raw syntax stays visible (~~, `, [], || - the "ainda não
+-- renderiza" report). Escape order matters: `&<>` first, then markup is
+-- re-injected over the escaped text.
+local function chat_html_escape(line)
+    return (line:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+
+-- Inline markdown over ALREADY-ESCAPED text: links, code spans, spoiler,
+-- strike, then emphasis (*** before ** before *). Italic renders as bold -
+-- the same single-protocol choice the canvas path makes on e-ink.
+local function chat_html_inline(line)
+    -- [label](url) -> anchor. Runs on ESCAPED text: a & in the url is
+    -- already &amp; (valid href), no double-escape risk.
+    line = line:gsub("%[([^%]]*)%]%(([^)%s]+)%)", function(label, url)
+        return '<a href="' .. url .. '">' .. label .. '</a>'
+    end)
+    line = line:gsub("`([^`]*)`", '<span class="ktcode">%1</span>')
+    line = line:gsub("||([^|]-)||",
+        '<span class="ktspl">%1</span>')
+    line = line:gsub("~~(.-)~~", "<s>%1</s>")
     line = line:gsub("%*%*%*(.-)%*%*%*", "<b>%1</b>")
     line = line:gsub("%*%*(.-)%*%*", "<b>%1</b>")
     line = line:gsub("__(.-)__", "<b>%1</b>")
-    return (line:gsub("%*(.-)%*", "<b>%1</b>"))
+    line = line:gsub("%*(.-)%*", "<b>%1</b>")
+    return line
+end
+
+-- One markdown line -> one HTML row. Block structure is detected on the RAW
+-- line; the payload is THEN escaped and the inline encoder runs on it. The
+-- tags we emit are never part of the escaped payload (the previous order -
+-- inject <a> raw, escape after - displayed the anchor source verbatim).
+local function chat_html_line(line, out)
+    local hashes, heading = line:match("^%s*(#+)%s+(.+)$")
+    local quoted = line:match("^%s*>%s?(.*)$")
+    local unordered = line:match("^%s*[-+*]%s+(.+)$")
+    local indent, number, ordered_text = line:match("^(%s*)(%d+)[%.)]%s+(.+)$")
+    local open, payload, close = "", line, ""
+    if hashes then
+        open, payload, close = "<b>", heading, "</b>"
+    elseif quoted then
+        -- Corner + muted span, the canvas path's quote treatment.
+        open, payload, close = "\u{250c} <span class=\"ktq\">", quoted, "</span>"
+    elseif unordered then
+        payload = "\194\183 " .. unordered
+    elseif number then
+        payload = indent .. number .. ". " .. ordered_text
+    end
+    out[#out + 1] = open .. chat_html_inline(chat_html_escape(payload)) .. close
 end
 
 local function chat_html_body(content)
-    content = tostring(content or "")
-        :gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-    local out = {}
+    -- Rows are tagged text|fence; consecutive fence rows flush as CONTIGUOUS
+    -- <p class="ktfence"> blocks (probe: contiguous <p> bands touch, no gap;
+    -- a <br> inside/between inline-block spans left an empty white band),
+    -- text rows join with <br>. Groups always join with <br> - probe-verified
+    -- safe on both block boundaries (text->fence, fence->text).
+    local rows = {}
     local in_code = false
-    -- NOTE: gmatch's control variable is const - rewrite through `row`.
-    for line in (content .. "\n"):gmatch("(.-)\n") do
-        local row = line
-        if row:match("^%s*```") then
+    for line in (tostring(content or "") .. "\n"):gmatch("(.-)\n") do
+        if line:match("^%s*```") then
             in_code = not in_code
-            row = ""
+        elseif in_code then
+            rows[#rows + 1] = { kind = "fence", html = chat_html_escape(line) }
         else
-            row = row:gsub("`([^`]*)`", "%1") -- code spans: plain text
-            if not in_code then
-                local hashes, heading = row:match("^%s*(#+)%s+(.+)$")
-                local unordered = row:match("^%s*[-+*]%s+(.+)$")
-                local quoted = row:match("^%s*>%s?(.*)$")
-                if hashes then
-                    row = "<b>" .. heading .. "</b>"
-                elseif unordered then
-                    row = "\194\183 " .. unordered
-                elseif quoted then
-                    row = "\226\148\130 " .. quoted
-                end
-                row = chat_html_bold(row)
-            end
+            local one = {}
+            chat_html_line(line, one)
+            rows[#rows + 1] = { kind = "text", html = one[1] or "" }
         end
-        out[#out + 1] = row
+    end
+    local parts, pending_text = {}, nil
+    for _, r in ipairs(rows) do
+        if r.kind == "fence" then
+            if pending_text then
+                parts[#parts + 1] = table.concat(pending_text, "<br>")
+                pending_text = nil
+            end
+            local f = parts[#parts]
+            if f and f:match("</p>$") then
+                parts[#parts] = f .. '<p class="ktfence">' .. r.html .. "</p>"
+            else
+                parts[#parts + 1] = '<p class="ktfence">' .. r.html .. "</p>"
+            end
+        else
+            pending_text = pending_text or {}
+            pending_text[#pending_text + 1] = r.html
+        end
+    end
+    if pending_text then parts[#parts + 1] = table.concat(pending_text, "<br>") end
+    -- Join parts with <br>, EXCEPT right after a fence <p>: its line break
+    -- is the block boundary - an extra <br> paints an empty white row there
+    -- (probe-verified; text->fence keeps the <br>, no double break there).
+    local body = {}
+    for i, part in ipairs(parts) do
+        if i > 1 and not parts[i - 1]:match("</p>$") then
+            body[#body + 1] = "<br>"
+        end
+        body[#body + 1] = part
     end
     -- MuPDF collapses \n: a literal <br> in the body is rewritten by
     -- setContent one-for-one into "&nbsp;<div></div>" - one visual row per
     -- source line, no extra empty band (probe-verified).
-    return table.concat(out, "<br>")
+    return table.concat(body)
 end
 
 local function html_doc_for(app, view, content, width)
@@ -1200,6 +1261,12 @@ end
 -- Scroll snap step for the chat list: one full text line.
 function ChatBubbles.line_step()
     return line_height(Theme.face("default"))
+end
+
+-- TEST-ONLY hook (ui_smoke): expose the HTML-mode body encoder without a
+-- paint. Not used by the app path.
+function ChatBubbles._test_chat_html_body(content)
+    return chat_html_body(content)
 end
 
 return ChatBubbles

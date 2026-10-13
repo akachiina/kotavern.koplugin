@@ -2271,6 +2271,37 @@ do
     dump(b, "chat_html_render")
 end
 
+-- HTML markdown coverage (the "markdown ainda não renderiza" round 2):
+-- inline markup must re-express into tags in the emitted body, model text
+-- must be escaped, and fence rows must become contiguous mono <p> blocks.
+do
+    local DbgChat = require("ktui/chat_bubbles")
+    local body = DbgChat._test_chat_html_body(
+        "~~hit~~ and `mono` and [txt](https://x.com) and ||secret||\n"
+        .. "> quoted line\n- bullet\n```js\ncode_row\n```\n5<b>&<tail")
+    ok(body ~= nil, "chat html md: test hook returns a body")
+    if body then
+        ok(body:find("<s>hit</s>", 1, true) ~= nil,
+            "chat html md: ~~strike~~ becomes <s>")
+        ok(body:find('<span class="ktcode">mono</span>', 1, true) ~= nil,
+            "chat html md: `code` becomes mono span")
+        ok(body:find('<a href="https://x.com">txt</a>', 1, true) ~= nil,
+            "chat html md: [txt](url) becomes an anchor")
+        ok(body:find('<span class="ktspl">secret</span>', 1, true) ~= nil,
+            "chat html md: ||spoiler|| becomes the masked span")
+        ok(body:find("ktq", 1, true) ~= nil,
+            "chat html md: > line becomes the quote row")
+        ok(body:find("\194\183 bullet", 1, true) ~= nil,
+            "chat html md: - item gets the bullet")
+        ok(body:find('<p class="ktfence">code_row</p>', 1, true) ~= nil,
+            "chat html md: fenced rows flush as mono <p> blocks")
+        ok(body:find("5&lt;b&gt;&amp;&lt;tail", 1, true) ~= nil,
+            "chat html md: model text is escaped (tags/entities)")
+        ok(body:find("~~", 1, true) == nil and body:find("||", 1, true) == nil,
+            "chat html md: no raw ~~ or || markers survive")
+    end
+end
+
 -- Sheets with two-line sublabel rows get a taller slot (Author's Note fix).
 do
     local Sheets = require("ktui/sheets")
