@@ -59,7 +59,74 @@ end
 
 -- === Block layout (two-pass: measure, then paint) ===
 
-local function block_entries(blocks, width, app, show_inline)
+-- HTML mode (experimental, Debug toggle): a message renders as ONE MuPDF
+-- document (HtmlBoxWidget via KtHTML, real bold/italic/lists/tables), painted
+-- as a single block entry. Measured once per content+width+theme (KtHTML's
+-- tall-total scan), clipped per band like every other entry.
+local html_mode_cache = nil -- { key -> { h, widget } } attached to app.state
+local function html_doc_for(app, view, content, width)
+    if not app or not app.state then return nil end
+    local docs = app.state.chat_html_docs
+    if not docs then
+        docs = {}
+        app.state.chat_html_docs = docs
+        if #docs == 0 then docs.cap = 8 end -- small cap/fast scan; prune below
+    end
+    local Constants = require("kt_constants")
+    local Theme = require("ktui/theme")
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local font_id = tostring(Theme.scale(Theme.get_base_font_size()))
+        .. ":" .. tostring((app.state.settings and app.state.settings.chat_font_size) or "")
+    local key = table.concat({ tostring(content), "\0", tostring(width), "\0", font_id,
+        "\0", Theme.get_theme() }, "")
+    local cached = docs[key]
+    if cached and cached.width == width then
+        return cached
+    end
+    if cached then
+        pcall(function() if cached.widget then cached.widget:free() end end)
+        docs[key] = nil
+    end
+    -- Prune: DOCs keyed by content grow with long chats; keep the last N.
+    local n = 0
+    for k in pairs(docs) do n = n + 1 end
+    if n > (docs.cap or 8) + 1 then
+        local removed = 0
+        for k, v in pairs(docs) do
+            if k ~= key then
+                pcall(function() if v.widget then v.widget:free() end end)
+                docs[k] = nil
+                removed = removed + 1
+                if removed >= n - (docs.cap or 8) then break end
+            end
+        end
+    end
+    local okp, perr = pcall(function()
+        local css = require("ktui/kthtml").theme_css()
+        local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
+        widget:setContent(content, css, Theme.scale(Theme.get_base_font_size()),
+            false, nil, Constants.PLUGIN_DIR .. "/assets")
+        local pages = widget.page_count or 1
+        -- Tall bitmap: relayout at pages*96 then scan the exact bottom.
+        local tall = math.max(96, pages * 96)
+        widget.dimen = Geom:new{ w = width, h = tall }
+        widget:setContent(content, css, Theme.scale(Theme.get_base_font_size()),
+            false, nil, Constants.PLUGIN_DIR .. "/assets")
+        widget:_render()
+        local last = require("ktui/kthtml").scan_bottom(widget.bb, width)
+        local h = last and math.max(16, last) or 96
+        docs[key] = { widget = widget, height = h, width = width }
+    end)
+    if not okp then
+        require("logger").warn("chat html render failed: ", perr)
+        docs[key] = nil
+        return nil
+    end
+    return docs[key]
+end
+
+local function block_entries(blocks, width, app, show_inline, view, body_face)
     local entries = {}
     local gap = Theme.scale(8)
     for _, block in ipairs(blocks) do
@@ -124,6 +191,25 @@ local function block_entries(blocks, width, app, show_inline)
             else
                 table.insert(entries, { kind = "image_pending", alt = block.alt, h = Theme.scale(44) })
             end
+        elseif block.kind == "html" then
+            -- Experimental HTML render: the WHOLE message body goes through
+            -- MuPDF (real bold/italic/lists/tables), measured once and cached
+            -- per content+width+font (chat_html_docs on app.state). A failed
+            -- render falls back to the plain-text parse, never a blank bubble.
+            local doc = html_doc_for(app, view, block.text, width)
+            if doc and doc.height then
+                table.insert(entries, {
+                    kind = "html", widget = doc.widget,
+                    h = doc.height, doc_key = nil, pad = 0, offset = 0,
+                })
+            else
+                local fallback = block.text:gsub("<[^>]->", "")
+                local lines, line_h = P.paragraph_metrics(fallback, width, "default")
+                table.insert(entries, {
+                    kind = "text", text = fallback, role = "default", opts = {},
+                    h = math.max(line_h, lines * line_h), line_h = line_h, pad = 0, offset = 0,
+                })
+            end
         else
             local role, opts, pad = "default", {}, 0
             local text
@@ -141,6 +227,11 @@ local function block_entries(blocks, width, app, show_inline)
                 text = "│ " .. text:gsub("\n", "\n│ ")
             else
                 text = Md.inline(block.text)
+            end
+            -- Custom chat font (Appearance > Chat): body paragraphs render
+            -- on the user's face; headings keep the system hierarchy face.
+            if body_face and role == "default" then
+                opts.face = body_face
             end
             local text_width = math.max(1, width - pad * 2)
             local lines, line_h = P.paragraph_metrics(text, text_width, role, opts)
@@ -219,6 +310,19 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                         entry_y + math.floor((ph - Theme.line_h("tiny")) / 2),
                         box_w - Theme.scale(16), "tiny", { color = Theme.muted })
                 end
+            elseif entry.kind == "html" then
+                -- Experimental HTML render: blit the tiled bitmap window
+                -- (row-level: same ZenPM whole-line trick, no partial glyph
+                -- garbage on e-ink).
+                if entry.widget and band_h > 0 then
+                    local okp = pcall(function()
+                        entry.widget:_render()
+                        bb:blitFrom(entry.widget.bb, cx, top, 0, entry.offset or 0, width, band_h)
+                    end)
+                    if okp then
+                        view.dithered = true
+                    end
+                end
             elseif entry.kind == "code" then
                 P.box(bb, cx, top, width, band_h, { border = false, background = Theme.soft, radius = false })
                 P.rect(bb, cx, top, Theme.scale(3), band_h, Theme.muted)
@@ -242,7 +346,7 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                 if text_h >= entry.line_h then
                     P.scrollable_paragraph(bb, entry.text, cx, top, width, text_h, entry.role,
                         math.max(0, top - entry_y),
-                        { color = color, bgcolor = bg, bold = entry.opts.bold, line_height = entry.opts.line_height })
+                        { color = color, bgcolor = bg, bold = entry.opts.bold, line_height = entry.opts.line_height, face = entry.opts.face })
                 end
             end
         end
@@ -263,11 +367,19 @@ end
 
 function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_generating, user_name, char_image, thinking_frame)
     local settings = (view.app and view.app.state and view.app.state.settings) or {}
-    local show_avatars = settings.show_avatars ~= false
+    -- An applied bubble theme (chat override or global default) overrides the
+    -- detail toggles; plain settings otherwise.
+    local theme_live = view.app and view.app.state and view.app.state.chat_theme_applied or nil
+    local show_avatars = (theme_live and theme_live.show_avatars ~= nil)
+        and (theme_live.show_avatars == true) or (settings.show_avatars ~= false)
     local show_inline = settings.show_inline_images ~= false
     local outline_user = not not settings.outline_user_bubbles
-    local show_timestamps = not not settings.show_timestamps
-    local show_tokens = not not settings.show_tokens
+    local show_timestamps = (theme_live and theme_live.show_timestamps ~= nil)
+        and (theme_live.show_timestamps == true) or (settings.show_timestamps == true)
+    local show_tokens = (theme_live and theme_live.show_tokens ~= nil)
+        and (theme_live.show_tokens == true) or (settings.show_tokens == true)
+    -- Experimental: whole-message HTML render (Debug toggle, false default).
+    local html_render = settings.chat_html_render == true
     local style = effective_style(Theme.get_bubble_style())
     local boxed = (style == "st")
     local panel_mode = (style == "bubbles")
@@ -286,6 +398,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local user = user_name or "You"
     local user_image = (view.app and view.app._active_persona_avatar and view.app:_active_persona_avatar()) or nil
     local face = Theme.face("default")
+    -- Custom chat font (Appearance > Chat): message bodies + inline
+    -- reasoning render on the user's face; chrome stays on the system face.
+    local body_face = Theme.chat_face()
 
     local thinking_text = nil
     if is_generating and thinking_frame then
@@ -338,6 +453,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         tostring(w), tostring(text_w), tostring(bubble_w),
         tostring(settings.avatar_size),
         tostring(settings.reasoning_prefix), tostring(settings.reasoning_suffix),
+        tostring(settings.chat_font_file), tostring(settings.chat_font_size),
         tostring(view.app and view.app.state and view.app.state.current_chat_path),
     }, "|")
     if not layout_cache or chat_sig ~= rawget(view, "_chat_layout_sig") then
@@ -388,7 +504,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         local rkey = #reasoning .. ":" .. rtw .. ":" .. tostring(inline)
         local hit = reasoning_cache[rkey]
         if not hit then
-            local rentries, rh = block_entries(Md.parse(reasoning), rtw, view.app, inline)
+            local rentries, rh = block_entries(Md.parse(reasoning), rtw, view.app, inline, view, body_face)
             hit = { entries = rentries, h = rh }
             reasoning_cache[rkey] = hit
         end
@@ -409,7 +525,8 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             -- generation start/end must invalidate exactly that one.
             (is_last and (tostring(is_generating == true) .. ":") or "") ..
             tostring(reasoning_open[msg_key] == true) .. ":" ..
-            tostring(reasoning_full[msg_key] == true)
+            tostring(reasoning_full[msg_key] == true) .. ":" ..
+            tostring(settings.chat_html_render == true)
     end
     -- Regex scripts participate in every message's signature: an edited
     -- script changes rendered text (and often heights) without touching the
@@ -518,8 +635,16 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     msg._md_regex_sig = regex_sig
                 end
                 blocks = msg._md_blocks
+                -- Experimental HTML render (Debug toggle): the plain parse
+                -- stays underneath as fallback; the bubble carries the RAW
+                -- content as one html block (see block_entries' html branch).
+                -- Streaming keeps the plain path (partial HTML re-layouts per
+                -- chunk are jumpy and 10x the cost).
+                if html_render and not is_user then
+                    blocks = { { kind = "html", text = content_text } }
+                end
             end
-            local entries, content_h, block_gap = block_entries(blocks, text_w, view.app, show_inline)
+            local entries, content_h, block_gap = block_entries(blocks, text_w, view.app, show_inline, view, body_face)
             layout.kind = boxed and "boxed" or style
             layout.entries = entries
             layout.content_h = content_h
@@ -670,7 +795,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     if fully then
                         P.box(bb, panel_x, bubble_y, l.bubble_w, l.bubble_h, {
                             border_color = pb_color, border_size = pb_size,
-                            background = panel_color, radius = Theme.scale(10),
+                            background = panel_color, radius = Theme.bubble_radius_px(),
                         })
                     else
                         local vis_h = p_bottom - p_top

@@ -76,6 +76,8 @@ local function page_title(view)
         local names = {
             settings = _("Settings"),
             settings_appearance = _("Appearance"),
+            settings_appearance_chat = _("Chat"),
+            settings_bubble_themes = _("Bubble themes"),
             settings_dashboard = _("Dashboard"),
             settings_behavior = _("Behavior"),
             settings_network = _("Network"),

@@ -33,6 +33,11 @@ local SETTINGS_DEFAULTS = {
     outline_user_bubbles = false,
     show_timestamps = false,
     show_tokens = false,       -- ~N tok in the message name row (ST tokenCounter)
+    chat_font_file = "",       -- custom chat text font: installed font FILE path (empty = system)
+    chat_font_size = 0,        -- custom chat text size (0 = follow base_font_size)
+    chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
+    bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
+    bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
     streaming = true,          -- global default for new connections
     api_backend = "curl_bg",   -- http_sync | curl_sync | curl_bg
     stream_chunk_interval = 0.3,
@@ -211,6 +216,13 @@ function App:apply_settings()
     Theme.set_density(s.density)
     Theme.set_bubble_style(s.bubble_style)
     Theme.set_chat_bg(s.chat_bg)
+    Theme.set_bubble_radius(s.bubble_radius)
+    -- Custom chat text font (Appearance > Chat): file path + absolute size.
+    -- Empty file = system content face; size 0 = follow the base font size.
+    require("ktui/theme").set_chat_font(s.chat_font_file, s.chat_font_size)
+    -- Bubble theme overlay (chat override > global default). Runs AFTER the
+    -- plain settings so the theme's live values win on the palette.
+    self:refresh_bubble_theme()
     -- Debug Mode CSS overlay (experimental): re-bakes the palette with the
     -- selected theme file when debug mode is on; no-op otherwise.
     if s.debug_mode == true then
@@ -330,6 +342,65 @@ function App:choose_language()
         })
     end
     Sheets.show(self, { title = _("Language"), actions = actions })
+end
+
+-- Appearance > Chat: custom chat text font. Picker lists installed font
+-- FILES (FontList) with a "System default" reset at the top. The value is
+-- the font's file path (Font:getFace accepts a raw path via FontList).
+function App:choose_chat_font()
+    local Sheets = require("ktui/sheets")
+    local FontList = require("fontlist")
+    local _ = require("gettext")
+    local self_ref = self
+    local current = self.state.settings.chat_font_file or ""
+    local actions = {
+        { label = _("System default"), checked = current == "",
+          on_tap = function()
+              self_ref:save_setting("chat_font_file", "")
+              self_ref:refresh(true)
+          end },
+    }
+    local fonts = {}
+    pcall(function()
+        for _, path in ipairs(FontList:getFontList() or {}) do
+            if type(path) == "string" and path ~= "" then table.insert(fonts, path) end
+        end
+    end)
+    for _, path in ipairs(fonts) do
+        local label = path:match("[^/]+$") or path
+        --most bundles carry 4 weights of the same family; keep all (user picks)
+        table.insert(actions, {
+            label = label,
+            checked = current == path,
+            on_tap = function()
+                self_ref:save_setting("chat_font_file", path)
+                self_ref.state.chat_font_cache = nil
+                self_ref:refresh(true)
+            end,
+        })
+    end
+    Sheets.show(self, { title = _("Chat font"), actions = actions })
+end
+
+-- Size override for the chat font (0 = follow the base font size).
+function App:prompt_chat_font_size()
+    local SpinWidget = require("ui/widget/spinwidget")
+    local Theme = require("ktui/theme")
+    local _ = require("gettext")
+    local self_ref = self
+    UIManager:show(SpinWidget:new{
+        title_text = _("Chat font size"),
+        text = _("0 follows the base font size"),
+        value = tonumber(self.state.settings.chat_font_size) or 0,
+        value_min = 0,
+        value_max = Theme.MAX_BASE_FONT_SIZE,
+        value_step = 1,
+        value_hold_step = 2,
+        callback = function(spin)
+            self_ref:save_setting("chat_font_size", spin.value)
+            self_ref:refresh(true)
+        end,
+    })
 end
 
 function App:prompt_base_font_size()
@@ -602,156 +673,6 @@ function App:install_html_sandbox_file()
         UIManager:show(InfoMessage:new{
             text = _("Could not write html_sandbox.html"), timeout = 3 })
     end
-end
-
--- === Experimental screens (UIDSL ports of native pages) =====================
--- Debug > Experimental > "Experimental screens" opens the gallery: one row
--- per port (dashboard, chat) with Installed ✓/Edit, a Reset-all at the top,
--- and tapping a row toggles the screen ON (installs the default file) or
--- shows its editor when already installed. Files live in themes/screens/:
--- <name>.html renders the WHOLE screen; <name>.actions.lua adds hooks.
-function App:experimental_screens_page()
-    self:navigate("experimental_screens")
-end
-
--- Install (or restore from .bak) the built-in default HTML for a port and
--- navigate to its native host page with the overlay live.
-function App:install_experimental_screen(name)
-    local Screens = require("ktui/screens")
-    local InfoMessage = require("ui/widget/infomessage")
-    local _ = require("gettext")
-    local path = Screens.html_path(name)
-    if not path then return end
-    if Screens.exists(name) then
-        -- reinstalar without resetting: just confirm (toggle-off lives in
-        -- the gallery rows; this action is for the currently-off state).
-        return
-    end
-    Screens.ensure_dir()
-    local defaults = require("ktui/screen_defaults")
-    local html = defaults[name]
-    if not html then
-        UIManager:show(InfoMessage:new{ text = _("No default screen for: ")
-            .. tostring(name), timeout = 3 })
-        return
-    end
-    local f = io.open(path, "w")
-    if not f then
-        UIManager:show(InfoMessage:new{ text = _("Could not write: ")
-            .. tostring(path), timeout = 3 })
-        return
-    end
-    f:write(html)
-    f:close()
-    require("ktui/screens")._page_cache = nil
-    UIManager:show(InfoMessage:new{ text = _("Screen enabled: ") .. tostring(name),
-        timeout = 2 })
-    self:navigate(name)
-end
-
--- Remove (with .bak backup) the overlay file: the native screen returns.
-function App:disable_experimental_screen(name)
-    local Screens = require("ktui/screens")
-    local InfoMessage = require("ui/widget/infomessage")
-    local _ = require("gettext")
-    local path = Screens.html_path(name)
-    if path and Screens.exists(name) then
-        local src = io.open(path, "r")
-        if src then
-            local body = src:read("*a")
-            src:close()
-            local dst = io.open(path .. ".bak", "w")
-            if dst then dst:write(body) dst:close() end
-        end
-        pcall(os.remove, path)
-        require("ktui/screens")._page_cache = nil
-        UIManager:show(InfoMessage:new{ text = _("Screen disabled (backup kept)"),
-            timeout = 2 })
-        self:navigate("experimental_screens")
-    end
-end
-
--- Device text editor for a screen's HTML (Modals multiline): saves back
--- with a .bak; the page cache busts on mtime so the next paint rebuilds.
-function App:edit_experimental_screen(name)
-    local Screens = require("ktui/screens")
-    local path = Screens.html_path(name)
-    if not path or not Screens.exists(name) then return end
-    local f = io.open(path, "r")
-    local body = f and f:read("*a") or ""
-    if f then f:close() end
-    local Modals = require("ktui/modals")
-    local _ = require("gettext")
-    local dialog
-    dialog = require("ui/widget/inputdialog"):new{
-        title = tostring(name) .. ".html",
-        input = body,
-        text_multiline = true,
-        buttons = {
-            {{
-                text = _("Save"),
-                is_enter_default = true,
-                callback = function()
-                    local text = dialog:getInputText()
-                    UIManager:close(dialog)
-                    local bak = io.open(path .. ".bak", "w")
-                    if bak then bak:write(body) bak:close() end
-                    local out = io.open(path, "w")
-                    if out then
-                        out:write(text)
-                        out:close()
-                    end
-                    require("ktui/screens")._page_cache = nil
-                    self:refresh(true)
-                end,
-            }},
-        },
-    }
-    UIManager:show(dialog)
-    dialog:onShowKeyboard()
-end
-
--- Gallery top button: reset ALL screen files (each kept as .bak first).
-function App:reset_experimental_screens()
-    local Screens = require("ktui/screens")
-    local n = Screens.reset_all(self)
-    local InfoMessage = require("ui/widget/infomessage")
-    local _ = require("gettext")
-    UIManager:show(InfoMessage:new{ text = _("Screens reset (backups kept): ")
-        .. tostring(n), timeout = 3 })
-    self:refresh(true)
-end
-
--- Gallery row tap: native action sheet per screen. Not installed -> Enable
--- (writes the default) goes live immediately; installed -> Edit (device
--- text editor) + Disable (back to native, .bak kept)." confirmed dialogs
--- for the destructive ones (disable/reset) per the app's Sheets.confirm.
-function App:show_screen_actions(name)
-    local Screens = require("ktui/screens")
-    local Sheets = require("ktui/sheets")
-    local _ = require("gettext")
-    local actions
-    if not Screens.exists(name) then
-        actions = {
-            { label = _("Enable (use the HTML screen)"), icon = "plus",
-              on_tap = function() self:install_experimental_screen(name) end },
-        }
-    else
-        actions = {
-            { label = _("Edit in device editor"), icon = "edit",
-              on_tap = function() self:edit_experimental_screen(name) end },
-            { label = _("Disable (back to native)"), icon = "times",
-              on_tap = function()
-                  Sheets.confirm(self, {
-                      title = tostring(name) .. ".html",
-                      text = _("Disable this experimental screen?\nThe current file is backed up as .bak."),
-                      ok_label = _("Disable"),
-                      on_ok = function() self:disable_experimental_screen(name) end,
-                  })
-              end },
-        }
-    end
-    Sheets.show(self, { title = _("Screen:") .. " " .. tostring(name), actions = actions })
 end
 
 -- Write the sandbox demo CSS to <data>/themes so users have a starting file.
@@ -2321,6 +2242,9 @@ function App:open_chat(char_name, chat_path, connection)
     self.state.current_chat_path = chat_path
     self.state.current_chat_persona_id = metadata.persona_id
     self.state.current_chat_preset_id = metadata.preset_id
+    -- Per-chat bubble theme (Chat Options > Bubble theme). A nil key means
+    -- "follow the global default"; "" would never be stored (nil instead).
+    self.state.current_chat_bubble_theme_id = metadata.bubble_theme_id or nil
     self.state.current_connection = active_connection
     self.state.messages = chat_data.messages or {}
     self.state.chat_first_mes = ""
@@ -2350,23 +2274,6 @@ function App:send_message()
         end
         self:_do_send_message(text)
     end, nil, true)
-end
-
--- Experimental chat screen (themes/screens/chat.html): the composer is an
--- inline <textarea data-bind="chat.draft"> + <button data-action="chat:send">,
--- so there is no Modals.input round-trip. Same send contract as send_message
--- (generating guard + ST send_if_empty), minus the popup.
-function App:send_user_message(text)
-    if self.state.is_generating then return end
-    text = tostring(text or "")
-    if Util.trim(text) == "" then
-        local placeholder = self.state.settings.send_if_empty
-        if type(placeholder) == "string" and placeholder ~= "" then
-            self:_do_send_message(placeholder)
-        end
-        return
-    end
-    self:_do_send_message(text)
 end
 
 -- Regenerate the last assistant reply, keeping the current one as a swipe so
@@ -3180,6 +3087,10 @@ function App:show_chat_options()
         },
         { label = _("Preset"), icon = "sliders", on_tap = function()
                 self:choose_chat_preset()
+            end,
+        },
+        { label = _("Bubble theme"), icon = "magic", on_tap = function()
+                self:choose_chat_bubble_theme()
             end,
         },
         { label = _("Author's Note"), icon = "edit", on_tap = function()
@@ -4017,7 +3928,263 @@ function App:set_chat_preset(preset_id)
     self:refresh(true)
 end
 
-function App:choose_chat_preset()
+-- === Bubble themes (Appearance > Chat > Bubble themes) ===
+-- A theme snapshots {name, style, chat_bg, tint_user, radius, density,
+-- show_avatars, show_timestamps, show_tokens} into bubble_themes.json.
+-- Resolution: the CHAT override (chat_metadata.bubble_theme_id) wins,
+-- then the global default (bubble_theme_id), then plain settings.
+local BUBBLE_TINT_MAP = { none = 0.0, paper = 0.05, gray = 0.09 }
+local BUBBLE_TINT_USER = { none = 0.06, paper = 0.10, gray = 0.14 }
+
+local function bubble_theme_snapshot(s)
+    return {
+        style = s.bubble_style or "bubbles",
+        chat_bg = s.chat_bg or "paper",
+        tint_user = nil,          -- nil = derive from chat_bg (see below)
+        radius = s.bubble_radius or "normal",
+        density = s.density or "normal",
+        show_avatars = (s.show_avatars ~= false),
+        show_timestamps = (s.show_timestamps == true),
+        show_tokens = (s.show_tokens == true),
+    }
+end
+
+-- Effective theme id for the CURRENT chat (or the global default outside a
+-- chat): chat override first, then the global selection.nil means "no theme
+-- in play" (everything renders from the plain settings).
+function App:active_bubble_theme_id()
+    local meta_id = self.state.current_chat_bubble_theme_id
+    if meta_id ~= nil then return (meta_id ~= "" and meta_id) or nil end
+    local g = self.state.settings.bubble_theme_id
+    return (type(g) == "string" and g ~= "") and g or nil
+end
+
+-- Apply a bubble theme (by id) to the LIVE palette: Theme state setters are
+-- non-persistent (any apply_settings/setting save resets them from settings),
+-- and the plain settings are never written. state.chat_theme_applied holds
+-- the snapshot in effect so the chat page reads its toggles and "save
+-- current look as theme" snapshots the truth.
+function App:apply_bubble_theme(theme)
+    local Theme = require("ktui/theme")
+    local s = self.state.settings
+    if not theme then
+        Theme.set_bubble_style(s.bubble_style)
+        Theme.set_chat_bg(s.chat_bg)
+        Theme.set_bubble_radius(s.bubble_radius)
+        Theme.set_density(s.density)
+        self.state.chat_theme_applied = nil
+        return
+    end
+    Theme.set_bubble_style(theme.style or s.bubble_style)
+    Theme.set_chat_bg(theme.chat_bg or s.chat_bg)
+    Theme.set_bubble_radius(theme.radius or s.bubble_radius)
+    Theme.set_density(theme.density or s.density)
+    self.state.chat_theme_applied = {
+        style = theme.style,
+        chat_bg = theme.chat_bg,
+        radius = theme.radius,
+        density = theme.density,
+        show_avatars = theme.show_avatars,
+        show_timestamps = theme.show_timestamps,
+        show_tokens = theme.show_tokens,
+    }
+end
+
+-- Startup/reload path: resolve and apply the active theme (otherwise the
+-- plain settings). Call after apply_settings.
+function App:refresh_bubble_theme()
+    local id = self:active_bubble_theme_id()
+    if not id then
+        self:apply_bubble_theme(nil)
+        return
+    end
+    for _, t in ipairs(Storage.list_bubble_themes() or {}) do
+        if t.id == id then
+            self:apply_bubble_theme(t)
+            return
+        end
+    end
+    self:apply_bubble_theme(nil) -- dangling id: plain settings
+end
+
+function App:choose_chat_bubble_theme()
+    local Sheets = require("ktui/sheets")
+    local _ = require("gettext")
+    local self_ref = self
+    local themes = Storage.list_bubble_themes() or {}
+    local current = self.state.current_chat_bubble_theme_id
+    local actions = {
+        { label = _("Default (settings)"), checked = current == nil or current == "",
+          on_tap = function()
+              self_ref:set_chat_bubble_theme("")
+          end },
+    }
+    for _, t in ipairs(themes) do
+        table.insert(actions, {
+            label = t.name or "?",
+            checked = (current == t.id),
+            on_tap = function()
+                self_ref:set_chat_bubble_theme(t.id)
+            end,
+        })
+    end
+    table.insert(actions, {
+        label = _("Manage themes…"), icon = "sliders",
+        on_tap = function() self_ref:navigate("settings_appearance_chat") end,
+    })
+    Sheets.show(self, { title = _("Bubble theme"), actions = actions })
+end
+
+function App:set_chat_bubble_theme(theme_id)
+    self.state.current_chat_bubble_theme_id = theme_id
+    local path = self.state.current_chat_path
+    if path then
+        local chat_data = Storage.load_chat(path)
+        if chat_data and chat_data.header and chat_data.header.chat_metadata then
+            chat_data.header.chat_metadata.bubble_theme_id = (theme_id ~= "" and theme_id) or nil
+            Storage.save_chat(path, chat_data.header, chat_data.messages)
+        end
+    end
+    self:refresh_bubble_theme()
+    self:refresh(true)
+end
+
+-- Snapshot the CURRENT look (live theme if one is applied, plain settings
+-- otherwise) into a new named theme.
+function App:save_bubble_theme_from_current(name)
+    local s = self.state.settings
+    local live = self.state.chat_theme_applied
+    local snap = bubble_theme_snapshot(setmetatable({
+        bubble_style = (live and live.style) or s.bubble_style,
+        chat_bg = (live and live.chat_bg) or s.chat_bg,
+        bubble_radius = (live and live.radius) or s.bubble_radius,
+        density = (live and live.density) or s.density,
+        show_avatars = (live and live.show_avatars ~= nil)
+            and live.show_avatars or (s.show_avatars ~= false),
+        show_timestamps = (live and live.show_timestamps ~= nil)
+            and live.show_timestamps or (s.show_timestamps == true),
+        show_tokens = (live and live.show_tokens ~= nil)
+            and live.show_tokens or (s.show_tokens == true),
+    }, { __index = s }))
+    snap.name = Util.trim(tostring(name or ""))
+    if snap.name == "" then snap.name = _("Theme") end
+    snap.id = Util.uuid()
+    local themes = Storage.list_bubble_themes() or {}
+    table.insert(themes, snap)
+    Storage.save_bubble_themes(themes)
+    return snap
+end
+
+function App:rename_bubble_theme(id, name)
+    name = Util.trim(tostring(name or ""))
+    if name == "" then return end
+    local themes = Storage.list_bubble_themes() or {}
+    for _, t in ipairs(themes) do
+        if t.id == id then t.name = name end
+    end
+    Storage.save_bubble_themes(themes)
+    self:refresh(true)
+end
+
+function App:duplicate_bubble_theme(id)
+    local copy_label = _("copy")
+    local themes = Storage.list_bubble_themes() or {}
+    for _, t in ipairs(themes) do
+        if t.id == id then
+            local copy = {}
+            for k, v in pairs(t) do copy[k] = v end
+            copy.id = Util.uuid()
+            copy.name = (t.name or "?") .. " " .. copy_label
+            table.insert(themes, copy)
+            Storage.save_bubble_themes(themes)
+            self:refresh(true)
+            return copy
+        end
+    end
+end
+
+function App:delete_bubble_theme(id)
+    local themes = Storage.list_bubble_themes() or {}
+    local out = {}
+    for _, t in ipairs(themes) do
+        if t.id ~= id then table.insert(out, t) end
+    end
+    Storage.save_bubble_themes(out)
+    -- Dangling references cleared: global default and the CURRENT chat's
+    -- override both fall back when the id is gone.
+    if self.state.settings.bubble_theme_id == id then
+        self.state.settings.bubble_theme_id = ""
+        Storage.save_settings(self.state.settings)
+    end
+    if self.state.current_chat_bubble_theme_id == id then
+        self:set_chat_bubble_theme("")
+    end
+    self:refresh(true)
+end
+
+-- Import one theme JSON:
+-- { name=, style=, chat_bg=, radius=, density=, show_* }.
+function App:import_bubble_theme()
+    local _ = require("gettext")
+    local self_ref = self
+    self:choose_file_path(function(file_path)
+        if not tostring(file_path):lower():match("%.json$") then
+            UIManager:show(InfoMessage:new{
+                text = _("Please select a .json theme file."), timeout = 2 })
+            return
+        end
+        local ok, data = pcall(function()
+            local f = io.open(file_path, "r")
+            if not f then return nil end
+            local content = f:read("*a")
+            f:close()
+            return require("json").decode(content)
+        end)
+        if not ok or type(data) ~= "table" or type(data.style) ~= "string" then
+            UIManager:show(InfoMessage:new{ text = _("Import failed: invalid theme file."), timeout = 3 })
+            return
+        end
+        local themes = Storage.list_bubble_themes() or {}
+        local base = tostring(file_path):match("([^/\\]+)%.json$") or (data.name or "Theme")
+        data.name = base
+        data.id = Util.uuid()
+        table.insert(themes, data)
+        Storage.save_bubble_themes(themes)
+        self_ref:refresh(true)
+        UIManager:show(InfoMessage:new{ text = _("Theme imported!") .. " (" .. base .. ")", timeout = 2 })
+    end)
+end
+
+-- Global default theme (Appearance > Chat > Bubble themes row).
+function App:choose_default_bubble_theme()
+    local Sheets = require("ktui/sheets")
+    local _ = require("gettext")
+    local self_ref = self
+    local themes = Storage.list_bubble_themes() or {}
+    local current = self.state.settings.bubble_theme_id or ""
+    local actions = {
+        { label = _("None (settings)"), checked = current == "",
+          on_tap = function()
+              self_ref:save_setting("bubble_theme_id", "")
+              self_ref:refresh_bubble_theme()
+              self_ref:refresh(true)
+          end },
+    }
+    for _, t in ipairs(themes) do
+        table.insert(actions, {
+            label = t.name or "?",
+            checked = (current == t.id),
+            on_tap = function()
+                self_ref:save_setting("bubble_theme_id", t.id)
+                self_ref:refresh_bubble_theme()
+                self_ref:refresh(true)
+            end,
+        })
+    end
+    Sheets.show(self, { title = _("Default bubble theme"), actions = actions })
+end
+
+function App:prompt_base_font_size()
     local Modals = require("ktui/modals")
     local _ = require("gettext")
     local self_ref = self

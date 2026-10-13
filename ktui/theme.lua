@@ -128,6 +128,20 @@ function Theme.get_bubble_style()
     return bubble_style
 end
 
+-- Bubble rounding (Appearance > Chat > Bubble rounding): panel corner
+-- radius for the bubbles style. small/normal/large -> 6/10/16 (pre-scale).
+local bubble_radius_map = { small = 6, normal = 10, large = 16 }
+local bubble_radius = "normal"
+function Theme.set_bubble_radius(value)
+    if bubble_radius_map[value] then bubble_radius = value end
+end
+function Theme.get_bubble_radius()
+    return bubble_radius
+end
+function Theme.bubble_radius_px()
+    return Theme.scale(bubble_radius_map[bubble_radius] or 10)
+end
+
 -- Chat background tint (ST backgrounds/chat tint analog, e-ink safe:
 -- solid grays only - no images, no dithering).
 function Theme.set_chat_bg(value)
@@ -247,6 +261,32 @@ end
 
 local function chip_size()
     return math.max(10, math.min(14, base_font_size - 8))
+end
+
+-- Chat content font (optional custom): a font FILE path from the installed
+-- fonts list plus an absolute size. Both nil = follow the system content
+-- face and base size (Theme.face("default")). Used ONLY for message body
+-- text (chat bubbles) - chrome, headers and sheets stay on the system face.
+local chat_font_path, chat_font_size = nil, nil
+local chat_face_cache = {}
+function Theme.set_chat_font(path, size)
+    chat_font_path = (type(path) == "string" and path ~= "") and path or nil
+    size = tonumber(size)
+    chat_font_size = (size and size > 0) and math.floor(size) or nil
+end
+function Theme.chat_face()
+    if not chat_font_path and not chat_font_size then return nil end
+    local want_size = chat_font_size or base_font_size
+    local key = tostring(chat_font_path) .. "|" .. want_size
+    local cached = chat_face_cache[key]
+    if cached then return cached end
+    -- getFace accepts a raw FILE path (fontmap lookup misses, FontList
+    -- fallback search hits the installed path). A failure falls back to
+    -- system text instead of a blank bubble.
+    local ok, face = pcall(Font.getFace, Font, chat_font_path or "cfont", want_size)
+    if not ok or not face then return nil end
+    chat_face_cache = { [key] = face }
+    return face
 end
 
 function Theme.face(role)

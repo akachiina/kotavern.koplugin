@@ -465,6 +465,34 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             end,
         },
         {
+            text = _("Chat"),
+            callback = function() app:navigate("settings_appearance_chat") end,
+        },
+        { text = _("Dashboard"), callback = function() app:navigate("settings_dashboard") end },
+    }
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+-- Settings > Appearance > Chat: everything the message stream renders
+-- (style, background, avatars, metadata toggles, custom chat font).
+function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local density_labels = {
+        compact = _("Compact"),
+        normal = _("Normal"),
+        spacious = _("Spacious"),
+    }
+    local bubble_labels = {
+        bubbles = _("Bubbles (ST)"),
+        st = _("SillyTavern"),
+        flat = _("Flat"),
+        rounded = _("Rounded"),
+        square = _("Square"),
+        none = _("None"),
+    }
+    local rows = {
+        { section = true, text = _("Messages") },
+        {
             text = _("Chat style"),
             value = function() return bubble_labels[app.state.settings.bubble_style] or app.state.settings.bubble_style end,
             callback = function()
@@ -494,6 +522,30 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             value = function() return app.state.settings.show_inline_images end,
             callback = function() app:toggle_setting("show_inline_images") end,
         },
+        { section = true, text = _("Themes") },
+        {
+            text = _("Bubble themes"),
+            subtext = _("Save, apply and manage chat looks"),
+            callback = function() app:navigate("settings_bubble_themes") end,
+        },
+        { section = true, text = _("Text") },
+        {
+            text = _("Chat font"),
+            value = function()
+                local f = app.state.settings.chat_font_file or ""
+                return (f ~= "") and (f:match("[^/]+$") or f) or _("System default")
+            end,
+            callback = function() app:choose_chat_font() end,
+        },
+        {
+            text = _("Chat font size"),
+            value = function()
+                local v = tonumber(app.state.settings.chat_font_size) or 0
+                return v > 0 and tostring(v) or _("Follow base size")
+            end,
+            callback = function() app:prompt_chat_font_size() end,
+        },
+        { section = true, text = _("Details") },
         {
             text = _("Show avatars"),
             toggle = true,
@@ -532,8 +584,114 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             value = function() return app.state.settings.show_tokens end,
             callback = function() app:toggle_setting("show_tokens") end,
         },
-        { text = _("Dashboard"), callback = function() app:navigate("settings_dashboard") end },
     }
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+-- Appearance > Chat > Bubble themes: manage the saved chat-look themes and
+-- pick the global default. Per-theme actions live in a sheet (apply to THIS
+-- chat, set default, rename, duplicate, delete); creating snapshots the
+-- current look (live theme or plain settings), importing reads one JSON.
+function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local Storage = require("kt_storage")
+    local themes = Storage.list_bubble_themes() or {}
+    local in_chat = (app.state.current_chat_path ~= nil)
+    local default_id = app.state.settings.bubble_theme_id or ""
+
+    local style_labels = {
+        bubbles = _("Bubbles (ST)"), flat = _("Flat"),
+        st = _("SillyTavern"), rounded = _("Rounded"), square = _("Square"),
+    }
+    local paper_label, gray_label, none_label = _( "Paper"), _("Light gray"), _("None")
+    local rows = {
+        { section = true, text = _("Create") },
+        { text = _("Save current look as theme"), icon = "plus",
+          callback = function()
+              local Modals = require("ktui/modals")
+              Modals.input(_("Theme name"), "", _("e.g. Warm paper"), _("Save"),
+                  function(text)
+                      app:save_bubble_theme_from_current(text)
+                      app:refresh(true)
+                  end)
+          end },
+        { text = _("Import theme"), icon = "download",
+          callback = function() app:import_bubble_theme() end },
+        { text = _("Default bubble theme"), icon = "star",
+          value = function()
+              for _, t in ipairs(themes) do
+                  if t.id == default_id then return t.name end
+              end
+              return _("None (settings)")
+          end,
+          callback = function() app:choose_default_bubble_theme() end },
+    }
+    if #themes > 0 then
+        local saved_label = _("Saved themes")
+        local default_tag = _("Default")
+        local apply_label = _("Apply to this chat")
+        local rename_label = _("Rename")
+        local duplicate_label = _("Duplicate")
+        local delete_label = _("Delete")
+        local set_default_label = _("Set as default")
+        local unset_default_label = _("Unset default")
+        local theme_name_label = _("Theme name")
+        local save_label = _("Save")
+        table.insert(rows, { section = true, text = saved_label })
+        for _, t in ipairs(themes) do
+            local theme = t
+            local summary = (style_labels[theme.style] or theme.style or "?")
+                .. " · " .. ((theme.chat_bg == "gray" and gray_label)
+                    or (theme.chat_bg == "none" and none_label) or paper_label)
+            local is_default = (theme.id == default_id)
+            table.insert(rows, {
+                text = theme.name or "?",
+                subtext = summary,
+                value = is_default and (function() return default_tag end) or nil,
+                callback = function()
+                    local Sheets = require("ktui/sheets")
+                    local self_ref = app
+                    local actions = {}
+                    if in_chat then
+                        table.insert(actions, {
+                            label = apply_label, icon = "check",
+                            on_tap = function()
+                                self_ref:set_chat_bubble_theme(theme.id)
+                            end })
+                    end
+                    table.insert(actions, {
+                        label = is_default and unset_default_label or set_default_label,
+                        icon = "star",
+                        on_tap = function()
+                            self_ref:save_setting("bubble_theme_id",
+                                is_default and "" or theme.id)
+                            self_ref:refresh_bubble_theme()
+                            self_ref:refresh(true)
+                        end })
+                    table.insert(actions, {
+                        label = rename_label, icon = "edit",
+                        on_tap = function()
+                            local Modals = require("ktui/modals")
+                            Modals.input(theme_name_label, theme.name or "",
+                                theme_name_label, save_label, function(text)
+                                    self_ref:rename_bubble_theme(theme.id, text)
+                                end)
+                        end })
+                    table.insert(actions, {
+                        label = duplicate_label, icon = "copy",
+                        on_tap = function()
+                            self_ref:duplicate_bubble_theme(theme.id)
+                        end })
+                    table.insert(actions, {
+                        label = delete_label, icon = "trash", danger = true,
+                        on_tap = function()
+                            self_ref:delete_bubble_theme(theme.id)
+                        end })
+                    Sheets.show(app, { title = theme.name or theme_name_label, actions = actions })
+                end,
+            })
+        end
+    end
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
@@ -975,9 +1133,6 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
     local app = view.app
     local rows = {
         { section = true, text = _("Experimental") },
-        { text = _("Experimental screens"), icon = "grid",
-          subtext = _("UIDSL ports of chat/dashboard from themes/screens/"),
-          callback = function() app:experimental_screens_page() end },
         { text = _("Test CSS"), icon = "magic",
           subtext = _("Sandbox page painted by the UI DSL engine"),
           callback = function() app:navigate("css_test") end },
@@ -1006,235 +1161,16 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
           subtext = _("Page-turn scroll for the HTML sandbox"),
           value = function() return app.state.settings.html_pagination == true end,
           callback = function() app:toggle_setting("html_pagination") end },
+        { text = _("HTML chat renderer"), icon = "eye", toggle = true,
+          subtext = _("Render assistant bubbles with MuPDF (experimental)"),
+          value = function() return app.state.settings.chat_html_render == true end,
+          callback = function() app:toggle_setting("chat_html_render") end },
         { section = true, text = _("Danger zone") },
         { text = _("Debug Mode"), icon = "wrench", toggle = true,
           subtext = _("Turning it off hides this category and the CSS overlay."),
           value = function() return app.state.settings.debug_mode == true end,
           callback = function() app:toggle_debug_mode() end },
     }
-    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
-end
-
--- === Experimental screens (UIDSL ports) ====================================
--- Paint the <page>.html overlay from themes/screens/. Slots: a node marked
--- data-slot="chat:messages" delegates its band to the native stream painter
--- (streaming/holds/swipes stay native - the "100% HTML" v1 keeps those hot
--- paths native for e-ink responsiveness); everything else is user HTML.
--- ACTIONS per port: the catalog below (native behaviors the HTML calls by
--- data-action); themes/screens/<page>.actions.lua merges over it (custom
--- hooks win ties; parsing errors surface in the error strip, never crash).
-local function experimental_actions(view, page)
-    local app = view.app
-    if page == "dashboard" then
-        return {
-            ["dash:search"] = function()
-                app:show_dashboard_search()
-            end,
-            ["dash:import"] = function()
-                app:show_import()
-            end,
-        }
-    elseif page == "chat" then
-        return {
-            ["chat:send"] = function()
-                -- Read the draft send buffer, clear it, send.
-                local draft = app.state.chat
-                    and app.state.chat.draft or nil
-                if draft and draft ~= "" then
-                    app.state.chat.draft = ""
-                    app:send_user_message(draft)
-                else
-                    app:send_user_message(nil)
-                end
-            end,
-            ["chat:continue"] = function()
-                -- Same contract the native Continue bar cell honors: nudge
-                -- the last assistant reply, or plain-generate when the last
-                -- message is the user's (interrupted before the reply).
-                local messages = app.state.messages or {}
-                local last = messages[#messages]
-                if last and last.role == "assistant" then
-                    app:continue_message(#messages)
-                else
-                    app:generate_reply()
-                end
-            end,
-            ["chat:options"] = function()
-                app:show_chat_options()
-            end,
-        }
-    end
-    return {}
-end
-
--- Locate the FIRST data-slot node in a tree (the stream slot).
-local function find_slot(node, name)
-    if node.data_slot == name then return node end
-    for _, child in ipairs(node.children or {}) do
-        local hit = find_slot(child, name)
-        if hit then return hit end
-    end
-    return nil
-end
-
--- Native stream slot painter (experimental chat screen): paints the SAME
--- content the native chat does in its messages band - bubbles via
--- ChatBubbles.draw (streaming, holds, swipes all stay native), never
--- extending over other chrome. Empty stream keeps the native empty state.
-function Pages.chat_stream_slot(view, bb, x, y, w, h)
-    local state = view.app.state
-    local messages = state.messages or {}
-    local char_name = state.current_character or "?"
-    local is_generating = state.is_generating
-    -- Same paper tint the native chat uses, so an HTML screen with its own
-    -- bg doesn't double-paint over it (slot paints its own ground first).
-    P.rect(bb, x, y, w, h, Theme.chat_bg)
-    local ChatBubbles = require("ktui/chat_bubbles")
-    if #messages == 0 then
-        if state.chat_first_mes and state.chat_first_mes ~= "" then
-            local pad = Theme.scale(10)
-            local preview_y = y + Theme.scale(12)
-            local bubble_w = math.min(math.floor(w * 0.85), w - pad * 4)
-            P.box(bb, x + pad, preview_y, bubble_w, Theme.scale(60), {
-                border_color = Theme.soft, radius = Theme.scale(6), background = Theme.panel,
-            })
-            P.text(bb, char_name, x + pad + Theme.scale(10), preview_y + Theme.scale(4),
-                bubble_w - Theme.scale(20), "tiny", { bold = true })
-            local Widgets = require("ktui/widgets")
-            P.paragraph(bb, Widgets.truncate(state.chat_first_mes, 200),
-                x + pad + Theme.scale(10), preview_y + Theme.scale(22),
-                bubble_w - Theme.scale(20), Theme.scale(32), "default")
-        else
-            require("ktui/widgets").empty_state(view, bb, {
-                x = x, y = y, w = w, h = h,
-                icon = "chat",
-                text = _("Starting a new conversation. Tap Write to send a message!"),
-            })
-        end
-        Scroll.set_list_bounds(view, x, y, w, h, ChatBubbles.line_step())
-        view.swipe_step = ChatBubbles.line_step() * 8
-        return
-    end
-    local user_name = view.app._active_persona_name and view.app:_active_persona_name() or "You"
-    local char_image = (state.current_character_data and state.current_character_data.png_path)
-        or state.current_character_file
-    local scroll = (view.app.state.scroll and view.app:scroll_key()
-        and view.app.state.scroll[view.app:scroll_key()]) or 0
-    local total_h = ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages,
-        char_name, is_generating, user_name, char_image, state.thinking_frame)
-    local max_scroll = math.max(0, total_h - h)
-    -- Publish scroll bounds for the page-level swipe machinery (the slot
-    -- replaces the native messages card, so the page reads the same keys).
-    view._slot_max_scroll = max_scroll
-    view.swipe_step = ChatBubbles.line_step() * 8
-    Scroll.set_list_bounds(view, x, y, w, h, ChatBubbles.line_step())
-end
-
-function Pages.experimental_screen(view, bb, x, y, w, h, scroll, page)
-    local app = view.app
-    local Screens = require("ktui/screens")
-    local UiDSL = require("ktui/uidsl")
-    P.rect(bb, x, y, w, h, Theme.bg)
-    local tree, merged, errors = Screens.page(app, page, experimental_actions(view, page))
-    if not tree then
-        P.text(bb, _("Screen file missing: ") .. tostring(page),
-            x + Theme.scale(16), y + Theme.scale(16), w - Theme.scale(32), "default")
-        Scroll.set_list_bounds(view, x, y, w, h, h)
-        return 0
-    end
-    local m = Theme.metrics()
-    local pad = m.pad
-    local inner_w = w - pad * 2 - Theme.scrollbar_w()
-
-    -- Slot (chat stream): the DOM treats a data-slot node as a ZERO-height
-    -- placeholder; the real band is "everything the HTML chrome doesn't
-    -- claim". Measure the chrome (slot measures 0), then the slot paints in
-    -- the leftover band so the composer at the bottom of the HTML sits EXACTLY
-    -- where the native chat puts it - pinned to the bottom, bubbles above.
-    local slot = find_slot(tree, page == "chat" and "chat:messages" or nil)
-    local slot_h = 0
-    local total_h = UiDSL.measure(tree, inner_w)
-    if slot then
-        -- Chrome height = everything EXCEPT the (0-height) slot: total - 0.
-        -- Band = viewport minus the chrome's claim (capped minimum for the
-        -- empty-stream message so the composer never eats it).
-        slot_h = math.max(Theme.btn_h() * 2, h - total_h)
-    end
-    local max_scroll = math.max(0, total_h - h)
-    local sc = math.max(0, math.min(scroll or 0, max_scroll))
-    if app.state.scroll and app.scroll_key then
-        app.state.scroll[app:scroll_key()] = sc
-    end
-    Scroll.set_list_bounds(view, x, y, w, h, nil)
-    -- Pin-bottom (chat): when generating and the user hasn't scrolled up,
-    -- chase the newest content. Same contract the native chat honors.
-    if app.state.is_generating and not app.state.user_scrolled_up and page == "chat" then
-        sc = max_scroll
-        app.state.scroll[app:scroll_key()] = sc
-    end
-
-    -- Repaint with the slot ADDED to the flow: after the slot painter runs
-    -- (fired inside UiDSL.paint via extras), the page tells the engine the
-    -- real band height so the composer below it lands at the right dy AND
-    -- the page's max_scroll adopts the stream's (both DOM-correct).
-    local okp, perr = pcall(function()
-        UiDSL.paint(tree, bb, x + pad, y - sc, inner_w, view,
-            { x = x, y = y, w = w, h = h },
-            { slot = slot and {
-                painter = Pages.chat_stream_slot,
-                band_h = slot_h,
-            } or nil })
-    end)
-    if not okp then
-        errors[#errors + 1] = "paint: " .. tostring(perr)
-    end
-    -- Repaint now counts the slot band (set_slot_h propagated it): refresh
-    -- chrome geometry and max_scroll so the scrollbar/swipes track the full
-    -- DOM (stream + chrome) instead of the slot-less skeleton.
-    local total_h_after = UiDSL.measure(tree, inner_w)
-    max_scroll = math.max(0, total_h_after - h)
-    -- A live slot is the scrollable part of the screen (the HTML chrome is
-    -- usually shorter than the viewport): the page's max adopts the stream's.
-    if slot and view._slot_max_scroll and view._slot_max_scroll > max_scroll then
-        max_scroll = view._slot_max_scroll
-    end
-    app.state.scroll[app:scroll_key()] =
-        math.max(0, math.min(app.state.scroll[app:scroll_key()] or 0, max_scroll))
-    if #errors > 0 then
-        local strip = Theme.line_h("tiny") + Theme.scale(6)
-        P.rect(bb, x, y + h - strip, w, strip, Theme.bg)
-        P.text(bb, _("Screen problems:") .. " " .. table.concat(errors, "; "),
-            x + pad, y + h - strip + 2, w - pad * 2, "tiny", { color = Theme.muted })
-    end
-    return max_scroll
-end
-
--- Experimental screens gallery (Debug > Experimental): settings rows via
--- Pages.settings_section (consistent taps/dividers/value slot - the hand-
--- rolled two-column row grid drifted on narrow screens). Rows tap into a
--- native action sheet: Install (not installed) / Edit · Disable (built).
--- Top of the list: Reset all (kept as .bak backups).
-function Pages.experimental_screens(view, bb, x, y, w, h, scroll)
-    local app = view.app
-    local Screens = require("ktui/screens")
-    local rows = {
-        { section = true, text = _("Experimental screens") },
-        { text = _("Reset all"), icon = "refresh",
-          subtext = _("Remove every screen file (backups kept as .bak)"),
-          callback = function() app:reset_experimental_screens() end },
-    }
-    for _pi, port in ipairs(Screens.PORTS) do
-        local installed = Screens.exists(port.name)
-        table.insert(rows, {
-            text = port.label,
-            icon = installed and "check" or "plus",
-            subtext = installed and _("Installed - tap for Edit / Disable")
-                or _("Not installed - tap to enable"),
-            callback = function()
-                app:show_screen_actions(port.name)
-            end,
-        })
-    end
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 

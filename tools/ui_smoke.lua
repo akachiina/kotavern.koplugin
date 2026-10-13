@@ -4609,8 +4609,8 @@ do
     end
     -- Toggle rows register twice (row tap + toggle slot); plain rows once.
     -- Test CSS/HTML + both installs + pagination/Debug row taps = 6.
-    ok(nrow == 6, "debug page: both sandboxes rows present (got " .. tostring(nrow) .. ")")
-    ok(ntog == 2, "debug page: Debug Mode + HTML pagination toggles (got " .. tostring(ntog) .. ")")
+    ok(nrow == 7, "debug page: both sandboxes rows present (got " .. tostring(nrow) .. ")")
+    ok(ntog == 3, "debug page: Debug Mode + HTML pagination + chat renderer toggles (got " .. tostring(ntog) .. ")")
     -- Debug rows: UIDSL sandbox restored alongside KtHTML.
     local labels = {}
     for _i, hbox in ipairs(v2.hitboxes) do
@@ -4621,6 +4621,68 @@ do
     ok(labels["row:Test CSS"] and labels["row:Install sandbox.html"]
         and not labels["row:Test Native+HTML"],
         "debug page: UIDSL sandbox rows restored")
+
+    -- Appearance > Chat subpage: chat render options + custom font rows,
+    -- and Aparência now routes here instead of hosting the rows itself.
+    do
+        local a = fake_app({ page = "settings_appearance_chat", settings = {} })
+        local v = { app = a, hitboxes = {} }
+        function v:refresh() end
+        Pages.settings_appearance_chat(v, new_bb(), 0, 0, VW, VH, 0)
+        local labels = {}
+        local ntog = 0
+        for _i, hbox in ipairs(v.hitboxes) do
+            local lb = tostring(hbox.label or "")
+            if lb:find("row:", 1, true) == 1 then labels[lb] = true end
+            if lb == "row:toggle" then ntog = ntog + 1 end
+        end
+        ok(labels["row:Chat style"] and labels["row:Chat background"],
+            "appearance chat: style + background rows present")
+        ok(labels["row:Chat font"] and labels["row:Chat font size"],
+            "appearance chat: custom font rows present")
+        ok(ntog == 5, "appearance chat: the five stream toggles (got " ..
+            tostring(ntog) .. ")")
+        ok(not labels["row:Font size"],
+            "appearance chat: base font row stays on Appearance, not Chat")
+        ok(labels["row:Bubble themes"],
+            "appearance chat: bubble themes management entry present")
+    end
+
+    -- Bubble themes manager: create/import/default rows; per-theme rows
+    -- appear only when themes exist. Theme taps open the actions sheet.
+    do
+        local Store = require("kt_storage")
+        local a = fake_app({ page = "settings_bubble_themes", settings = {
+            bubble_theme_id = "t1" } })
+        local themes_fixture = {
+            { id = "t1", name = "Warm", style = "bubbles", chat_bg = "paper" } }
+        local real_list_themes = Store.list_bubble_themes
+        Store.list_bubble_themes = function() return themes_fixture end
+        local v = { app = a, hitboxes = {} }
+        function v:refresh() end
+        Pages.settings_bubble_themes(v, new_bb(), 0, 0, VW, VH, 0)
+        local labels = {}
+        for _i, hbox in ipairs(v.hitboxes) do
+            local lb = tostring(hbox.label or "")
+            if lb:find("row:", 1, true) == 1 then labels[lb] = true end
+        end
+        ok(labels["row:Save current look as theme"] and labels["row:Import theme"],
+            "bubble themes: create + import rows present")
+        ok(labels["row:Warm"] and labels["row:Default bubble theme"],
+            "bubble themes: saved theme row + default picker present")
+        -- No themes: the saved-themes section disappears entirely.
+        Store.list_bubble_themes = function() return {} end
+        local v2 = { app = a, hitboxes = {} }
+        function v2:refresh() end
+        Pages.settings_bubble_themes(v2, new_bb(), 0, 0, VW, VH, 0)
+        local n2 = 0
+        for _i, hbox in ipairs(v2.hitboxes) do
+            if tostring(hbox.label or ""):find("row:", 1, true) == 1 then n2 = n2 + 1 end
+        end
+        ok(n2 == 3, "bubble themes: exactly 3 rows with no themes saved (got " ..
+            tostring(n2) .. ")")
+        Store.list_bubble_themes = real_list_themes
+    end
 
     -- Settings root: Debug category + easter egg appear only in debug mode.
     local function paint_settings(settings_overrides)
