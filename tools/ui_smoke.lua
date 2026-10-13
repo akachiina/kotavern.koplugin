@@ -2219,6 +2219,58 @@ do
         "avatar: tap opens the photo fullscreen")
 end
 
+-- Experimental HTML chat renderer (Debug toggle): the MuPDF doc must start
+-- AT the bubble's content top (no @page top-margin dead space - the crooked
+-- chat report) and a multi-line message must keep its rows (no newline
+-- collapse into one paragraph).
+do
+    local app = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "user", content = "ping", name = "You", send_date = os.time() },
+            { role = "assistant", name = "Aria", send_date = os.time(),
+              content = "# Heading\n**bold** body\nsecond line\nthird line\nfifth line" },
+        } })
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local b = new_bb()
+    local okp, err = pcall(function() Pages.chat(view, b, 0, 0, VW, VH, 0) end)
+    ok(okp, "chat html: renders without crashing (" .. tostring(err) .. ")")
+    local bl, doc = nil, nil
+    for _k, l in pairs(view._chat_layout_cache or {}) do
+        if not l.is_user and not l.is_system then bl = bl or l end
+    end
+    for _k, d in pairs(app.state.chat_html_docs or {}) do
+        if type(d) == "table" then doc = doc or d end
+    end
+    ok(bl ~= nil and doc ~= nil, "chat html: assistant bubble measured + doc cached")
+    if bl and doc then
+        -- Content top = bubble_y + pn_pad(10) + name_row_h(48, avatar on);
+        -- the doc's own bitmap starts with ink (leading nbsp baseline), so
+        -- the first body ink must land within the first ~2.5 lines.
+        local content_top = bl.bubble_y + 10 + 48 + 8
+        local first_ink = nil
+        for yy = content_top - 12, content_top + 60 do
+            for xx = 60, VW - 40, 3 do
+                local px = b:getPixel(xx, yy)
+                if px:getR() < 128 then first_ink = yy break end
+            end
+            if first_ink then break end
+        end
+        ok(first_ink ~= nil, "chat html: body ink exists")
+        ok(first_ink ~= nil and first_ink <= content_top + 48,
+            "chat html: text starts at the content top (no @page gap) (ink at "
+            .. tostring(first_ink) .. " vs top " .. tostring(content_top) .. ")")
+        -- 5 short lines must NOT collapse into one wrapped line (MuPDF
+        -- newline behavior the <br> rewrite fixes): collapsed would be
+        -- ~2 MuPDF rows (~60px); the real layout is ~25px/row * 5 (the
+        -- canvas Theme.line_h overestimates MuPDF rows, so use 3x as floor).
+        ok(doc.height >= Theme.line_h("default") * 3,
+            "chat html: multi-line message keeps its rows (h="
+            .. tostring(doc.height) .. ")")
+    end
+    dump(b, "chat_html_render")
+end
+
 -- Sheets with two-line sublabel rows get a taller slot (Author's Note fix).
 do
     local Sheets = require("ktui/sheets")

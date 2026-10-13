@@ -7,6 +7,7 @@
 -- tap_to_follow_links switch) and lifecycle (free on navigate).
 --
 -- Public surface (all guarded, never throws to the paint path):
+--   KtHTML.chat_css()                  -> zero-margin CSS for chat bubbles
 --   KtHTML.theme_css()                 -> CSS string generated from Theme
 --   KtHTML.render_body(template, app)  -> state-templated HTML
 --   KtHTML.page_path(name)             -> themes/pages/<name> path
@@ -140,6 +141,32 @@ end
 -- Base stylesheet generated from the live Theme (string.format = our
 -- "variables": no var() needed, MuPDF wouldn't have it anyway). The file's
 -- own <style> block is appended AFTER this, so author rules win ties.
+-- CSS for the experimental chat HTML renderer (ui_smoke: chat messages).
+-- Unlike the sandbox pages (theme_css), chat bubbles need ZERO margins:
+-- MuPDF's default @page margin is ~4.2em (probe-verified) and read as
+-- unexplained dead space INSIDE a bubble; the panel band outside the text
+-- must measure only the text itself. body background is set but the widget
+-- bitmap box is cropped to the scanned text band, so the bubble's own
+-- panel color (painted by chat_bubbles around the blit) stays visible.
+function KtHTML.chat_css()
+    -- body bg = the chat panel surface (chat_bubbles blits the opaque MuPDF
+    -- bitmap over the panel; assistant panels are Theme.bg-tinted) and
+    -- scan_bottom compares against Theme.bg - one color everywhere.
+    -- The @font-face block is REQUIRED here too (not only theme_css): w/o
+    -- it 'KTSans' resolves to MuPDF's built-in fallback (serif look the
+    -- device report showed next to the sans chrome around the bubbles).
+    return string.format([[
+@font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
+@font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
+@font-face { font-family: 'KTSans'; font-style: italic; src: url('sans-italic.ttf'); }
+@page { margin: 0; }
+body { margin: 0; padding: 0; background: %s; color: %s; font-family: 'KTSans', sans-serif; }
+b { font-weight: bold; }
+]],
+        KtHTML.css_hex(Theme.bg, "#ffffff"),
+        KtHTML.css_hex(Theme.ink, "#000000"))
+end
+
 function KtHTML.theme_css()
     local font_px = Theme.scale(Theme.get_base_font_size())
     local css = string.format([[

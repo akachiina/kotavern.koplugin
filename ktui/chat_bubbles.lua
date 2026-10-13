@@ -64,6 +64,55 @@ end
 -- as a single block entry. Measured once per content+width+theme (KtHTML's
 -- tall-total scan), clipped per band like every other entry.
 local html_mode_cache = nil -- { key -> { h, widget } } attached to app.state
+
+-- Compact + re-express the message for MuPDF. Model text is NOT trusted as
+-- HTML: it is fully escaped first; only WE emit tags (<b>, <br>) out of the
+-- same markdown the canvas path handles. Without the <br>s MuPDF collapses
+-- newlines into spaces (the crooked-chat report); without the <b>s the raw
+-- **asterisks** stay visible. The canvas path's PTF bold markers are NOT
+-- used: MuPDF has no such protocol and draws them as tofu boxes.
+local function chat_html_bold(line)
+    line = line:gsub("%*%*%*(.-)%*%*%*", "<b>%1</b>")
+    line = line:gsub("%*%*(.-)%*%*", "<b>%1</b>")
+    line = line:gsub("__(.-)__", "<b>%1</b>")
+    return (line:gsub("%*(.-)%*", "<b>%1</b>"))
+end
+
+local function chat_html_body(content)
+    content = tostring(content or "")
+        :gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+    local out = {}
+    local in_code = false
+    -- NOTE: gmatch's control variable is const - rewrite through `row`.
+    for line in (content .. "\n"):gmatch("(.-)\n") do
+        local row = line
+        if row:match("^%s*```") then
+            in_code = not in_code
+            row = ""
+        else
+            row = row:gsub("`([^`]*)`", "%1") -- code spans: plain text
+            if not in_code then
+                local hashes, heading = row:match("^%s*(#+)%s+(.+)$")
+                local unordered = row:match("^%s*[-+*]%s+(.+)$")
+                local quoted = row:match("^%s*>%s?(.*)$")
+                if hashes then
+                    row = "<b>" .. heading .. "</b>"
+                elseif unordered then
+                    row = "\194\183 " .. unordered
+                elseif quoted then
+                    row = "\226\148\130 " .. quoted
+                end
+                row = chat_html_bold(row)
+            end
+        end
+        out[#out + 1] = row
+    end
+    -- MuPDF collapses \n: a literal <br> in the body is rewritten by
+    -- setContent one-for-one into "&nbsp;<div></div>" - one visual row per
+    -- source line, no extra empty band (probe-verified).
+    return table.concat(out, "<br>")
+end
+
 local function html_doc_for(app, view, content, width)
     if not app or not app.state then return nil end
     local docs = app.state.chat_html_docs
@@ -103,15 +152,17 @@ local function html_doc_for(app, view, content, width)
         end
     end
     local okp, perr = pcall(function()
-        local css = require("ktui/kthtml").theme_css()
+        local css = require("ktui/kthtml").chat_css()
         local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
-        widget:setContent(content, css, Theme.scale(Theme.get_base_font_size()),
+        widget:setContent(chat_html_body(content), css,
+            Theme.scale(Theme.get_base_font_size()),
             false, nil, Constants.PLUGIN_DIR .. "/assets")
         local pages = widget.page_count or 1
         -- Tall bitmap: relayout at pages*96 then scan the exact bottom.
         local tall = math.max(96, pages * 96)
         widget.dimen = Geom:new{ w = width, h = tall }
-        widget:setContent(content, css, Theme.scale(Theme.get_base_font_size()),
+        widget:setContent(chat_html_body(content), css,
+            Theme.scale(Theme.get_base_font_size()),
             false, nil, Constants.PLUGIN_DIR .. "/assets")
         widget:_render()
         local last = require("ktui/kthtml").scan_bottom(widget.bb, width)
@@ -317,7 +368,11 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                 if entry.widget and band_h > 0 then
                     local okp = pcall(function()
                         entry.widget:_render()
-                        bb:blitFrom(entry.widget.bb, cx, top, 0, entry.offset or 0, width, band_h)
+                        local src_h = entry.widget.bb and entry.widget.bb:getHeight() or 0
+                        local copy_h = math.min(band_h, math.max(0, src_h - (entry.offset or 0)))
+                        if copy_h > 0 then
+                            bb:blitFrom(entry.widget.bb, cx, top, 0, entry.offset or 0, width, copy_h)
+                        end
                     end)
                     if okp then
                         view.dithered = true
