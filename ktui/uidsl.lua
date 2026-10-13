@@ -36,7 +36,6 @@
 -- css_test sandbox page is its proving ground.
 
 local P = require("ktui/primitives")
-local TextBoxWidget = require("ui/widget/textboxwidget")
 local Theme = require("ktui/theme")
 
 local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
@@ -874,17 +873,6 @@ function UiDSL.layout_height(node, w)
     if node._h_cache and node._h_w == w and node._vis_w == w and node._vis then
         return node._h_cache
     end
-    -- Native-delegate slot (data-slot): zero-height placeholder in the flow
-    -- measured phase. The PAINT pass calls UiDSL.set_slot_h() with the real
-    -- band height so both the DOM (dy of the composer below) and the page
-    -- scroll max stay in sync; measure() here returns 0 so the sheet doesn't
-    -- reserve ink the slot doesn't yet own.
-    if node.data_slot and node.data_slot ~= "" then
-        node._is_slot = true
-        node._h_cache, node._h_w = 0, w
-        node._vis, node._vis_w = {}, w
-        return 0
-    end
     local leaf = leaf_h(node, w)
     if leaf then
         node._vis, node._vis_w = nil, nil
@@ -923,18 +911,6 @@ function UiDSL.layout_height(node, w)
     return set_height(node, w, h + node_inset(node))
 end
 
--- Public slot-band setter (experimental screens): after the slot painter
--- runs, the page tells the engine the real band height. The slot then
--- "knows" its own size for anything that re-measures the subtree later
--- (bind-refresh repaint with a stale _slot_band is caught by the page's
--- explicit re-measure back in Pages.experimental_screen). Returns nil
--- (informational API for now; kept public for tests).
-function UiDSL.set_slot_h(node, band_h)
-    if not node or not node._is_slot then return nil end
-    node._slot_band = math.max(0, band_h or 0)
-    return nil
-end
-
 -- Height of a node under width w (legacy public surface; pages and smoke
 -- measured with this signature long before the engine existed).
 function UiDSL.measure(node, w)
@@ -953,23 +929,10 @@ end
 -- item 1.2): a node fully outside it paints NOTHING (no hitbox, no GifAnim
 -- rect). A node still paints when merely overlapping the clip - the page
 -- caller clips the window per line; clip gates, it never invents coords.
--- extras (optional, experimental screens): { slot = { painter, band_h } }: a
--- node with data_slot set paints through the given native painter instead
--- of the node tree (streaming messages stay native inside full-HTML pages).
-function UiDSL.paint(node, bb, x, y, w, view, clip, extras, stretch_h)
+function UiDSL.paint(node, bb, x, y, w, view, clip)
     if node.display == "none" then return end
-    if extras and extras.slot and node.data_slot and node.data_slot ~= "" then
-        local s = extras.slot
-        local bh = math.max(1, s.band_h or 200)
-        node._paint_region = { x = x, y = y, w = w, h = bh }
-        pcall(s.painter, view, bb, x, y, w, bh)
-        return
-    end
     local pad = node.pad or 0
-    -- stretch_h (row passthrough): the layout engine already sized this
-    -- child to the row height (row children measure AT the row h); trust it
-    -- instead of re-measuring (identical value - zero behavioral drift).
-    local h = (stretch_h and stretch_h > 0) and stretch_h or UiDSL.measure(node, w)
+    local h = UiDSL.measure(node, w)
     if clip and (x >= clip.x + clip.w or y >= clip.y + clip.h
         or x + w <= clip.x or y + h <= clip.y) then
         return
@@ -1173,9 +1136,6 @@ function UiDSL.paint(node, bb, x, y, w, view, clip, extras, stretch_h)
         if view then view.dithered = true end
     elseif node.tag == "input" then
         -- Text-field look: muted border, current value or placeholder hint.
-        -- multiline (textarea): paint the TAIL of the draft (the caret lives
-        -- at the end) through paragraph-height-capped clipping, so long
-        -- drafts show the end of the text they are editing.
         local txt = node.input_text or ""
         P.box(bb, cx, cy, inner_w, inner_h, {
             border = true, border_size = 1,
@@ -1183,45 +1143,7 @@ function UiDSL.paint(node, bb, x, y, w, view, clip, extras, stretch_h)
             radius = node.radius,
         })
         local txp = Theme.scale(10)
-        if node.multiline then
-            local nlines, lh = P.paragraph_metrics(txt,
-                inner_w - txp * 2, "default", {})
-            if txt == "" then
-                P.vcenter_text(bb, node.input_hint or "...", cx + txp, cy,
-                    inner_w - txp * 2, inner_h, "small", { color = Theme.muted })
-            elseif nlines > 1 then
-                -- Show the TAIL lines (caret side): re-solving tail-clips
-                -- with a TextBoxWidget virtualize-start is v2; the practical
-                -- draft is short, and while editing the keyboard shows all.
-                local n = math.max(1, math.floor((inner_h - txp) / (lh or Theme.line_h("default"))))
-                local buf = TextBoxWidget:new{
-                    text = txt,
-                    face = Theme.face("default"),
-                    fgcolor = Theme.ink,
-                    alignment = "left",
-                    width = inner_w - txp * 2,
-                    height = inner_h - txp * 2,
-                    height_adjust = false,
-                }
-                -- Paint with a virtualized start: scroll to the last screen.
-                local ok_v = pcall(function()
-                    buf.virtual_line_num = math.max(1, nlines - n + 1)
-                    buf:_render()
-                    bb:blitFrom(buf.bb, cx + txp, cy + txp, 0, 0,
-                        inner_w - txp * 2, inner_h - txp * 2)
-                end)
-                if not ok_v then
-                    pcall(function() buf:free() end)
-                    P.paragraph(bb, txt, cx + txp, cy + txp,
-                        inner_w - txp * 2, inner_h - txp * 2, "default", {})
-                else
-                    pcall(function() buf:free() end)
-                end
-            else
-                P.vcenter_text(bb, txt, cx + txp, cy,
-                    inner_w - txp * 2, inner_h, "default", {})
-            end
-        elseif txt == "" then
+        if txt == "" then
             P.vcenter_text(bb, node.input_hint or "...", cx + txp, cy,
                 inner_w - txp * 2, inner_h, "small", { color = Theme.muted })
         else
@@ -1259,8 +1181,8 @@ function UiDSL.paint(node, bb, x, y, w, view, clip, extras, stretch_h)
                 elseif valign == "bottom" then
                     child_y = child_y + math.max(0, inner_h - ch)
                 end
-            UiDSL.paint(child, bb, cx + slot.dx, child_y, slot.w, view,
-                clip, extras, ch)
+                UiDSL.paint(child, bb, cx + slot.dx, child_y, slot.w, view,
+                    clip)
             end
         end
     elseif node.tag == "html" then
@@ -1301,7 +1223,7 @@ function UiDSL.paint(node, bb, x, y, w, view, clip, extras, stretch_h)
             local slot = visit[i]
             if child.display ~= "none" and slot then
                 UiDSL.paint(child, bb, cx + slot.dx, cy + (slot.dy or 0),
-                    slot.w, view, clip, extras)
+                    slot.w, view, clip)
             end
         end
     end
@@ -1563,14 +1485,6 @@ function UiDSL.from_html(html, actions, vars)
             n = UiDSL.node({ tag = "input",
                 input_title = attrs.title or attrs["data-title"],
                 input_hint = attrs.placeholder or attrs["data-placeholder"] or attrs.hint })
-        elseif name == "textarea" then
-            -- Multiline draft field (chat): same "input" node with the
-            -- multiline flag - leaf_h honors data-h (taller box), resolve
-            -- reads the string bind, tap opens the multiline keyboard.
-            n = UiDSL.node({ tag = "input", multiline = true,
-                h = attrs["data-h"] or "56px",
-                input_title = attrs.title or attrs["data-title"],
-                input_hint = attrs.placeholder or attrs["data-placeholder"] or attrs.hint })
         elseif name == "island" then
             -- MuPDF content island: raw HTML captured pre-parse (see
             -- extract_html_blocks). Never pushed (VOID): V1 is
@@ -1623,10 +1537,6 @@ function UiDSL.from_html(html, actions, vars)
         if attrs["data-step"] then n.bind_step = tonumber(attrs["data-step"]) end
         if attrs["data-min"] then n.bind_min = tonumber(attrs["data-min"]) end
         if attrs["data-max"] then n.bind_max = tonumber(attrs["data-max"]) end
-        -- Slot marker (experimental screens): data-slot="name" marks the
-        -- node as a native-painter delegate (chat:messages stream). parse
-        -- keeps the key as-is; paint honors it when the caller passes extras.
-        if attrs["data-slot"] then n.data_slot = attrs["data-slot"] end
         -- Long-press action (data-hold="name"[" data-id]): wired in
         -- resolve_binds (needs the actions map, already captured in the
         -- closure there); paint registers a hit_hold box for it. Without
@@ -2204,20 +2114,11 @@ local function resolve_binds(tree, app, errors)
                 end
             elseif node.tag == "input" then
                 node.input_text = tostring(val == nil and "" or val)
-            if not node.on_tap then
-                -- Dynamic lookup (UiDSL.open_input) keeps the tests'
-                -- override-ability: a resolve BEFORE the stub must still hit
-                -- the stub at tap time.
-                if node.multiline then
-                    node.on_tap = function()
-                        UiDSL.open_textarea(app, node)
-                    end
-                else
+                if not node.on_tap then
                     node.on_tap = function()
                         UiDSL.open_input(app, node)
                     end
                 end
-            end
             end
         end
         if node.bind_width then
@@ -2278,40 +2179,6 @@ function UiDSL.open_input(app, node)
         current, node.input_hint, nil, function(text)
             UiDSL.save_input(app, node, text)
         end)
-end
-
--- Open the system MULTI-LINE input dialog for a <textarea> node (chat
--- draft): same save-back contract as open_input, free keyboard reuse.
--- The OK callback writes the bind THEN fires the node's on_send action
--- (so a send button action can chain off this path, v1 keeps it simple:
--- bind written, caller refreshes).
-function UiDSL.open_textarea(app, node)
-    if not node then return end
-    -- lazy require: uidsl loads before the UIManager global exists in
-    -- KOReader boot order only via plugin load; direct require always safe.
-    local ok_um, UIManagerL = pcall(require, "ui/uimanager")
-    if not ok_um or not UIManagerL then return end
-    local current = tostring((bind_lookup(app, node.bind_key)) or "")
-    local dialog
-    dialog = require("ui/widget/inputdialog"):new{
-        title = node.input_title or "",
-        input = current,
-        input_hint = node.input_hint,
-        text_multiline = true,
-        buttons = {
-            {{
-                text = "OK",
-                is_enter_default = true,
-                callback = function()
-                    local text = dialog:getInputText()
-                    UIManagerL:close(dialog)
-                    UiDSL.save_input(app, node, text)
-                end,
-            }},
-        },
-    }
-    UIManagerL:show(dialog)
-    dialog:onShowKeyboard()
 end
 
 -- Build the sandbox tree from the user file. Cached by file mtime + theme
