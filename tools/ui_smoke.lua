@@ -1555,7 +1555,7 @@ do
         pr.stopped = true
         pr.bbs = nil -- what stop() leaves behind after freeing
         local oktick, errtick = pcall(pr.tick)
-        ok(oktick, "gif: stale tick after stop()(a bufferes freed) is a no-op ("
+        ok(oktick, "gif: stale tick after stop (buffers freed) is a no-op ("
             .. tostring(errtick) .. ")")
         -- Stop() is idempotent: a double stop from racing callers cannot
         -- re-free (a freed FFI buffer free() segfaults, pcall does not save).
