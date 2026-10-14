@@ -2287,8 +2287,29 @@ do
             "chat html md: `code` becomes mono span")
         ok(body:find('<a href="https://x.com">txt</a>', 1, true) ~= nil,
             "chat html md: [txt](url) becomes an anchor")
-        ok(body:find('<span class="ktspl">secret</span>', 1, true) ~= nil,
-            "chat html md: ||spoiler|| becomes the masked span")
+        ok(body:find('<a href="kt:spl:1" class="ktspl">secret</a>', 1, true) ~= nil,
+            "chat html md: ||spoiler|| becomes the masked kt:spl link")
+        -- Real italic (not the canvas path's bold fallback): * *, _ _, ***.
+        local ital = DbgChat._test_chat_html_body("*it* and _it_ and ***bi***")
+        ok(ital:find("<i>it</i>", 1, true) ~= nil,
+            "chat html md: *em* and _em_ become <i>")
+        ok(ital:find("<b><i>bi</i></b>", 1, true) ~= nil,
+            "chat html md: ***bi*** becomes <b><i>")
+        ok(DbgChat._test_chat_html_body("snake_case_word")
+            :find("<i>", 1, true) == nil,
+            "chat html md: snake_case keeps no emphasis")
+        ok(DbgChat._test_chat_html_body("`a*b` and `c*d`")
+            :find("<i>", 1, true) == nil,
+            "chat html md: emphasis never pairs across code spans")
+        -- Spoiler numbering is document order; reveal keeps the order stable.
+        local spl = DbgChat._test_chat_html_body("||a|| and ||b||")
+        ok(spl:find('kt:spl:1', 1, true) ~= nil
+            and spl:find('kt:spl:2', 1, true) ~= nil,
+            "chat html md: spoilers number in document order")
+        local rev = DbgChat._test_chat_html_body("||a|| and ||b||", { [2] = true })
+        ok(rev:find('<span class="ktspl ktsplopen">b</span>', 1, true) ~= nil
+            and rev:find("kt:spl:2", 1, true) == nil,
+            "chat html md: revealed spoiler renders as the open span")
         ok(body:find("ktq", 1, true) ~= nil,
             "chat html md: > line becomes the quote row")
         ok(body:find("\194\183 bullet", 1, true) ~= nil,
@@ -2300,6 +2321,612 @@ do
         ok(body:find("~~", 1, true) == nil and body:find("||", 1, true) == nil,
             "chat html md: no raw ~~ or || markers survive")
     end
+end
+
+-- Long-message tall-bitmap integrity (the "mensagem cortada" report): the
+-- html_doc_for flow budgets the bitmap as pages(96px)*96 and relayouts there.
+-- A long markdown bubble used to lose its tail: the relaid-out bitmap ended
+-- mid-heading and the ordered list after it was gone at the bottom of the
+-- scroll. Ground truth = a 20000px layout; the tall budget must cover it.
+do
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local KtHTML = require("ktui/kthtml")
+    local rows = {}
+    local function row(s) rows[#rows + 1] = s end
+    row("# Markdown Test Demonstration")
+    row("")
+    row("## Headers")
+    for hk = 1, 6 do row("**H" .. hk .. "**") end
+    row("")
+    row("## Emphasis")
+    row("*italic* or _italic_")
+    row("**bold** or __bold__")
+    row("***bold italic***")
+    row("~~strikethrough~~")
+    row("==highlight== (if supported)")
+    row("")
+    row("## Lists")
+    row("### Unordered")
+    row("- Item 1")
+    row("- Item 2")
+    row("  - Nested item")
+    row("  - Another nested item")
+    row("- Item 3")
+    row("")
+    row("### Ordered")
+    for ok_i = 1, 8 do row(ok_i .. ". Ordered item number " .. ok_i) end
+    row("")
+    row("## Second block after the lists")
+    row("Tail line one")
+    row("Tail line two")
+    local content = table.concat(rows, "\n")
+
+    local function probe(height)
+        local w = 560
+        local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = w, h = height } }
+        widget:setContent(ChatBubbles._test_chat_html_body(content),
+            KtHTML.chat_css(), Theme.scale(Theme.get_base_font_size()),
+            false, nil, PLUGIN .. "/assets")
+        return widget
+    end
+    local w96 = probe(96)
+    local tall = math.max(96, (w96.page_count or 1) * 96)
+    local wtall = probe(tall)
+    wtall:_render()
+    local tall_scan = KtHTML.scan_bottom(wtall.bb, 560)
+    local wtruth = probe(20000)
+    wtruth:_render()
+    local truth_scan = KtHTML.scan_bottom(wtruth.bb, 560)
+    ok(wtall.page_count == 1,
+        "chat html: tall relayout fits on one page (tall=" .. tall
+        .. " pages=" .. tostring(wtall.page_count) .. ")")
+    ok(tall_scan ~= nil and truth_scan ~= nil and truth_scan <= tall_scan + 8,
+        "chat html: tall budget covers the full content (tall_scan="
+        .. tostring(tall_scan) .. " truth_scan=" .. tostring(truth_scan)
+        .. " pages96=" .. tostring(w96.page_count) .. ")")
+end
+
+-- Chat HTML long-message scroll integrity (the "mensagem cortada" report):
+-- the full canvas flow (a busy chat, the long markdown message last, paints
+-- at several scrolls, doc-cache prune pressure) must keep the tail rows of
+-- the long bubble: its measured height matches the fresh-probe truth, the
+-- bottom paint still holds ink at the tail, and no cached layout keeps a
+-- freed (pruned) widget (that used to repaint as a blank band).
+do
+    local rows = {}
+    local function lrow(s) rows[#rows + 1] = s end
+    lrow("# Long Scroll Test")
+    lrow("")
+    lrow("## Headers")
+    lrow("**Alpha**")
+    lrow("**Beta**")
+    lrow("")
+    lrow("## Emphasis")
+    lrow("*italic* or _italic_")
+    lrow("**bold** or __bold__")
+    lrow("***bold italic***")
+    lrow("~~strikethrough~~")
+    lrow("")
+    lrow("## Lists")
+    lrow("- Item 1")
+    lrow("- Item 2")
+    lrow("  - Nested item")
+    lrow("- Item 3")
+    lrow("")
+    lrow("## Code")
+    lrow("Inline `code`")
+    lrow("```python")
+    lrow("def hello():")
+    lrow('    print("World")')
+    lrow("```")
+    lrow("")
+    lrow("> This is a blockquote.")
+    lrow("")
+    lrow("| Header 1 | Header 2 |")
+    lrow("|----------|----------|")
+    lrow("| Cell 1   | Cell 2   |")
+    lrow("")
+    lrow("---")
+    lrow("")
+    lrow("### Ordered")
+    lrow("1. First")
+    lrow("2. Second")
+    lrow("   1. Nested")
+    lrow("3. Third")
+    lrow("")
+    lrow("*TAILMARKER End of test.*")
+    local long_content = table.concat(rows, "\n")
+
+    local now = os.time()
+    local msgs = {
+        { role = "user", content = "pls use markdown", name = "You", send_date = now - 100 },
+    }
+    for mk = 1, 4 do
+        msgs[#msgs + 1] = { role = "assistant", name = "Aria",
+            content = "short reply number " .. mk, send_date = now - 100 + mk }
+        msgs[#msgs + 1] = { role = "user", name = "You",
+            content = "ok " .. mk, send_date = now - 100 + mk }
+    end
+    msgs[#msgs + 1] = { role = "assistant", name = "Aria",
+        content = long_content, send_date = now }
+    local app = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = msgs })
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+
+    local function paint_at(scroll)
+        view.hitboxes = {}
+        local b = new_bb()
+        local okp, total = pcall(function()
+            return Pages.chat(view, b, 0, 0, VW, VH, scroll or 0)
+        end)
+        return okp, total, b
+    end
+    local function all_html_layouts()
+        local out = {}
+        for _lk, l in pairs(view._chat_layout_cache or {}) do
+            if type(l) == "table" and l.entries then
+                for _ek, e in ipairs(l.entries) do
+                    if e.kind == "html" then
+                        out[#out + 1] = { layout = l, entry = e }
+                    end
+                end
+            end
+        end
+        return out
+    end
+    -- The long message is the tallest html entry (short replies are 1 line).
+    local function find_long_layout()
+        local best, best_e, best_h = nil, nil, -1
+        for _bk, hit in ipairs(all_html_layouts()) do
+            if (hit.entry.h or 0) > best_h then
+                best, best_e, best_h = hit.layout, hit.entry, hit.entry.h or 0
+            end
+        end
+        return best, best_e
+    end
+    -- Message-area height: the composer bar (pinned, Deck.px 54) is NOT
+    -- message ink - scans must stay above it or they catch the bar buttons.
+    local Deck = require("ktui/deck")
+    local deck_rects = Deck.layout(view,
+        { Deck.card("messages", { grow = true }),
+          Deck.px("composer", Theme.scale(54)) },
+        { x = 0, y = 0, w = VW, h = VH })
+    local content_h = deck_rects.messages.h
+    local function last_ink_y(b)
+        for yy = content_h - 8, 0, -1 do
+            for xx = 60, VW - 60, 6 do
+                local okp, px = pcall(function() return b:getPixel(xx, yy) end)
+                if okp and px and px:getR() < 128 then return yy end
+            end
+        end
+        return nil
+    end
+
+    local okp_top, total_top, b_top = paint_at(0)
+    ok(okp_top, "chat html scroll: top paint renders without crashing")
+    local lay, entry = find_long_layout()
+    ok(lay ~= nil and entry ~= nil, "chat html scroll: long message measured as an html entry")
+    local measured_h = (entry and entry.h) or 0
+    -- Fresh-probe truth at the same text width: a 20000px layout.
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local KtHTML = require("ktui/kthtml")
+    local truth_w = HtmlBoxWidget:new{
+        dimen = Geom:new{ w = lay and lay.text_w or 500, h = 20000 } }
+    truth_w:setContent(ChatBubbles._test_chat_html_body(long_content),
+        KtHTML.chat_css(), Theme.scale(Theme.get_base_font_size()),
+        false, nil, PLUGIN .. "/assets")
+    truth_w:_render()
+    local truth_h = KtHTML.scan_bottom(truth_w.bb, lay and lay.text_w or 500)
+    ok(truth_h ~= nil and math.abs(measured_h - truth_h) <= 8,
+        "chat html scroll: measured height matches the truth (measured="
+        .. tostring(measured_h) .. " truth=" .. tostring(truth_h) .. ")")
+    -- Bottom paint: ink must reach the tail (bubble end holds the swipe row
+    -- and the tail marker; a truncated doc would end rows higher).
+    -- Pages.chat already returns max_scroll (total - message area).
+    local max_scroll = total_top or 0
+    local okp_bot, total_bot, b_bot = paint_at(max_scroll)
+    ok(okp_bot, "chat html scroll: bottom paint renders without crashing")
+    dump(b_bot, "chat_html_bottom")
+    local li = last_ink_y(b_bot)
+    ok(li ~= nil and li >= content_h - 120,
+        "chat html scroll: bottom paint holds ink at the tail (last_ink="
+        .. tostring(li) .. " content_h=" .. tostring(content_h) .. ")")
+    -- Prune pressure: 22 more distinct long docs (27 total, over the cap)
+    -- evict the first ones; then scroll back to the original long message:
+    -- its CURRENT cached layout must hold a live widget (the fast-path
+    -- guard re-measures instead of repainting a freed one as a blank band,
+    -- and the prune never evicts docs referenced by this paint's layouts).
+    local long_msg_key = lay and lay.msg_key or nil
+    local orig_y = lay and lay.y or 0
+    for pk = 1, 22 do
+        msgs[#msgs + 1] = { role = "assistant", name = "Aria",
+            content = long_content .. "\n\nextra block " .. pk, send_date = now + pk }
+        paint_at(max_scroll)
+    end
+    paint_at(math.max(0, orig_y - 100))
+    local cur_entry = nil
+    for _ck, l in pairs(view._chat_layout_cache or {}) do
+        if type(l) == "table" and l.msg_key == long_msg_key and l.entries then
+            for _ce, e in ipairs(l.entries) do
+                if e.kind == "html" then cur_entry = e break end
+            end
+        end
+    end
+    local live_now = cur_entry and cur_entry.widget
+        and cur_entry.widget.document ~= nil
+    ok(cur_entry ~= nil and live_now,
+        "chat html scroll: scrolled-back layout holds a live widget after prune")
+    local okp_re, _tr, b_re = paint_at(max_scroll)
+    ok(okp_re, "chat html scroll: repaint after prune renders without crashing")
+    local li_re = last_ink_y(b_re)
+    ok(li_re ~= nil and li_re >= content_h - 120,
+        "chat html scroll: repaint after prune still holds ink at the tail (last_ink="
+        .. tostring(li_re) .. ")")
+    dump(b_re, "chat_html_reprune")
+end
+
+-- Chat HTML band-source integrity (the src_y=0 bug): every visible band must
+-- show the doc slice at its own scroll offset - a constant source offset
+-- re-stamped the doc head on every band, so tall bubbles could never show
+-- their tail ("mensagem cortada"). Match paint strips against the widget
+-- bitmap and assert the found offsets track the scroll and reach the tail.
+do
+    local now2 = os.time()
+    local msgs2 = {
+        { role = "user", content = "ping", name = "You", send_date = now2 - 10 },
+    }
+    for fk = 1, 40 do
+        msgs2[#msgs2 + 1] = { role = "assistant", name = "Aria",
+            content = "Filler paragraph number " .. fk
+                .. " with enough words to wrap a couple of rows.",
+            send_date = now2 - 10 + fk }
+    end
+    local mid_rows = {}
+    for fr = 1, 60 do
+        mid_rows[#mid_rows + 1] = "mid filler row " .. string.format("%02d", fr)
+            .. " one two three four"
+    end
+    msgs2[#msgs2 + 1] = { role = "assistant", name = "Aria",
+        content = "HEADMARKER alpha beta gamma\n" .. table.concat(mid_rows, "\n")
+            .. "\nTAILMARKER omega psi chi",
+        send_date = now2 + 100 }
+    local app2 = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = msgs2 })
+    local view2 = { app = app2, hitboxes = {}, refresh = function() end }
+    local function paint2(scroll)
+        view2.hitboxes = {}
+        local b = new_bb()
+        local okp, total = pcall(function()
+            return Pages.chat(view2, b, 0, 0, VW, VH, scroll or 0)
+        end)
+        return okp, total, b
+    end
+    local function find_html_band(want_key)
+        for _bk, box in ipairs(view2.hitboxes) do
+            if box.label and box.label == "chathtml_" .. tostring(want_key) then
+                return box
+            end
+        end
+        return nil
+    end
+    local function find_long2()
+        local best, best_e, best_h = nil, nil, -1
+        for _lk, l in pairs(view2._chat_layout_cache or {}) do
+            if type(l) == "table" and l.entries then
+                for _ek, e in ipairs(l.entries) do
+                    if e.kind == "html" and (e.h or 0) > best_h then
+                        best, best_e, best_h = l, e, e.h or 0
+                    end
+                end
+            end
+        end
+        return best, best_e
+    end
+    local function ink_at(b, x, y)
+        local okp, px = pcall(function() return b:getPixel(x, y) end)
+        if not okp or not px then return 255 end
+        return px:getR()
+    end
+    -- Best doc-row offset for a paint strip: min grayscale mismatch over the
+    -- doc bitmap (step 4 rows). Returns offset, mismatch rate.
+    local function match_offset(paint, px0, py0, strip_w, strip_h, doc_bb, doc_w, doc_h)
+        local best_off, best_bad, total = 0, 1e9, 0
+        for off = 0, math.max(0, doc_h - strip_h), 4 do
+            local bad, n = 0, 0
+            for dy = 0, strip_h - 1, 4 do
+                for dx = 0, strip_w - 1, 12 do
+                    local a = ink_at(paint, px0 + dx, py0 + dy)
+                    local c = ink_at(doc_bb, dx, off + dy)
+                    n = n + 1
+                    if math.abs(a - c) > 60 then bad = bad + 1 end
+                end
+            end
+            total = n
+            if bad < best_bad then best_bad, best_off = bad, off end
+        end
+        return best_off, (total > 0) and (best_bad / total) or 1
+    end
+
+    local okp0, total0 = paint2(0)
+    ok(okp0, "chat html bands: top paint renders without crashing")
+    local deck2 = require("ktui/deck").layout(view2,
+        { require("ktui/deck").card("messages", { grow = true }),
+          require("ktui/deck").px("composer", Theme.scale(54)) },
+        { x = 0, y = 0, w = VW, h = VH })
+    local ch2 = deck2.messages.h
+    -- Pages.chat already returns max_scroll (total - message area).
+    local max0 = total0 or 0
+    local lay2, entry2 = find_long2()
+    ok(lay2 ~= nil and entry2 ~= nil and entry2.widget ~= nil,
+        "chat html bands: long html entry with a widget")
+    local long_key = lay2 and lay2.msg_key or nil
+    local doc_bb = entry2 and entry2.widget and entry2.widget.bb or nil
+    local doc_h = (entry2 and entry2.h) or 0
+    local doc_w = (lay2 and lay2.text_w) or 0
+    ok(doc_bb ~= nil and doc_h > VH,
+        "chat html bands: test message is taller than the viewport (h="
+        .. tostring(doc_h) .. ")")
+    if doc_bb ~= nil and doc_h > VH then
+        -- Bottom paint: the band must sit at the doc tail, not the head.
+        local okp_b, _tb, b_b = paint2(max0)
+        ok(okp_b, "chat html bands: bottom paint renders without crashing")
+        local band_b = find_html_band(long_key)
+        ok(band_b ~= nil, "chat html bands: bottom paint registers the long html band")
+        dump(b_b, "chat_html_band_bottom")
+        if band_b then
+            -- At the true max the band must reach the message-area bottom.
+            local band_bottom = band_b.y + band_b.h
+            ok(math.abs(band_bottom - ch2) < 80,
+                "chat html bands: bottom band reaches the area end (band_bottom="
+                .. tostring(band_bottom) .. " area=" .. tostring(ch2) .. ")")
+            local sx = math.max(0, math.floor(band_b.x))
+            local sy = math.max(0, math.floor(band_b.y)) + 20
+            local sw = math.min(doc_w, math.floor(band_b.w))
+            local sh = math.min(60, math.floor(band_b.h) - 100)
+            if sh > 20 and sw > 40 then
+                local off_b, bad_b = match_offset(b_b, sx, sy, sw, sh, doc_bb, doc_w, doc_h)
+                ok(bad_b < 0.25,
+                    "chat html bands: bottom strip matches the doc (mismatch="
+                    .. string.format("%.2f", bad_b) .. ")")
+                local want_b = doc_h - math.floor(band_b.h)
+                ok(math.abs(off_b - want_b) < 100,
+                    "chat html bands: bottom band shows the doc tail (offset="
+                    .. tostring(off_b) .. " want~" .. tostring(want_b) .. ")")
+                -- Mid paint 400px up: the slice must move up by ~400.
+                local mid_scroll = math.max(0, max0 - 400)
+                local okp_m, _tm, b_m = paint2(mid_scroll)
+                ok(okp_m, "chat html bands: mid paint renders without crashing")
+                local band_m = find_html_band(long_key)
+                if band_m then
+                    local mx = math.max(0, math.floor(band_m.x))
+                    local my = math.max(0, math.floor(band_m.y)) + 20
+                    local mw = math.min(doc_w, math.floor(band_m.w))
+                    local mh = math.min(60, math.floor(band_m.h) - 100)
+                    if mh > 20 and mw > 40 then
+                        local off_m, bad_m = match_offset(b_m, mx, my, mw, mh, doc_bb, doc_w, doc_h)
+                        ok(bad_m < 0.25,
+                            "chat html bands: mid strip matches the doc (mismatch="
+                            .. string.format("%.2f", bad_m) .. ")")
+                        local step = off_b - off_m
+                        ok(step > 280 and step < 520,
+                            "chat html bands: scrolling moves through the doc (step="
+                            .. tostring(step) .. " for 400px scroll)")
+                        dump(b_m, "chat_html_band_mid")
+                    else
+                        ok(false, "chat html bands: mid band too small to sample")
+                    end
+                else
+                    ok(false, "chat html bands: mid paint registers the html band")
+                end
+            else
+                ok(false, "chat html bands: bottom band too small to sample")
+            end
+        end
+    end
+end
+
+-- Chat HTML real italic: MuPDF must use the slanted face, not faux-bold -
+-- same word plain/<b>/<i> must all paint differently (like the uidsl
+-- island-italic probe, but through the chat pipeline).
+do
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local KtHTML = require("ktui/kthtml")
+    local function doc_sig(inner)
+        local w = HtmlBoxWidget:new{ dimen = Geom:new{ w = 400, h = 200 } }
+        w:setContent("<p>" .. inner .. "</p>", KtHTML.chat_css(),
+            Theme.scale(Theme.get_base_font_size()),
+            false, nil, PLUGIN .. "/assets")
+        w:_render()
+        local n, s = 0, 0
+        for yy = 0, 199, 2 do
+            for xx = 0, 399, 2 do
+                local okp, px = pcall(function() return w.bb:getPixel(xx, yy) end)
+                if okp and px and px:getR() < 200 then n = n + 1; s = s + xx + yy end
+            end
+        end
+        pcall(function() w:free() end)
+        return n .. ":" .. s
+    end
+    local s_plain = doc_sig("Slanted check word")
+    local s_bold = doc_sig("<b>Slanted check word</b>")
+    local s_ital = doc_sig("<i>Slanted check word</i>")
+    ok(s_plain ~= s_ital,
+        "chat html: <i> paints differently from upright (real italic face)")
+    ok(s_ital ~= s_bold,
+        "chat html: <i> paints differently from <b> (not faux-bold)")
+end
+
+-- Chat HTML spoiler tap-to-reveal end to end: paint a masked spoiler, tap
+-- its link rect through the band hitbox, the reveal state flips, the doc is
+-- rebuilt and the repaint no longer paints the mask bar (pixel proof).
+do
+    local now3 = os.time()
+    local app3 = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria",
+              content = "before ||secret|| after", send_date = now3 },
+        } })
+    local refreshed = 0
+    local view3 = { app = app3, hitboxes = {},
+        refresh = function() refreshed = refreshed + 1 end }
+    local b3 = new_bb()
+    local okp3 = pcall(function() Pages.chat(view3, b3, 0, 0, VW, VH, 0) end)
+    ok(okp3, "chat html spoiler: masked paint renders without crashing")
+    local box3 = nil
+    for _sk, hb in ipairs(view3.hitboxes) do
+        if hb.label and hb.label:sub(1, 9) == "chathtml_" then box3 = hb break end
+    end
+    ok(box3 ~= nil, "chat html spoiler: html band registers a tap hitbox")
+    local lay3, entry3 = nil, nil
+    for _lk3, l in pairs(view3._chat_layout_cache or {}) do
+        if type(l) == "table" and l.entries then
+            for _ek3, e in ipairs(l.entries) do
+                if e.kind == "html" then lay3, entry3 = l, e break end
+            end
+        end
+    end
+    ok(lay3 ~= nil and entry3 ~= nil and entry3.widget ~= nil,
+        "chat html spoiler: html entry with a widget")
+    local function widget_sig(w)
+        if not w or not w.bb then return nil end
+        local n, s = 0, 0
+        for yy = 0, w.bb:getHeight() - 1, 3 do
+            for xx = 0, w.bb:getWidth() - 1, 3 do
+                local okp, px = pcall(function() return w.bb:getPixel(xx, yy) end)
+                if okp and px and px:getR() < 200 then n = n + 1; s = s + xx + yy end
+            end
+        end
+        return n .. ":" .. s
+    end
+    local sig_masked = widget_sig(entry3.widget)
+    local spl_link = nil
+    if entry3.widget and entry3.widget.document then
+        local okp, pg = pcall(function() return entry3.widget.document:openPage(1) end)
+        if okp and pg then
+            local okp2, links = pcall(function() return pg:getPageLinks() end)
+            pcall(function() pg:close() end)
+            if okp2 and type(links) == "table" then
+                for _gl, lk in ipairs(links) do
+                    if type(lk) == "table" and tostring(lk.uri or lk.url or "") == "kt:spl:1" then
+                        spl_link = lk break
+                    end
+                end
+            end
+        end
+    end
+    ok(spl_link ~= nil, "chat html spoiler: masked spoiler exposes a kt:spl:1 link")
+    if box3 and spl_link then
+        local okp = pcall(function()
+            box3.callback(box3.x + (spl_link.x0 or 0) + 2, box3.y + (spl_link.y0 or 0) + 2)
+        end)
+        ok(okp, "chat html spoiler: tapping the spoiler does not crash")
+        local rev = app3.state.chat_spoilers_revealed
+        local key3 = lay3 and lay3.msg_key or nil
+        ok(rev ~= nil and key3 ~= nil and rev[key3] ~= nil and rev[key3][1] == true,
+            "chat html spoiler: tap flips the reveal state")
+        ok(refreshed > 0, "chat html spoiler: tap requests a refresh")
+        view3.hitboxes = {}
+        local b3b = new_bb()
+        local okp4 = pcall(function() Pages.chat(view3, b3b, 0, 0, VW, VH, 0) end)
+        ok(okp4, "chat html spoiler: revealed repaint renders without crashing")
+        local entry3b = nil
+        for _lk4, l in pairs(view3._chat_layout_cache or {}) do
+            if type(l) == "table" and l.entries then
+                for _ek4, e in ipairs(l.entries) do
+                    if e.kind == "html" then entry3b = e break end
+                end
+            end
+        end
+        local sig_open = entry3b and widget_sig(entry3b.widget)
+        ok(sig_open ~= nil and sig_open ~= sig_masked,
+            "chat html spoiler: revealed paint no longer paints the mask bar")
+        dump(b3b, "chat_html_spoiler_open")
+    end
+end
+
+-- Chat HTML external link end to end: tapping an http(s) link opens the
+-- KOReader-style dialog (Copy / QR / browser); the browser button hands
+-- the URL to Device:openLink. Dialog widgets, UIManager and Device are
+-- stubbed; everything is restored afterwards.
+do
+    local UIManager = require("ui/uimanager")
+    local Device = require("device")
+    local real_show, real_close = UIManager.show, UIManager.close
+    local real_dialog = package.loaded["ui/widget/buttondialog"]
+    local real_can, real_open = Device.canOpenLink, Device.openLink
+    local shown, opened = {}, {}
+    UIManager.show = function(_s, w) shown[#shown + 1] = w end
+    UIManager.close = function() end
+    package.loaded["ui/widget/buttondialog"] = {
+        new = function(_s, o) return { title = o.title, buttons = o.buttons } end,
+    }
+    Device.canOpenLink = function() return true end
+    Device.openLink = function(_s, url) opened[#opened + 1] = url end
+    local now4 = os.time()
+    local app4 = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria",
+              content = "see [txt](https://x.com) here", send_date = now4 },
+        } })
+    local view4 = { app = app4, hitboxes = {}, refresh = function() end }
+    local b4 = new_bb()
+    local okp5 = pcall(function() Pages.chat(view4, b4, 0, 0, VW, VH, 0) end)
+    ok(okp5, "chat html link: paint renders without crashing")
+    local box4, entry4 = nil, nil
+    for _sk4, hb in ipairs(view4.hitboxes) do
+        if hb.label and hb.label:sub(1, 9) == "chathtml_" then box4 = hb break end
+    end
+    for _lk5, l in pairs(view4._chat_layout_cache or {}) do
+        if type(l) == "table" and l.entries then
+            for _ek5, e in ipairs(l.entries) do
+                if e.kind == "html" then entry4 = e break end
+            end
+        end
+    end
+    local http_link = nil
+    if entry4 and entry4.widget and entry4.widget.document then
+        local okp, pg = pcall(function() return entry4.widget.document:openPage(1) end)
+        if okp and pg then
+            local okp2, links = pcall(function() return pg:getPageLinks() end)
+            pcall(function() pg:close() end)
+            if okp2 and type(links) == "table" then
+                for _gl2, lk in ipairs(links) do
+                    if type(lk) == "table"
+                        and tostring(lk.uri or lk.url or "") == "https://x.com" then
+                        http_link = lk break
+                    end
+                end
+            end
+        end
+    end
+    ok(box4 ~= nil and http_link ~= nil,
+        "chat html link: http link exposes a tappable rect")
+    if box4 and http_link then
+        local okp = pcall(function()
+            box4.callback(box4.x + (http_link.x0 or 0) + 2, box4.y + (http_link.y0 or 0) + 2)
+        end)
+        ok(okp, "chat html link: tapping the link does not crash")
+        ok(#shown == 1 and shown[1].title == "https://x.com",
+            "chat html link: tap opens the external-link dialog for the URL")
+        local browser_btn = shown[1] and shown[1].buttons
+            and shown[1].buttons[3] and shown[1].buttons[3][1]
+        ok(browser_btn ~= nil, "chat html link: dialog carries the browser button")
+        if browser_btn then
+            local okp2 = pcall(browser_btn.callback)
+            ok(okp2 and #opened == 1 and opened[1] == "https://x.com",
+                "chat html link: browser button hands the URL to Device:openLink")
+        end
+    end
+    UIManager.show, UIManager.close = real_show, real_close
+    package.loaded["ui/widget/buttondialog"] = real_dialog
+    Device.canOpenLink, Device.openLink = real_can, real_open
 end
 
 -- Sheets with two-line sublabel rows get a taller slot (Author's Note fix).

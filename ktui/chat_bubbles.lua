@@ -77,23 +77,80 @@ local function chat_html_escape(line)
     return (line:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
 
--- Inline markdown over ALREADY-ESCAPED text: links, code spans, spoiler,
--- strike, then emphasis (*** before ** before *). Italic renders as bold -
--- the same single-protocol choice the canvas path makes on e-ink.
-local function chat_html_inline(line)
+-- Underscore emphasis with word-boundary rules (port of md.lua's
+-- underscore_emphasis): `snake_case` and `file_name.txt` must NOT turn into
+-- italics, only ` _spaced or word_ bounded ` markers do. * runs through plain
+-- gsubs first (*** then ** then *), underscores go through this.
+local function chat_underscore_emphasis(line, marker, open, close)
+    local output = {}
+    local position = 1
+    while position <= #line do
+        local start = line:find(marker, position, true)
+        if not start then
+            output[#output + 1] = line:sub(position)
+            break
+        end
+        local before = start == 1 and "" or line:sub(start - 1, start - 1)
+        local ending = line:find(marker, start + #marker, true)
+        if before:match("[%w]") or not ending then
+            output[#output + 1] = line:sub(position, start + #marker - 1)
+            position = start + #marker
+        else
+            local text = line:sub(start + #marker, ending - 1)
+            local after = line:sub(ending + #marker, ending + #marker)
+            if text == "" or text:match("^%s") or text:match("%s$") or after:match("[%w]") then
+                output[#output + 1] = line:sub(position, start + #marker - 1)
+                position = start + #marker
+            else
+                output[#output + 1] = line:sub(position, start - 1)
+                output[#output + 1] = open .. text .. close
+                position = ending + #marker
+            end
+        end
+    end
+    return table.concat(output)
+end
+
+-- Inline markdown over ALREADY-ESCAPED text. Order matters: links and code
+-- spans are converted FIRST and stashed behind \1N\1 sentinels so emphasis
+-- never pairs markers across their payloads (two code spans each holding one
+-- `*` used to italicize the HTML between them); then spoiler, strike and the
+-- emphasis chain (*** before ** before *, underscores with word-boundary
+-- rules). Italic is REAL italic here (the canvas path's bold-fallback choice
+-- does not apply: chat_css @font-faces sans-italic.ttf for MuPDF).
+-- state = { revealed = { [n]=true }, spl_n = 0 }: spoiler numbering is
+-- document order across the whole body; a revealed index re-renders as an
+-- open span, otherwise as an <a href="kt:spl:N"> the tap layer flips.
+local function chat_html_inline(line, state)
+    local stash = {}
+    local function stash_html(html)
+        stash[#stash + 1] = html
+        return "\1" .. #stash .. "\1"
+    end
     -- [label](url) -> anchor. Runs on ESCAPED text: a & in the url is
-    -- already &amp; (valid href), no double-escape risk.
+    -- already & (valid href), no double-escape risk.
     line = line:gsub("%[([^%]]*)%]%(([^)%s]+)%)", function(label, url)
-        return '<a href="' .. url .. '">' .. label .. '</a>'
+        return stash_html('<a href="' .. url .. '">' .. label .. '</a>')
     end)
-    line = line:gsub("`([^`]*)`", '<span class="ktcode">%1</span>')
-    line = line:gsub("||([^|]-)||",
-        '<span class="ktspl">%1</span>')
+    line = line:gsub("`([^`]*)`", function(code)
+        return stash_html('<span class="ktcode">' .. code .. '</span>')
+    end)
+    line = line:gsub("||([^|]-)||", function(secret)
+        state.spl_n = state.spl_n + 1
+        if state.revealed and state.revealed[state.spl_n] then
+            return stash_html('<span class="ktspl ktsplopen">' .. secret .. '</span>')
+        end
+        return stash_html('<a href="kt:spl:' .. state.spl_n .. '" class="ktspl">' .. secret .. '</a>')
+    end)
     line = line:gsub("~~(.-)~~", "<s>%1</s>")
-    line = line:gsub("%*%*%*(.-)%*%*%*", "<b>%1</b>")
+    line = line:gsub("%*%*%*(.-)%*%*%*", "<b><i>%1</i></b>")
     line = line:gsub("%*%*(.-)%*%*", "<b>%1</b>")
-    line = line:gsub("__(.-)__", "<b>%1</b>")
-    line = line:gsub("%*(.-)%*", "<b>%1</b>")
+    line = chat_underscore_emphasis(line, "__", "<b>", "</b>")
+    line = line:gsub("%*(.-)%*", "<i>%1</i>")
+    line = chat_underscore_emphasis(line, "_", "<i>", "</i>")
+    if #stash > 0 then
+        line = line:gsub("\1(%d+)\1", function(n) return stash[tonumber(n)] or "" end)
+    end
     return line
 end
 
@@ -101,7 +158,8 @@ end
 -- line; the payload is THEN escaped and the inline encoder runs on it. The
 -- tags we emit are never part of the escaped payload (the previous order -
 -- inject <a> raw, escape after - displayed the anchor source verbatim).
-local function chat_html_line(line, out)
+-- state threads the spoiler counter/reveal set across the whole body.
+local function chat_html_line(line, out, state)
     local hashes, heading = line:match("^%s*(#+)%s+(.+)$")
     local quoted = line:match("^%s*>%s?(.*)$")
     local unordered = line:match("^%s*[-+*]%s+(.+)$")
@@ -117,10 +175,10 @@ local function chat_html_line(line, out)
     elseif number then
         payload = indent .. number .. ". " .. ordered_text
     end
-    out[#out + 1] = open .. chat_html_inline(chat_html_escape(payload)) .. close
+    out[#out + 1] = open .. chat_html_inline(chat_html_escape(payload), state) .. close
 end
 
-local function chat_html_body(content)
+local function chat_html_body(content, revealed)
     -- Rows are tagged text|fence; consecutive fence rows flush as CONTIGUOUS
     -- <p class="ktfence"> blocks (probe: contiguous <p> bands touch, no gap;
     -- a <br> inside/between inline-block spans left an empty white band),
@@ -128,6 +186,7 @@ local function chat_html_body(content)
     -- safe on both block boundaries (text->fence, fence->text).
     local rows = {}
     local in_code = false
+    local state = { revealed = revealed, spl_n = 0 }
     for line in (tostring(content or "") .. "\n"):gmatch("(.-)\n") do
         if line:match("^%s*```") then
             in_code = not in_code
@@ -135,7 +194,7 @@ local function chat_html_body(content)
             rows[#rows + 1] = { kind = "fence", html = chat_html_escape(line) }
         else
             local one = {}
-            chat_html_line(line, one)
+            chat_html_line(line, one, state)
             rows[#rows + 1] = { kind = "text", html = one[1] or "" }
         end
     end
@@ -174,13 +233,14 @@ local function chat_html_body(content)
     return table.concat(body)
 end
 
-local function html_doc_for(app, view, content, width)
+local function html_doc_for(app, view, content, width, revealed)
     if not app or not app.state then return nil end
     local docs = app.state.chat_html_docs
     if not docs then
         docs = {}
         app.state.chat_html_docs = docs
-        if #docs == 0 then docs.cap = 8 end -- small cap/fast scan; prune below
+        if #docs == 0 then docs.cap = 24 end -- cap the tall-bitmap cache;
+                                              -- prune below (see paint epoch)
     end
     local Constants = require("kt_constants")
     local Theme = require("ktui/theme")
@@ -188,8 +248,18 @@ local function html_doc_for(app, view, content, width)
     local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
     local font_id = tostring(Theme.scale(Theme.get_base_font_size()))
         .. ":" .. tostring((app.state.settings and app.state.settings.chat_font_size) or "")
+    -- Revealed-spoiler indices participate in the key: the toggle re-runs the
+    -- measure with a new set, which lands on a fresh doc without touching the
+    -- masked render still cached for other messages.
+    local rev_sig = ""
+    if type(revealed) == "table" then
+        local ks = {}
+        for rk in pairs(revealed) do ks[#ks + 1] = tostring(rk) end
+        table.sort(ks)
+        rev_sig = table.concat(ks, ",")
+    end
     local key = table.concat({ tostring(content), "\0", tostring(width), "\0", font_id,
-        "\0", Theme.get_theme() }, "")
+        "\0", Theme.get_theme(), "\0", rev_sig }, "")
     local cached = docs[key]
     if cached and cached.width == width then
         return cached
@@ -199,36 +269,66 @@ local function html_doc_for(app, view, content, width)
         docs[key] = nil
     end
     -- Prune: DOCs keyed by content grow with long chats; keep the last N.
+    -- Never evict a doc whose layout was measured in the CURRENT paint
+    -- (same-paint builds, or fast-pathed entries pass 2 below still needs):
+    -- evicting those painted blank bands on first open of long chats.
+    -- Evicted docs become eligible again on the next paint that builds;
+    -- their layouts re-measure through the fast-path guard (visible ones
+    -- rebuild in the same paint that needs them). Non-table slots (the cap
+    -- field itself) are never victims.
+    local paint_id = view and view._chat_paint_id or 0
+    local live = {}
+    local lc = view and view._chat_layout_cache or nil
+    if type(lc) == "table" then
+        for lk, l in pairs(lc) do
+            if type(l) == "table" and l._paint_id == paint_id and l.entries then
+                for ei = 1, #l.entries do
+                    local e = l.entries[ei]
+                    if type(e) == "table" and e.kind == "html" and e.widget then
+                        live[e.widget] = true
+                    end
+                end
+            end
+        end
+    end
     local n = 0
     for k in pairs(docs) do n = n + 1 end
-    if n > (docs.cap or 8) + 1 then
-        local removed = 0
+    if n > (docs.cap or 24) + 1 then
+        local victims = {}
         for k, v in pairs(docs) do
-            if k ~= key then
-                pcall(function() if v.widget then v.widget:free() end end)
-                docs[k] = nil
-                removed = removed + 1
-                if removed >= n - (docs.cap or 8) then break end
+            if k ~= key and type(v) == "table" and v.paint_id ~= paint_id
+                and not live[v.widget] then
+                victims[#victims + 1] = k
             end
+        end
+        local removed = 0
+        for vi = 1, #victims do
+            if removed >= n - (docs.cap or 24) then break end
+            local k = victims[vi]
+            local v = docs[k]
+            pcall(function() if v.widget then v.widget:free() end end)
+            docs[k] = nil
+            removed = removed + 1
         end
     end
     local okp, perr = pcall(function()
         local css = require("ktui/kthtml").chat_css()
         local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
-        widget:setContent(chat_html_body(content), css,
+        widget:setContent(chat_html_body(content, revealed), css,
             Theme.scale(Theme.get_base_font_size()),
             false, nil, Constants.PLUGIN_DIR .. "/assets")
         local pages = widget.page_count or 1
         -- Tall bitmap: relayout at pages*96 then scan the exact bottom.
         local tall = math.max(96, pages * 96)
         widget.dimen = Geom:new{ w = width, h = tall }
-        widget:setContent(chat_html_body(content), css,
+        widget:setContent(chat_html_body(content, revealed), css,
             Theme.scale(Theme.get_base_font_size()),
             false, nil, Constants.PLUGIN_DIR .. "/assets")
         widget:_render()
         local last = require("ktui/kthtml").scan_bottom(widget.bb, width)
         local h = last and math.max(16, last) or 96
-        docs[key] = { widget = widget, height = h, width = width }
+        docs[key] = { widget = widget, height = h, width = width, key = key,
+            paint_id = view and view._chat_paint_id or 0 }
     end)
     if not okp then
         require("logger").warn("chat html render failed: ", perr)
@@ -236,6 +336,135 @@ local function html_doc_for(app, view, content, width)
         return nil
     end
     return docs[key]
+end
+
+-- === Spoiler reveal + HTML-block taps ===
+
+-- Reveal set for one message (session-scoped: dies with app.state, like the
+-- reasoning open map). Lazy-created; the measure pass reads it to decide
+-- which spoilers re-render as open spans.
+function ChatBubbles.spoiler_state(app, msg_key)
+    if not app or not app.state or not msg_key then return {} end
+    local all = app.state.chat_spoilers_revealed
+    if not all then
+        all = {}
+        app.state.chat_spoilers_revealed = all
+    end
+    local set = all[msg_key]
+    if not set then
+        set = {}
+        all[msg_key] = set
+    end
+    return set
+end
+
+-- The fast path may only reuse a cached layout while every html entry still
+-- points at a live widget: the doc-cache prune frees evicted widgets, and
+-- repainting a layout that references a freed one paints a blank band (the
+-- "bugada" report on long chats). A dead widget forces the full re-measure,
+-- which rebuilds the doc from the same content.
+local function layout_html_alive(layout)
+    if not layout or not layout.entries then return true end
+    for ei = 1, #layout.entries do
+        local entry = layout.entries[ei]
+        if entry.kind == "html" then
+            if not entry.widget or entry.widget.document == nil then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+-- Layout-cache signature of the revealed set ("" when nothing is revealed):
+-- a toggle must force the full re-measure, or the fast path would keep the
+-- masked layout even after the doc cache entry was dropped.
+local function spoiler_sig(app, msg_key)
+    if not app or not app.state or not msg_key then return "" end
+    local set = app.state.chat_spoilers_revealed and app.state.chat_spoilers_revealed[msg_key]
+    if not set then return "" end
+    local ks = {}
+    for sk in pairs(set) do ks[#ks + 1] = tostring(sk) end
+    table.sort(ks)
+    return table.concat(ks, ",")
+end
+
+-- Tap inside a chat HTML band, already translated to widget-local
+-- tall-bitmap coords by the hitbox (band offset included). Looks the link up
+-- (getLinkByPosition, same probe the kt: pages use - the global
+-- tap_to_follow_links switch is bypassed on purpose). kt:spl:N flips that
+-- spoiler's reveal and rebuilds the doc; http(s) opens the KOReader
+-- external-link dialog; every other scheme is ignored.
+function ChatBubbles.chat_html_tap(view, entry, msg_key, lx, ly)
+    local widget = entry.widget
+    if not widget or not widget.getLinkByPosition then return end
+    local ok_t, link = pcall(widget.getLinkByPosition, widget, { x = lx, y = ly })
+    if not ok_t or not link then return end
+    local uri = tostring(link.uri or link.url or "")
+    if uri:find("^kt:spl:", 1) then
+        local n = tonumber(uri:match("^kt:spl:(%d+)$"))
+        if not n or not view.app then return end
+        local set = ChatBubbles.spoiler_state(view.app, msg_key)
+        if set[n] then set[n] = nil else set[n] = true end
+        local docs = view.app.state and view.app.state.chat_html_docs
+        if docs and entry.doc_key then
+            -- Free the evicted widget now: the next paint re-measures
+            -- (spoiler sig changed) and rebuilds before painting anything,
+            -- so nothing can still reference it.
+            local old = docs[entry.doc_key]
+            if old and old.widget then
+                pcall(function() old.widget:free() end)
+            end
+            docs[entry.doc_key] = nil
+        end
+        if view.refresh then view:refresh() end
+    elseif uri:find("^https?://", 1) then
+        ChatBubbles.show_external_link(view.app, uri)
+    end
+end
+
+-- KOReader-style external link dialog (readerlink.lua parity): Copy / Show
+-- QR code / Open in browser. Everything is lazy-required so the chat paint
+-- path never loads dialog widgets, and the smoke can stub them.
+function ChatBubbles.show_external_link(app, url)
+    local UIManager = require("ui/uimanager")
+    local Device = require("device")
+    local _ = require("gettext")
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    dialog = ButtonDialog:new{
+        title = url,
+        buttons = {
+            { { text = _("Copy"),
+                callback = function()
+                    if Device.input and Device.input.setClipboardText then
+                        Device.input.setClipboardText(url)
+                    end
+                    UIManager:close(dialog)
+                end } },
+            { { text = _("Show QR code"),
+                callback = function()
+                    UIManager:close(dialog)
+                    local QRMessage = require("ui/widget/qrmessage")
+                    UIManager:show(QRMessage:new{
+                        text = url,
+                        width = Device.screen:getWidth(),
+                        height = Device.screen:getHeight(),
+                    })
+                end } },
+            { { text = _("Open in browser"),
+                callback = function()
+                    UIManager:close(dialog)
+                    if Device:canOpenLink() then
+                        Device:openLink(url)
+                    end
+                end,
+                show_in_dialog_func = function()
+                    return Device:canOpenLink()
+                end } },
+        },
+    }
+    UIManager:show(dialog)
 end
 
 local function block_entries(blocks, width, app, show_inline, view, body_face)
@@ -306,13 +535,15 @@ local function block_entries(blocks, width, app, show_inline, view, body_face)
         elseif block.kind == "html" then
             -- Experimental HTML render: the WHOLE message body goes through
             -- MuPDF (real bold/italic/lists/tables), measured once and cached
-            -- per content+width+font (chat_html_docs on app.state). A failed
-            -- render falls back to the plain-text parse, never a blank bubble.
-            local doc = html_doc_for(app, view, block.text, width)
+            -- per content+width+font+reveal (chat_html_docs on app.state). A
+            -- failed render falls back to the plain-text parse, never a blank
+            -- bubble. doc.key rides along so the spoiler tap can invalidate
+            -- exactly this doc.
+            local doc = html_doc_for(app, view, block.text, width, block.revealed)
             if doc and doc.height then
                 table.insert(entries, {
                     kind = "html", widget = doc.widget,
-                    h = doc.height, doc_key = nil, pad = 0, offset = 0,
+                    h = doc.height, doc_key = doc.key, pad = 0, offset = 0,
                 })
             else
                 local fallback = block.text:gsub("<[^>]->", "")
@@ -371,7 +602,11 @@ end
 -- (absolute y). content_y is the absolute y of the first entry. Whole-line
 -- scrolling: a block cut at the top continues from its next full line; a
 -- block cut at the bottom loses the torn line (ZenPM trick).
-local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, vis_top, vis_bottom)
+-- hit_ctx (optional) enables interactive HTML blocks: when it carries
+-- msg_key, every visible html band registers a tap hitbox AFTER the caller's
+-- msghold box (reverse-order checking), so links/spoilers win taps while
+-- long-press still reaches the hold zone underneath.
+local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, vis_top, vis_bottom, hit_ctx)
     for index, entry in ipairs(entries) do
         local entry_y = content_y + entry.offset
         local top = math.max(entry_y, vis_top)
@@ -423,20 +658,36 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                         box_w - Theme.scale(16), "tiny", { color = Theme.muted })
                 end
             elseif entry.kind == "html" then
-                -- Experimental HTML render: blit the tiled bitmap window
-                -- (row-level: same ZenPM whole-line trick, no partial glyph
-                -- garbage on e-ink).
+                -- Experimental HTML render: blit the VISIBLE slice of the
+                -- tall bitmap. The source offset MUST track the band
+                -- (top - entry_y, like the text branch's scroll offset): a
+                -- constant src_y re-stamped the doc's head rows on every
+                -- scrolled band, so tall bubbles could never show their tail
+                -- (the "mensagem cortada" report).
                 if entry.widget and band_h > 0 then
                     local okp = pcall(function()
                         entry.widget:_render()
+                        local src_y = math.max(0, top - entry_y)
                         local src_h = entry.widget.bb and entry.widget.bb:getHeight() or 0
-                        local copy_h = math.min(band_h, math.max(0, src_h - (entry.offset or 0)))
+                        local copy_h = math.min(band_h, math.max(0, src_h - src_y))
                         if copy_h > 0 then
-                            bb:blitFrom(entry.widget.bb, cx, top, 0, entry.offset or 0, width, copy_h)
+                            bb:blitFrom(entry.widget.bb, cx, top, 0, src_y, width, copy_h)
                         end
                     end)
                     if okp then
                         view.dithered = true
+                    end
+                    -- Tap zone for links + spoiler reveals (message bodies
+                    -- only - hit_ctx is nil for system/reasoning draws).
+                    -- Widget-local coords account for the band offset (same
+                    -- src_y as the blit above): a tap lands on the link rect
+                    -- only when translated by the visible slice.
+                    if hit_ctx and hit_ctx.msg_key and entry.doc_key then
+                        local hb_src_y = math.max(0, top - entry_y)
+                        P.hit(view, cx, top, width, band_h, function(tapx, tapy)
+                            ChatBubbles.chat_html_tap(view, entry, hit_ctx.msg_key,
+                                tapx - cx, hb_src_y + (tapy - top))
+                        end, "chathtml_" .. hit_ctx.msg_key)
                     end
                 end
             elseif entry.kind == "code" then
@@ -482,6 +733,11 @@ local function message_reasoning(msg)
 end
 
 function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_generating, user_name, char_image, thinking_frame)
+    -- Paint epoch: html docs built during THIS paint must survive its own
+    -- prune pass (their layouts were just measured above and pass 2 below
+    -- still needs their widgets). html_doc_for stamps it per doc and the
+    -- prune skips same-epoch docs.
+    view._chat_paint_id = (view._chat_paint_id or 0) + 1
     local settings = (view.app and view.app.state and view.app.state.settings) or {}
     -- An applied bubble theme (chat override or global default) overrides the
     -- detail toggles; plain settings otherwise.
@@ -649,6 +905,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     -- raw content identity.
     local function full_sig(msg, key, msg_key, content_text, reasoning, is_last)
         return sig_msg(msg, key, msg_key, content_text, reasoning, is_last) .. ":" .. regex_sig
+            .. ":" .. spoiler_sig(view.app, msg_key)
     end
 
     -- Re-measure one message into a fresh layout (the slow path; unchanged
@@ -689,16 +946,28 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         if cached and cached._sig == full_sig(msg, key, msg_key, content_text, reasoning,
                 i == #(messages or {})) then
             local rh = cached.row_h or cached.h or 0
-            local dy = cy - (cached.y or cy)
-            cached.y = cy
-            if dy ~= 0 and cached.bubble_y then
-                cached.bubble_y = cached.bubble_y + dy
+            -- A dead html widget forces the full re-measure (rebuild) - but
+            -- only when the message is actually painted: rebuilding
+            -- off-screen messages on every eviction would churn an over-cap
+            -- chat on every paint. Invisible entries keep their (still valid)
+            -- heights; the rebuild happens in the same paint that scrolls
+            -- them into view. Margin: heal one line early, never late.
+            local visible = (cy + rh > scroll + y - 100)
+                and (cy < scroll + y + h + 100)
+            if layout_html_alive(cached) or not visible then
+                local dy = cy - (cached.y or cy)
+                cached.y = cy
+                if dy ~= 0 and cached.bubble_y then
+                    cached.bubble_y = cached.bubble_y + dy
+                end
+                cached.idx = i
+                cached._paint_id = view._chat_paint_id
+                cy = cy + rh
+                total_h = total_h + rh
+                layouts[i] = cached
+                return cached
             end
-            cached.idx = i
-            cy = cy + rh
-            total_h = total_h + rh
-            layouts[i] = cached
-            return cached
+            -- else fall through to the full measure below
         end
 
         local layout = {
@@ -755,9 +1024,13 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- stays underneath as fallback; the bubble carries the RAW
                 -- content as one html block (see block_entries' html branch).
                 -- Streaming keeps the plain path (partial HTML re-layouts per
-                -- chunk are jumpy and 10x the cost).
+                -- chunk are jumpy and 10x the cost). The message identity and
+                -- the revealed-spoiler set ride along: the doc body re-renders
+                -- per reveal state, and the tap layer keys reveals by msg_key.
                 if html_render and not is_user then
-                    blocks = { { kind = "html", text = content_text } }
+                    blocks = { { kind = "html", text = content_text,
+                        msg_key = msg_key,
+                        revealed = ChatBubbles.spoiler_state(view.app, msg_key) } }
                 end
             end
             local entries, content_h, block_gap = block_entries(blocks, text_w, view.app, show_inline, view, body_face)
@@ -847,6 +1120,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         layout._sig = full_sig(msg, key, msg_key, content_text, reasoning, i == #(messages or {}))
         -- Store under the SAME key the fast path looks up (content-sampled);
         -- msg_key (plain identity) remains the UI-state identity only.
+        layout._paint_id = view._chat_paint_id
         layout_cache[key] = layout
         return layout
     end
@@ -1205,11 +1479,13 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     or (l.is_user and Theme.soft or Theme.chat_bg)
                 if boxed then
                     draw_blocks(view, bb, l.entries, l.cx, content_y,
-                        l.text_w, text_color, bg, vis_top, vis_bottom)
+                        l.text_w, text_color, bg, vis_top, vis_bottom,
+                        { msg_key = l.msg_key })
                 else
                     draw_blocks(view, bb, l.entries, l.cx, content_y,
                         l.text_w, Theme.ink, content_bg,
-                        math.max(content_y, y), math.min(content_y + l.content_h + pad, y + h))
+                        math.max(content_y, y), math.min(content_y + l.content_h + pad, y + h),
+                        { msg_key = l.msg_key })
                 end
 
                 -- Inline swipe indicator (ST): ‹ n/N › + under the bubble.
@@ -1264,9 +1540,9 @@ function ChatBubbles.line_step()
 end
 
 -- TEST-ONLY hook (ui_smoke): expose the HTML-mode body encoder without a
--- paint. Not used by the app path.
-function ChatBubbles._test_chat_html_body(content)
-    return chat_html_body(content)
+-- paint. Not used by the app path. revealed = optional { [n]=true } set.
+function ChatBubbles._test_chat_html_body(content, revealed)
+    return chat_html_body(content, revealed)
 end
 
 return ChatBubbles

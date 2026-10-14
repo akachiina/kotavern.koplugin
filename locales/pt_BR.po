@@ -1708,3 +1708,99 @@ msgstr "Testar Nativo+HTML"
 
 msgid "Native layout with an HTML island"
 msgstr "Layout nativo com uma ilha HTML"
+
+msgid "HTML chat renderer"
+msgstr "Renderizador HTML do chat"
+
+msgid "Render assistant bubbles with MuPDF (experimental)"
+msgstr "Renderizar bolhas do assistente com MuPDF (experimental)"
+
+msgid "Messages"
+msgstr "Mensagens"
+
+msgid "Text"
+msgstr "Texto"
+
+msgid "Details"
+msgstr "Detalhes"
+
+msgid "Chat font"
+msgstr "Fonte do chat"
+
+msgid "System default"
+msgstr "Padrão do sistema"
+
+msgid "Chat font size"
+msgstr "Tamanho da fonte do chat"
+
+msgid "Follow base size"
+msgstr "Seguir o tamanho base"
+
+msgid "0 follows the base font size"
+msgstr "0 segue o tamanho da fonte base"
+
+msgid "Bubble theme"
+msgstr "Tema de bolhas"
+
+msgid "Bubble themes"
+msgstr "Temas de bolhas"
+
+msgid "Default bubble theme"
+msgstr "Tema de bolhas padrão"
+
+msgid "Default (settings)"
+msgstr "Padrão (configurações)"
+
+msgid "None (settings)"
+msgstr "Nenhum (configurações)"
+
+msgid "Save, apply and manage chat looks"
+msgstr "Salvar, aplicar e gerenciar visuais do chat"
+
+msgid "Save current look as theme"
+msgstr "Salvar o visual atual como tema"
+
+msgid "Theme name"
+msgstr "Nome do tema"
+
+msgid "e.g. Warm paper"
+msgstr "ex.: Papel quente"
+
+msgid "Import theme"
+msgstr "Importar tema"
+
+msgid "Please select a .json theme file."
+msgstr "Selecione um arquivo de tema .json."
+
+msgid "Import failed: invalid theme file."
+msgstr "Falha na importação: arquivo de tema inválido."
+
+msgid "Theme imported!"
+msgstr "Tema importado!"
+
+msgid "Manage themes…"
+msgstr "Gerenciar temas…"
+
+msgid "Saved themes"
+msgstr "Temas salvos"
+
+msgid "Set as default"
+msgstr "Definir como padrão"
+
+msgid "Unset default"
+msgstr "Remover o padrão"
+
+msgid "Apply to this chat"
+msgstr "Aplicar a este chat"
+
+msgid "Themes"
+msgstr "Temas"
+
+msgid "copy"
+msgstr "cópia"
+
+msgid "Show QR code"
+msgstr "Mostrar código QR"
+
+msgid "Open in browser"
+msgstr "Abrir no navegador"

@@ -1708,3 +1708,99 @@ msgstr "Probar Nativo+HTML"
 
 msgid "Native layout with an HTML island"
 msgstr "Diseño nativo con una isla HTML"
+
+msgid "HTML chat renderer"
+msgstr "Renderizador HTML del chat"
+
+msgid "Render assistant bubbles with MuPDF (experimental)"
+msgstr "Renderizar burbujas del asistente con MuPDF (experimental)"
+
+msgid "Messages"
+msgstr "Mensajes"
+
+msgid "Text"
+msgstr "Texto"
+
+msgid "Details"
+msgstr "Detalles"
+
+msgid "Chat font"
+msgstr "Fuente del chat"
+
+msgid "System default"
+msgstr "Predeterminado del sistema"
+
+msgid "Chat font size"
+msgstr "Tamaño de la fuente del chat"
+
+msgid "Follow base size"
+msgstr "Seguir el tamaño base"
+
+msgid "0 follows the base font size"
+msgstr "0 sigue el tamaño de fuente base"
+
+msgid "Bubble theme"
+msgstr "Tema de burbujas"
+
+msgid "Bubble themes"
+msgstr "Temas de burbujas"
+
+msgid "Default bubble theme"
+msgstr "Tema de burbujas predeterminado"
+
+msgid "Default (settings)"
+msgstr "Predeterminado (ajustes)"
+
+msgid "None (settings)"
+msgstr "Ninguno (ajustes)"
+
+msgid "Save, apply and manage chat looks"
+msgstr "Guardar, aplicar y gestionar aspectos del chat"
+
+msgid "Save current look as theme"
+msgstr "Guardar el aspecto actual como tema"
+
+msgid "Theme name"
+msgstr "Nombre del tema"
+
+msgid "e.g. Warm paper"
+msgstr "p. ej., Papel cálido"
+
+msgid "Import theme"
+msgstr "Importar tema"
+
+msgid "Please select a .json theme file."
+msgstr "Selecciona un archivo de tema .json."
+
+msgid "Import failed: invalid theme file."
+msgstr "Fallo al importar: archivo de tema no válido."
+
+msgid "Theme imported!"
+msgstr "¡Tema importado!"
+
+msgid "Manage themes…"
+msgstr "Gestionar temas…"
+
+msgid "Saved themes"
+msgstr "Temas guardados"
+
+msgid "Set as default"
+msgstr "Establecer como predeterminado"
+
+msgid "Unset default"
+msgstr "Quitar el predeterminado"
+
+msgid "Apply to this chat"
+msgstr "Aplicar a este chat"
+
+msgid "Themes"
+msgstr "Temas"
+
+msgid "copy"
+msgstr "copia"
+
+msgid "Show QR code"
+msgstr "Mostrar código QR"
+
+msgid "Open in browser"
+msgstr "Abrir en el navegador"

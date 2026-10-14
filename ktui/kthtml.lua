@@ -162,6 +162,10 @@ function KtHTML.chat_css()
     -- Inline (non-block) span backgrounds are IGNORED. <s> does
     -- line-through. <a> needs !important on color - MuPDF's own blue UA
     -- rule beats a plain a{color} (same specificity quirk theme_css hits).
+    -- Spoilers are <a class="ktspl"> (masked bar; text-decoration:none keeps
+    -- the anchor underline from cutting the bar); .ktsplopen comes AFTER and
+    -- re-paints the revealed span with body bg + ink (same inline-block box,
+    -- so masked/revealed geometry is identical).
     return string.format([[
 @font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
 @font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
@@ -173,7 +177,8 @@ b { font-weight: bold; }
 s { text-decoration: line-through; }
 .ktcode { font-family: monospace; }
 p.ktfence { background: %s; font-family: monospace; }
-.ktspl { display: inline-block; background: %s; color: %s !important; }
+.ktspl { display: inline-block; background: %s; color: %s !important; text-decoration: none !important; }
+.ktsplopen { background: %s; color: %s !important; }
 .ktq { color: %s; }
 a { color: %s !important; text-decoration: underline; }
 ]],
@@ -182,6 +187,8 @@ a { color: %s !important; text-decoration: underline; }
         KtHTML.css_hex(Theme.soft, "#d8d8d8"),
         KtHTML.css_hex(Theme.muted, "#999999"),
         KtHTML.css_hex(Theme.muted, "#999999"),
+        KtHTML.css_hex(Theme.bg, "#ffffff"),
+        KtHTML.css_hex(Theme.ink, "#000000"),
         KtHTML.css_hex(Theme.muted, "#999999"),
         KtHTML.css_hex(Theme.ink, "#000000"))
 end
