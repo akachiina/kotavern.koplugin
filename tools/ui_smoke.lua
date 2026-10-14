@@ -1533,12 +1533,56 @@ do
     bb:fill(Blitbuffer.COLOR_WHITE)
     bb:paintRect(10, 10, 64, 64, Blitbuffer.COLOR_BLACK) -- fake "previous frame"
     ok(GifAnim.draw(fake_player, bb, 10, 10, 64, 64) == true, "gif: draw paints a frame")
+    -- AppView hands bb type as 'cdata' too; a literal nil bb must be rejected BEFORE any paint call.
+    ok(GifAnim.draw(fake_player, nil, 10, 10, 64, 64) == false, "gif: draw nil bb false no crash")
     local corner = bb:getPixel(11, 11)
     ok(corner:getR() > 200, "gif: draw clears the box before blitting (no trail band)")
     ok(bb:getPixel(26, 26):getR() > 200, "gif: frame ink lands centered")
     GifAnim.stop_all(app)
     ok(app.state.gif_players == nil and not queued_tick(),
         "gif: stop_all clears players and the tick")
+
+    -- Race hardening (random device crash class): stop marks stopped FIRST,
+    -- so a tick still queued before the unschedule is a no-op even if it
+    -- runs with the buffers already freed. Simulate exactly that window.
+    do
+        local ar = fake_app({ page = "settings" })
+        local vr = { app = ar, hitboxes = {} }
+        function vr:refresh() end
+        local pr = GifAnim.ensure(ar, vr, "race", gif, { w = 64, h = 64 })
+        -- Captured tick + a manually freed table: stop() ran, buffers went
+        -- away, ONLY THEN the stale tick fires (unschedule lost the race).
+        pr.stopped = true
+        pr.bbs = nil -- what stop() leaves behind after freeing
+        local oktick, errtick = pcall(pr.tick)
+        ok(oktick, "gif: stale tick after stop()(a bufferes freed) is a no-op ("
+            .. tostring(errtick) .. ")")
+        -- Stop() is idempotent: a double stop from racing callers cannot
+        -- re-free (a freed FFI buffer free() segfaults, pcall does not save).
+        GifAnim.stop(pr) -- real stop path now (still stopped)
+        ok(pr.bbs == nil, "gif: stop() is idempotent (no re-free of freed buffers)")
+        GifAnim.stop_all(ar)
+        -- draw() after stop: must return false, never touch freed buffers.
+        local dbb = new_bb()
+        dbb:fill(Blitbuffer.COLOR_WHITE)
+        ok(GifAnim.draw(pr, dbb, 0, 0, 32, 32) == false,
+            "gif: draw on a stopped player paints nothing and survives")
+        ok(dbb:getPixel(16, 16):getR() > 200,
+            "gif: draw on stopped player left the target untouched")
+        -- Corrupt slot: idx landing on a non-cdata entry must fall back to
+        -- a live frame (or nil), never hand a broken value to the blitter.
+        local ac = fake_app({ page = "settings" })
+        local vc = { app = ac, hitboxes = {} }
+        function vc:refresh() end
+        local pc = GifAnim.ensure(ac, vc, "corrupt", gif, { w = 64, h = 64 })
+        local first_live = pc.bbs[1]
+        pc.bbs[pc.idx] = "not-a-bb" -- simulated freed/replaced slot
+        local fc = GifAnim.frame(pc)
+        ok(fc == first_live or type(fc) == "cdata",
+            "gif: corrupt frame slot falls back to a live buffer")
+        GifAnim.stop_all(ac)
+    end
+
     -- Missing file degrades to nil (caller falls back to first frame).
     local app2 = fake_app({ page = "settings" })
     local view2 = { app = app2, hitboxes = {} }
@@ -1546,6 +1590,45 @@ do
     ok(GifAnim.ensure(app2, view2, "banner", "/tmp/nope.gif", { w = 64, h = 64 }) == nil,
         "gif: missing file plays nothing")
     GifAnim.stop_all(app2)
+    -- Clock-anchored advancement: a player whose ticks skip (sheet pause/
+    -- obscured/slow EPDC) does not crawl, but a wall-clock jump cannot spin
+    -- unbounded either (MAX_CATCHUP cap).
+    do
+        local ak = fake_app({ page = "settings" })
+        local vk = { app = ak, hitboxes = {} }
+        function vk:refresh() end
+        local pk = GifAnim.ensure(ak, vk, "clock", gif, { w = 64, h = 64 })
+        GifAnim.DIRECT = false
+        local base = GifAnim.wall_clock()
+        local fake_now = base
+        local real_wc = GifAnim.wall_clock
+        GifAnim.wall_clock = function() return fake_now end
+        pk.idx = 1
+        pk.tick() -- no last_t yet: one stride
+        ok(pk.idx == 2 and pk.last_t == fake_now,
+            "gif: first tick strides once and anchors the clock")
+        fake_now = base + GifAnim.tick_interval() * 11.6 -- 11 skipped intervals
+        pk.tick()
+        -- strides here = 1 regular + min(missed, MAX_CATCHUP), all cycled
+        -- through n frames: assert via the modulo, not an absolute idx.
+        local strides = 1 + GifAnim.MAX_CATCHUP
+        local expect2 = ((2 - 1 + strides) % pk.n) + 1
+        ok(pk.idx == expect2,
+            "gif: skipped intervals catch up capped at " .. GifAnim.MAX_CATCHUP
+            .. " (got idx=" .. tostring(pk.idx) .. " want=" .. tostring(expect2) .. ")")
+        fake_now = base + 3600 -- suspend resume: a full-hour wall jump
+        pk.tick()
+        -- exactly ONE more capped stride (1 + MAX_CATCHUP) from expect2.
+        local expect3 = ((expect2 - 1 + 1 + GifAnim.MAX_CATCHUP) % pk.n) + 1
+        ok(pk.idx == expect3,
+            "gif: wall-clock jump spins at most one capped stride (got "
+            .. tostring(pk.idx) .. " want=" .. tostring(expect3) .. ")")
+        GifAnim.wall_clock = real_wc
+        GifAnim.DIRECT = true
+        GifAnim.stop(pk)
+        GifAnim.stop_all(ak)
+    end
+
     -- Leaked timer self-stops on page change (the dashboard freeze class).
     local app3 = fake_app({ page = "settings" })
     local view3 = { app = app3, hitboxes = {} }

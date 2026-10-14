@@ -38,6 +38,9 @@ GifAnim.INTERVAL = 0.12 -- ~8fps: e-ink friendly, still reads as motion
 -- like the sonic's foot). At ~2fps each pose lands as a readable hop and
 -- every update completes. Off e-ink (SDL) the full rate stays.
 GifAnim.EINK_INTERVAL = 0.5
+-- Frames advanced in ONE tick by catch-up, capped so a wall-clock jump on
+-- the os.time fallback cannot loop forever.
+GifAnim.MAX_CATCHUP = 4
 local function tick_interval()
     local ok, eink = pcall(function() return Device:hasEinkScreen() end)
     if ok and eink then
@@ -45,9 +48,32 @@ local function tick_interval()
     end
     return GifAnim.INTERVAL
 end
+GifAnim.tick_interval = tick_interval -- exposed for tests
 -- Direct-to-compositor painting. Tests set this false to exercise the
 -- widget-repaint fallback path (fake views are not in the window stack).
 GifAnim.DIRECT = true
+
+-- Monotonic seconds for pacing/throttling/frame math. os.clock() is CPU
+-- time and freezes across suspend - after resume a throttle keyed on it
+-- lets a storm of repaints through (videoplayer.koplugin's lesson).
+local wall_clock
+do
+    local okt, ui_time = pcall(require, "ui/time")
+    if okt and ui_time and ui_time.now and ui_time.to_s then
+        local okc, probe = pcall(function()
+            return ui_time.to_s(ui_time.now())
+        end)
+        if okc and type(probe) == "number" then
+            wall_clock = function()
+                return ui_time.to_s(ui_time.now())
+            end
+        end
+    end
+    if not wall_clock then
+        wall_clock = os.time
+    end
+end
+GifAnim.wall_clock = wall_clock -- exposed for tests
 
 local function free_bb(bb)
     if bb and type(bb.free) == "function" then
@@ -56,10 +82,10 @@ local function free_bb(bb)
 end
 
 function GifAnim.stop(player)
-    if not player then
+    if not player or player.stopped then
         return
     end
-    player.stopped = true
+    player.stopped = true -- FIRST: racing ticks/draws see it even pre-unschedule
     -- UIManager matches queued tasks by the action function itself.
     if player.tick then
         pcall(UIManager.unschedule, UIManager, player.tick)
@@ -103,7 +129,22 @@ function GifAnim.frame(player)
     if not player or player.stopped or not player.bbs then
         return nil
     end
-    return player.bbs[player.idx] or player.bbs[1]
+    -- Deleted double frames (failed decodes are compacted, but stay honest):
+    -- a slot landing on nil/cdata-free must yield a real buffer or none -
+    -- handing a nil back from bbs[1] on a corrupt table is what stops a
+    -- draw from blowing up on a freed buffer.
+    local bb = player.bbs[player.idx]
+    if type(bb) == "cdata" then
+        return bb
+    end
+    -- Synthetic players (tests) may carry no n: fall back to table length.
+    for i = 1, player.n or #player.bbs do
+        local first = player.bbs[i]
+        if type(first) == "cdata" then
+            return first
+        end
+    end
+    return nil
 end
 
 -- Draw the current frame centered inside (x, y, w, h) on any blitbuffer.
@@ -136,8 +177,15 @@ function GifAnim.draw(player, bb, x, y, w, h, clip)
     end
     -- Clear FIRST (see the header note about transparent pixels/trails).
     pcall(function() bb:paintRect(x, y, w, h, Theme.bg) end)
-    local fw = math.min(w, frame:getWidth())
-    local fh = math.min(h, frame:getHeight())
+    -- Dimensions INSIDE pcall: a concurrent stop() may free the frame
+    -- between frame() and here, and LuaJIT FFI does not stop at the pcall
+    -- boundary once we touch the freed pointer ( getWidth would segfault).
+    local okdim, fw, fh = pcall(function()
+        return math.min(w, frame:getWidth()), math.min(h, frame:getHeight())
+    end)
+    if not okdim then
+        return false
+    end
     local fx = x + math.floor((w - fw) / 2)
     local fy = y + math.floor((h - fh) / 2)
     local ok = pcall(function()
@@ -346,7 +394,7 @@ local function push_frame(player)
             -- Coalesce: never repaint faster than the panel digests, even if
             -- ticks arrive back-to-back (obscured/fallback storms of full
             -- repaints starve input on slow EPDCs and look like a freeze).
-            local now = os.clock()
+            local now = GifAnim.wall_clock()
             if not player._last_fb or now - player._last_fb >= GifAnim.EINK_INTERVAL then
                 player._last_fb = now
                 if view.refresh then
@@ -535,9 +583,29 @@ function GifAnim.ensure(app, view, key, path, opts)
             GifAnim.stop(player)
             return
         end
+        -- Advance by ELAPSED REAL TIME, not one frame per queued tick:
+        -- sheets/modals/slow EPDCs skip or coalesce ticks, and counting
+        -- them made the animation crawl. One stride per tick plus one per
+        -- skipped interval keeps the rate honest (videoplayer.koplugin's
+        -- clock-anchor pattern, without audio).
+        local step = tick_interval()
+        local now = GifAnim.wall_clock()
         player.idx = player.idx % player.n + 1
+        if player.last_t then
+            local missed = math.min(math.floor((now - player.last_t) / step),
+                GifAnim.MAX_CATCHUP)
+            for _i = 1, missed do
+                player.idx = player.idx % player.n + 1
+            end
+        end
+        player.last_t = now
         push_frame(player)
-        UIManager:scheduleIn(tick_interval(), tick)
+        -- CPU budget: when this tick's paints ran long, push the next one
+        -- past the panel's digest window instead of stacking work
+        -- (vnc.koplugin's per-tick budget lesson).
+        local spent = GifAnim.wall_clock() - now
+        UIManager:scheduleIn(spent > step
+            and step + math.min(spent, 0.25) or step, tick)
     end
     player.tick = tick
     UIManager:scheduleIn(tick_interval(), tick)
