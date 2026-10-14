@@ -148,30 +148,52 @@ end
 -- must measure only the text itself. body background is set but the widget
 -- bitmap box is cropped to the scanned text band, so the bubble's own
 -- panel color (painted by chat_bubbles around the blit) stays visible.
-function KtHTML.chat_css()
+function KtHTML.chat_css(settings)
     -- body bg = the chat panel surface (chat_bubbles blits the opaque MuPDF
     -- bitmap over the panel; assistant panels are Theme.bg-tinted) and
     -- scan_bottom compares against Theme.bg - one color everywhere.
     -- The @font-face block is REQUIRED here (not only theme_css): without
-    -- it 'KTSans' resolves to MuPDF's built-in fallback (serif look).
-    -- PROBE-VERIFIED limits of this MuPDF: span background paints ONLY with
-    -- display:inline-block AND stretches the full line when the box is
-    -- alone on its row (fine for the spoiler mask, wrong for code - so
-    -- code spans stay plain mono and only FENCE rows get the shaded band,
-    -- emitted as contiguous <p> blocks: backgrounds touch, no gaps).
-    -- Inline (non-block) span backgrounds are IGNORED. <s> does
-    -- line-through. <a> needs !important on color - MuPDF's own blue UA
-    -- rule beats a plain a{color} (same specificity quirk theme_css hits).
-    -- Spoilers are <a class="ktspl"> (masked bar; text-decoration:none keeps
-    -- the anchor underline from cutting the bar); .ktsplopen comes AFTER and
-    -- re-paints the revealed span with body bg + ink (same inline-block box,
-    -- so masked/revealed geometry is identical).
+    -- PROBE-VERIFIED limits of this MuPDF (all still true):
+    -- span background paints ONLY with display:inline-block AND stretches
+    -- the full line when alone on its row (fine for the spoiler mask); inline
+    -- (non-block) span backgrounds are IGNORED. <s> does line-through. <a>
+    -- needs !important on color - MuPDF's own blue UA rule beats a plain
+    -- a{color}. Spoilers are <a class="ktspl"> (masked bar;
+    -- text-decoration:none keeps the anchor underline from cutting the bar);
+    -- .ktsplopen comes AFTER and re-paints the revealed span with body bg +
+    -- ink (same inline-block box, so masked/revealed geometry is identical).
+    -- PROBE-VERIFIED additions (this round):
+    -- * @font-face src accepts an ABSOLUTE file path - the user's custom
+    --   chat font (chat_font_file, the same path the canvas path uses via
+    --   Theme.chat_face) rides in as family 'KTUser' BEFORE 'KTSans' so
+    --   it shadows every KTSans face (KTSans stays listed for fallback).
+    -- * body{font-size: Npx} IS honored and layers on top of the
+    --   default_font_size layout parameter - chat_font_size support.
+    -- * Emoji: the default chain renders NOTHING for emoji codepoints
+    --   (missing glyph, no tofu: ink 0, probe-verified). A bundled
+    --   MONOCHROME scalable emoji font (assets/emoji-noto.ttf, Noto Emoji)
+    --   as family 'KTEmoji' LAST in the chain fixes it. Color emoji fonts
+    --   (CBDT) CANNOT work: MuPDF/FreeType rejects bitmap-only strikes
+    --   ("invalid pixel size" - probe-verified on Twemoji/NotoColor).
+    -- custom CSS (Appearance > Chat > Custom CSS, ST custom_css parity)
+    -- is appended LAST so author rules win every tie.
+    local s = settings or (KtHTML.get_settings and KtHTML.get_settings()) or {}
+    local font_block = ""
+    if s.chat_font_file and s.chat_font_file ~= "" then
+        font_block = font_block .. string.format(
+            "@font-face { font-family: 'KTUser'; src: url('%s'); }\n",
+            s.chat_font_file:gsub("'", ""))
+    end
+    local size_px = tonumber(s.chat_font_size) or 0
+    local size_css = size_px > 0 and string.format("font-size: %dpx;", size_px) or ""
+    local user_css = tostring(s.custom_css or "")
     return string.format([[
-@font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
+%s@font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
 @font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
 @font-face { font-family: 'KTSans'; font-style: italic; src: url('sans-italic.ttf'); }
+@font-face { font-family: 'KTEmoji'; src: url('emoji-noto.ttf'); }
 @page { margin: 0; }
-body { margin: 0; padding: 0; background: %s; color: %s; font-family: 'KTSans', sans-serif; }
+body { margin: 0; padding: 0; %s background: %s; color: %s; font-family: 'KTUser', 'KTSans', 'KTEmoji', sans-serif; }
 p { margin: 0; }
 b { font-weight: bold; }
 s { text-decoration: line-through; }
@@ -181,7 +203,10 @@ p.ktfence { background: %s; font-family: monospace; }
 .ktsplopen { background: %s; color: %s !important; }
 .ktq { color: %s; }
 a { color: %s !important; text-decoration: underline; }
+%s
 ]],
+        font_block,
+        size_css,
         KtHTML.css_hex(Theme.bg, "#ffffff"),
         KtHTML.css_hex(Theme.ink, "#000000"),
         KtHTML.css_hex(Theme.soft, "#d8d8d8"),
@@ -190,7 +215,8 @@ a { color: %s !important; text-decoration: underline; }
         KtHTML.css_hex(Theme.bg, "#ffffff"),
         KtHTML.css_hex(Theme.ink, "#000000"),
         KtHTML.css_hex(Theme.muted, "#999999"),
-        KtHTML.css_hex(Theme.ink, "#000000"))
+        KtHTML.css_hex(Theme.ink, "#000000"),
+        user_css)
 end
 
 function KtHTML.theme_css()

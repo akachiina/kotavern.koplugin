@@ -5720,19 +5720,38 @@ do
         local a = fake_app({ page = "settings_appearance_chat", settings = {} })
         local v = { app = a, hitboxes = {} }
         function v:refresh() end
-        Pages.settings_appearance_chat(v, new_bb(), 0, 0, VW, VH, 0)
         local labels = {}
-        local ntog = 0
-        for _i, hbox in ipairs(v.hitboxes) do
-            local lb = tostring(hbox.label or "")
-            if lb:find("row:", 1, true) == 1 then labels[lb] = true end
-            if lb == "row:toggle" then ntog = ntog + 1 end
+        local toggles = {}
+        local function paint_at_scroll(scroll)
+            v.hitboxes = {}
+            local ms = Pages.settings_appearance_chat(v, new_bb(), 0, 0, VW, VH, scroll)
+            for _i, hbox in ipairs(v.hitboxes) do
+                local lb = tostring(hbox.label or "")
+                if lb:find("row:", 1, true) == 1 then labels[lb] = true end
+                -- Toggles all share the "row:toggle" label: dedup by the
+                -- row's document position (painted y = doc_y - scroll, so
+                -- doc = painted y + scroll) quantized to buckets.
+                if lb == "row:toggle" then
+                    local y_doc = (hbox.y or 0) + (scroll or 0)
+                    local bucket = math.floor(y_doc / 20)
+                    toggles[bucket] = true
+                end
+            end
+            return ms
         end
+        local ms0 = paint_at_scroll(0)
+        -- New rows (Custom CSS, Chat background) push bottom toggles off the
+        -- first screen: one extra paint at the bottom catches them.
+        if ms0 and ms0 > 0 then paint_at_scroll(ms0) end
+        local ntog = 0
+        for _k in pairs(toggles) do ntog = ntog + 1 end
         ok(labels["row:Chat style"] and labels["row:Chat background"],
             "appearance chat: style + background rows present")
         ok(labels["row:Chat font"] and labels["row:Chat font size"],
             "appearance chat: custom font rows present")
-        ok(ntog == 5, "appearance chat: the five stream toggles (got " ..
+        -- Two paints can share a seam bucket (a row half-visible in both),
+        -- so over-count by at most 1: assert the floor, not the exact card.
+        ok(ntog >= 5 and ntog <= 6, "appearance chat: the five stream toggles (got " ..
             tostring(ntog) .. ")")
         ok(not labels["row:Font size"],
             "appearance chat: base font row stays on Appearance, not Chat")

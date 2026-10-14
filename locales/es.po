@@ -1804,3 +1804,48 @@ msgstr "Mostrar código QR"
 
 msgid "Open in browser"
 msgstr "Abrir en el navegador"
+
+msgid "Avatar shape"
+msgstr "Forma del avatar"
+
+msgid "Round"
+msgstr "Redondo"
+
+msgid "Chat width"
+msgstr "Ancho del chat"
+
+msgid "Full"
+msgstr "Completo"
+
+msgid "Wide"
+msgstr "Ancho"
+
+msgid "Medium"
+msgstr "Medio"
+
+msgid "Narrow"
+msgstr "Estrecho"
+
+msgid "Custom CSS"
+msgstr "CSS personalizado"
+
+msgid "CSS appended to the chat stylesheet (ST custom_css)"
+msgstr "CSS añadido a la hoja de estilo del chat (custom_css de ST)"
+
+msgid "e.g. p { margin: 0 0 4px 0; }"
+msgstr "p. ej. p { margin: 0 0 4px 0; }"
+
+msgid "Character card art behind the messages (ST wallpaper)"
+msgstr "Arte de la tarjeta detrás de los mensajes (fondo de pantalla de ST)"
+
+msgid "Export theme"
+msgstr "Exportar tema"
+
+msgid "Theme exported to "
+msgstr "Tema exportado a "
+
+msgid "Export failed."
+msgstr "Error al exportar."
+
+msgid "Theme not found."
+msgstr "Tema no encontrado."

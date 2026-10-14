@@ -30,11 +30,15 @@ local SETTINGS_DEFAULTS = {
     show_avatars = true,
     show_covers = true,
     avatar_size = "normal",      -- small | normal | large
+    avatar_shape = "round",     -- round | rounded | square (ST avatar_styles)
+    chat_width = 100,          -- message column width % of the content area (ST parity)
     outline_user_bubbles = false,
     show_timestamps = false,
     show_tokens = false,       -- ~N tok in the message name row (ST tokenCounter)
     chat_font_file = "",       -- custom chat text font: installed font FILE path (empty = system)
     chat_font_size = 0,        -- custom chat text size (0 = follow base_font_size)
+    custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
+    chat_wallpaper = false,    -- character card art behind the chat messages (ST wallpaper)
     chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
@@ -380,6 +384,20 @@ function App:choose_chat_font()
         })
     end
     Sheets.show(self, { title = _("Chat font"), actions = actions })
+end
+
+-- Custom CSS for the chat stylesheet (ST custom_css parity): a multiline
+-- input whose value is appended LAST to both the HTML render CSS and the
+-- canvas path settings signature (see chat_bubbles chat_sig).
+function App:prompt_custom_css()
+    local Modals = require("ktui/modals")
+    local _ = require("gettext")
+    local self_ref = self
+    Modals.input(_("Custom CSS"), self.state.settings.custom_css or "",
+        _("e.g. p { margin: 0 0 4px 0; }"), _("Save"), function(text)
+            self_ref:save_setting("custom_css", text)
+            self_ref:refresh(true)
+        end)
 end
 
 -- Size override for the chat font (0 = follow the base font size).
@@ -4152,6 +4170,39 @@ function App:import_bubble_theme()
         Storage.save_bubble_themes(themes)
         self_ref:refresh(true)
         UIManager:show(InfoMessage:new{ text = _("Theme imported!") .. " (" .. base .. ")", timeout = 2 })
+    end)
+end
+
+-- Export one theme as a standalone .json (ST themes are shareable files;
+-- import_bubble_theme reads the same shape back).
+function App:export_bubble_theme(id)
+    local _ = require("gettext")
+    local themes = Storage.list_bubble_themes() or {}
+    local theme
+    for _, t in ipairs(themes) do
+        if t.id == id then theme = t break end
+    end
+    if not theme then
+        UIManager:show(InfoMessage:new{ text = _("Theme not found."), timeout = 2 })
+        return
+    end
+    local data = {}
+    for k, v in pairs(theme) do data[k] = v end
+    data.id = nil -- exports are identity-free (import assigns a fresh id)
+    local fname = (Util.safe_filename(theme.name or "theme")) .. ".json"
+    self:choose_export_dir(function(dir)
+        local okr, res = pcall(function()
+            local f = io.open(dir .. "/" .. fname, "w")
+            if not f then return nil end
+            f:write(require("json").encode(data))
+            f:close()
+            return dir .. "/" .. fname
+        end)
+        if okr and res then
+            UIManager:show(InfoMessage:new{ text = _("Theme exported to ") .. res, timeout = 3 })
+        else
+            UIManager:show(InfoMessage:new{ text = _("Export failed.") .. " " .. tostring(res), timeout = 3 })
+        end
     end)
 end
 

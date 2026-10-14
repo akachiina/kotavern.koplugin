@@ -545,6 +545,22 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             end,
             callback = function() app:prompt_chat_font_size() end,
         },
+        {
+            text = _("Custom CSS"),
+            subtext = _("CSS appended to the chat stylesheet (ST custom_css)"),
+            value = function()
+                local c = app.state.settings.custom_css or ""
+                return (c ~= "") and tostring(#c) .. " chars" or _("None")
+            end,
+            callback = function() app:prompt_custom_css() end,
+        },
+        {
+            text = _("Chat background"),
+            subtext = _("Character card art behind the messages (ST wallpaper)"),
+            toggle = true,
+            value = function() return app.state.settings.chat_wallpaper == true end,
+            callback = function() app:toggle_setting("chat_wallpaper") end,
+        },
         { section = true, text = _("Details") },
         {
             text = _("Show avatars"),
@@ -563,6 +579,36 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
                     { label = _("Small"), value = "small" },
                     { label = _("Normal"), value = "normal" },
                     { label = _("Large"), value = "large" },
+                })
+            end,
+        },
+        {
+            text = _("Chat width"),
+            value = function()
+                local pct = tonumber(app.state.settings.chat_width) or 100
+                if pct >= 100 then return _("Full") end
+                return tostring(pct) .. "%"
+            end,
+            callback = function()
+                app:choose_setting("chat_width", _("Chat width"), {
+                    { label = _("Full"), value = "100" },
+                    { label = _("Wide"), value = "85" },
+                    { label = _("Medium"), value = "70" },
+                    { label = _("Narrow"), value = "50" },
+                })
+            end,
+        },
+        {
+            text = _("Avatar shape"),
+            value = function()
+                local labels = { ["round"] = _("Round"), ["rounded"] = _("Rounded"), ["square"] = _("Square") }
+                return labels[app.state.settings.avatar_shape] or app.state.settings.avatar_shape
+            end,
+            callback = function()
+                app:choose_setting("avatar_shape", _("Avatar shape"), {
+                    { label = _("Round"), value = "round" },
+                    { label = _("Rounded"), value = "rounded" },
+                    { label = _("Square"), value = "square" },
                 })
             end,
         },
@@ -633,6 +679,7 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
         local rename_label = _("Rename")
         local duplicate_label = _("Duplicate")
         local delete_label = _("Delete")
+        local export_label = _("Export theme")
         local set_default_label = _("Set as default")
         local unset_default_label = _("Unset default")
         local theme_name_label = _("Theme name")
@@ -681,6 +728,11 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
                         label = duplicate_label, icon = "copy",
                         on_tap = function()
                             self_ref:duplicate_bubble_theme(theme.id)
+                        end })
+                    table.insert(actions, {
+                        label = export_label, icon = "upload",
+                        on_tap = function()
+                            self_ref:export_bubble_theme(theme.id)
                         end })
                     table.insert(actions, {
                         label = delete_label, icon = "trash", danger = true,
@@ -3087,6 +3139,28 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     -- Chat surface tint (ST SmartThemeChatTintColor analog): paper/gray/
     -- none - set in Appearance.
     P.rect(bb, x, y, w, h, Theme.chat_bg)
+    -- Wallpaper (ST background parity): the character card's art (its
+    -- thumbnail, cached) stretched across the chat area, then dimmed so
+    -- bubbles/text keep contrast on e-ink. Off by default (settings.
+    -- chat_wallpaper = "on" | "off", default off for a clean flat look
+    -- until the user asks for the card art like ST does).
+    local state_wp = view.app.state.settings.chat_wallpaper
+    if state_wp ~= false and state_wp ~= "off" then
+        local card_px = view.app.state.current_character_data and view.app.state.current_character_data.png_path
+            or view.app.state.current_character_file
+        if card_px and card_px ~= "" then
+            -- Pre-mixed toward the surface (cached on disk): no solid wash
+            -- over the art, e-ink contrast kept (see Thumbs.wallpaper).
+            pcall(function()
+                local Thumbs = require("ktui/thumbs")
+                local Pima = require("ktui/primitives")
+                local wp = Thumbs.wallpaper(card_px, w, h)
+                if wp then
+                    Pima.image(bb, wp, x, y, w, h, {})
+                end
+            end)
+        end
+    end
 
     local state = view.app.state
     local messages = state.messages or {}

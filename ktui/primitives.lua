@@ -120,6 +120,26 @@ function P.circle_carve(bb, x, y, size, color)
     end
 end
 
+-- Corner cutout for square/rounded avatar shapes (ST avatar_styles):
+-- paints the 4 corners back to the surface color with `radius` px cuts
+-- (radius 0 = no-op, sharp square; size/2 = the circle carve equivalent).
+function P.corner_carve(bb, x, y, size, radius, color)
+    radius = math.floor(radius or 0)
+    if radius <= 0 or size <= 0 then return end
+    radius = math.min(radius, math.floor(size / 2))
+    for row = 0, radius - 1 do
+        local inset = radius - math.floor(math.sqrt(radius * radius - (radius - row - 0.5) ^ 2) + 0.5)
+        if inset > 0 then
+            local y_top = y + row
+            local y_bot = y + size - 1 - row
+            bb:paintRect(x, y_top, inset, 1, color)
+            bb:paintRect(x + size - inset, y_top, inset, 1, color)
+            bb:paintRect(x, y_bot, inset, 1, color)
+            bb:paintRect(x + size - inset, y_bot, inset, 1, color)
+        end
+    end
+end
+
 -- 1px (or 2px) circle outline centered at (cx, cy).
 function P.circle_ring(bb, cx, cy, r, color, thickness)
     r = math.floor(r)

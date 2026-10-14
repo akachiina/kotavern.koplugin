@@ -136,19 +136,38 @@ end
 -- every character image in the app renders through the same circle treatment
 -- instead of a whole shrunken image.
 -- Returns true when an image was painted (callers flip dither hints on it).
-function W.avatar(bb, x, y, size, image_file, name, carve_color)
+-- shape: "round" (default, circle) | "square" | "rounded" (ST avatar_styles
+-- parity; RECTANGULAR maps to square here - the chat column is square).
+function W.avatar(bb, x, y, size, image_file, name, carve_color, shape)
+    shape = shape or "round" -- nil = the classic circle treatment
     local drawn = false
     if image_file and image_file ~= "" then
         drawn = P.image(bb, image_file, x, y, size, size, { cover = true })
     end
     if drawn then
-        P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
-        P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
+        if shape == "round" then
+            P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
+            P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
+        elseif shape == "rounded" then
+            P.corner_carve(bb, x, y, size, math.floor(size * 0.18), carve_color or Theme.bg)
+            P.stroke(bb, x, y, size, size, math.min(2, math.floor(size / 24) + 1), Theme.muted)
+        else -- square
+            P.corner_carve(bb, x, y, size, 1, carve_color or Theme.bg)
+            P.stroke(bb, x, y, size, size, 1, Theme.muted)
+        end
     else
-        -- Fallback: filled circle with the initial (ST missing-avatar).
+        -- Fallback: filled disc/box with the initial (ST missing-avatar).
         P.rect(bb, x, y, size, size, Theme.soft)
-        P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
-        P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
+        if shape == "round" then
+            P.circle_carve(bb, x, y, size, carve_color or Theme.bg)
+            P.circle_ring(bb, x + size / 2, y + size / 2, size / 2, Theme.muted)
+        elseif shape == "rounded" then
+            P.corner_carve(bb, x, y, size, math.floor(size * 0.18), carve_color or Theme.bg)
+            P.stroke(bb, x, y, size, size, math.min(2, math.floor(size / 24) + 1), Theme.muted)
+        else -- square
+            P.corner_carve(bb, x, y, size, 1, carve_color or Theme.bg)
+            P.stroke(bb, x, y, size, size, 1, Theme.muted)
+        end
         local initial = W.first_glyph(name or "?"):upper()
         P.center_text_box(bb, initial, x, y, size, size, "small", { bold = true })
     end

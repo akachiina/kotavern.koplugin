@@ -47,12 +47,13 @@ local function effective_style(style)
     return "st" -- st / rounded / square / unknown
 end
 
--- ST round avatar: the shared Widgets.avatar circle (square cover-fit
--- image, corners carved back to the surface color, 1px ring). Keeping the
--- local wrapper so the three call sites below stay one-liners; the view
--- gets the dither hint whenever a bitmap actually painted.
+-- ST avatar shape: the shared Widgets avatar (square cover-fit image,
+-- corners carved back to the surface color, ring). shape comes from
+-- settings.avatar_shape (round | rounded | square - ST avatar_styles).
 local function draw_avatar(view, bb, x, y, size, image_file, name, carve_color)
-    if Widgets.avatar(bb, x, y, size, image_file, name, carve_color) then
+    local shape = (view.app and view.app.state and view.app.state.settings
+        and view.app.state.settings.avatar_shape) or "round"
+    if Widgets.avatar(bb, x, y, size, image_file, name, carve_color, shape) then
         view.dithered = true
     end
 end
@@ -845,8 +846,13 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed)
     local Theme = require("ktui/theme")
     local Geom = require("ui/geometry")
     local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    -- Cache signature covers everything chat_css() bakes in: base size,
+    -- custom font file/size and custom CSS (a CSS edit must rebuild docs).
+    local app_s = app.state.settings or {}
     local font_id = tostring(Theme.scale(Theme.get_base_font_size()))
-        .. ":" .. tostring((app.state.settings and app.state.settings.chat_font_size) or "")
+        .. ":" .. tostring(app_s.chat_font_size or "")
+        .. ":" .. tostring(app_s.chat_font_file or "")
+        .. ":" .. tostring(app_s.custom_css or "")
     -- Revealed-spoiler / details indices participate in the key: a toggle
     -- re-runs the measure with a new set, which lands on a fresh doc without
     -- touching the masked render still cached for other messages.
@@ -912,7 +918,11 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed)
         end
     end
     local okp, perr = pcall(function()
-        local css = require("ktui/kthtml").chat_css()
+        -- Live settings thread through so the custom chat font (KTUser
+        -- @font-face), chat_font_size and custom_css all ride inside the
+        -- same stylesheet; by-sig callers cache on the settings hash anyway.
+        local app_s = (app and app.state and app.state.settings) or nil
+        local css = require("ktui/kthtml").chat_css(app_s)
         local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
         widget:setContent(chat_html_body(content, revealed, det_revealed), css,
             Theme.scale(Theme.get_base_font_size()),
@@ -1419,6 +1429,17 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local panel_right = content_right - pad
     local inner_left = panel_mode and (panel_x + pn_pad) or (x + pad)
     local inner_right = panel_mode and (panel_right - pn_pad) or (content_right - pad)
+    -- ST chat_width (25..100%): narrows the whole message column against
+    -- the content area, centered (ST centers #chat via --sheldWidth).100
+    -- and anything bigger keep the old full-width geometry.
+    local cw_pct = tonumber(settings.chat_width) or 100
+    if cw_pct < 100 then
+        cw_pct = math.max(25, math.min(100, cw_pct))
+        local col_w = math.floor((inner_right - inner_left) * (cw_pct / 100))
+        local inset = math.floor(((inner_right - inner_left) - col_w) / 2)
+        inner_left = inner_left + inset
+        inner_right = inner_right - inset
+    end
     local area = math.max(8, inner_right - inner_left)
     -- ST bubbles cap at 78% of the area; flat uses the full area.
     local max_bubble_w = math.floor(area * 0.78)
@@ -1452,9 +1473,10 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         tostring(outline_user), tostring(show_timestamps), tostring(show_tokens),
         tostring(boxed), tostring(panel_mode), tostring(radius),
         tostring(w), tostring(text_w), tostring(bubble_w),
-        tostring(settings.avatar_size),
+        tostring(settings.avatar_size), tostring(settings.chat_width),
         tostring(settings.reasoning_prefix), tostring(settings.reasoning_suffix),
         tostring(settings.chat_font_file), tostring(settings.chat_font_size),
+        tostring(settings.custom_css),
         tostring(view.app and view.app.state and view.app.state.current_chat_path),
     }, "|")
     if not layout_cache or chat_sig ~= rawget(view, "_chat_layout_sig") then

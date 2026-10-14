@@ -145,6 +145,75 @@ function Thumbs.sweep()
     end
 end
 
+-- Chat wallpaper: the card art cover-scaled into the chat area and mixed
+-- toward the chat surface (e-ink contrast: text sits directly on flat-style
+-- bg, so a full-blast art would fight it). Cached per card+size on disk.
+-- Returns the wallpaper PNG path or nil. Never throws.
+local wp_cache = {}
+function Thumbs.wallpaper(path, w, h)
+    w = math.max(1, math.floor(w or 240))
+    h = math.max(1, math.floor(h or 320))
+    local key = tostring(Thumbs.key_for(path)) .. ":" .. w .. "x" .. h
+    if wp_cache[key] and lfs.attributes(wp_cache[key], "mode") == "file" then
+        return wp_cache[key]
+    end
+    local tp = Thumbs.cached(path)
+    if not tp then
+        tp = Thumbs.generate(path)
+    end
+    if not tp then return nil end
+    local out = thumbs_dir() .. "/wp_" .. Thumbs.key_for(path) .. "_" .. w .. "x" .. h .. ".png"
+    if lfs.attributes(out, "mode") == "file" and (lfs.attributes(out, "size") or 0) > 0 then
+        wp_cache[key] = out
+        return out
+    end
+    local done = false
+    pcall(function()
+        local P = require("ktui/primitives")
+        local RenderImage = require("ui/renderimage")
+        local iw, ih = P.image_dims(tp)
+        if not iw or not ih or iw <= 0 or ih <= 0 then return end
+        local bb = RenderImage:renderImageFile(tp)
+        if not bb then return end
+        -- Aspect-center-crop to the target ratio, then downscale.
+        local src_ar, dst_ar = iw / ih, w / h
+        local sx, sy, sw, sh
+        if src_ar > dst_ar then
+            sw = math.floor(ih * dst_ar); sh = ih
+            sx = math.floor((iw - sw) / 2); sy = 0
+        else
+            sw = iw; sh = math.floor(iw / dst_ar)
+            sx = 0; sy = math.floor((ih - sh) / 2)
+        end
+        local scaled = RenderImage:scaleBlitBuffer(bb:viewport(sx, sy, sw, sh), w, h)
+        if scaled then
+            -- Mix toward the themed bg (light: white) at half strength: the
+            -- art stays recognizable but recessed behind any text on top.
+            -- getR() is 0..255; Blitbuffer.gray() takes 0..1. Mix EVERY
+            -- pixel: skipped cells would keep raw art and read as a
+            -- checkerboard under the bubbles (one-time cost, disk-cached).
+            local bg = require("ktui/theme").bg
+            local br01 = bg:getR() / 255
+            for y = 0, h - 1 do
+                for x = 0, w - 1 do
+                    local r01 = scaled:getPixel(x, y):getR() / 255
+                    scaled:setPixel(x, y,
+                        Blitbuffer.gray(0.5 * (r01 + br01)))
+                end
+            end
+            local wok = pcall(function() scaled:writePNG(out) end)
+            if scaled.free then pcall(function() scaled:free() end) end
+            done = wok
+        end
+        if bb.free then pcall(function() bb:free() end) end
+    end)
+    if done then
+        wp_cache[key] = out
+        return out
+    end
+    return nil
+end
+
 -- Paced queue: PER_TICK generations per pump, one repaint when drained.
 -- Deduplicated while pending. Pumps always run off-paint (timers), so a
 -- dashboard paint with 10 cold cards schedules exactly one chain.
