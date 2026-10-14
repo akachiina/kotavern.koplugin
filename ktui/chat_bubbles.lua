@@ -833,7 +833,7 @@ local function chat_html_body(content, revealed, det_revealed)
     return table.concat(body)
 end
 
-local function html_doc_for(app, view, content, width, revealed, det_revealed)
+local function html_doc_for(app, view, content, width, revealed, det_revealed, css_extra)
     if not app or not app.state then return nil end
     local docs = app.state.chat_html_docs
     if not docs then
@@ -865,7 +865,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed)
     end
     local key = table.concat({ tostring(content), "\0", tostring(width), "\0", font_id,
         "\0", Theme.get_theme(), "\0", set_sig_local(revealed),
-        "\0", set_sig_local(det_revealed) }, "")
+        "\0", set_sig_local(det_revealed), "\0", tostring(css_extra or "") }, "")
     local cached = docs[key]
     if cached and cached.width == width then
         return cached
@@ -887,11 +887,18 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed)
     local lc = view and view._chat_layout_cache or nil
     if type(lc) == "table" then
         for lk, l in pairs(lc) do
-            if type(l) == "table" and l._paint_id == paint_id and l.entries then
-                for ei = 1, #l.entries do
+            if type(l) == "table" and l._paint_id == paint_id then
+                for ei = 1, #(l.entries or {}) do
                     local e = l.entries[ei]
                     if type(e) == "table" and e.kind == "html" and e.widget then
                         live[e.widget] = true
+                    end
+                end
+                -- Reasoning entries in HTML mode hold their own docs.
+                for ri = 1, #(l.reasoning_entries or {}) do
+                    local re = l.reasoning_entries[ri]
+                    if type(re) == "table" and re.kind == "html" and re.widget then
+                        live[re.widget] = true
                     end
                 end
             end
@@ -923,6 +930,11 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed)
         -- same stylesheet; by-sig callers cache on the settings hash anyway.
         local app_s = (app and app.state and app.state.settings) or nil
         local css = require("ktui/kthtml").chat_css(app_s)
+        -- Reasoning docs ride the same stylesheet plus a mute + indent layer
+        -- (the canvas reasoning look): colors come from Theme live.
+        if css_extra and css_extra ~= "" then
+            css = css .. "\n" .. css_extra
+        end
         local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
         widget:setContent(chat_html_body(content, revealed, det_revealed), css,
             Theme.scale(Theme.get_base_font_size()),
@@ -982,9 +994,17 @@ end
 -- "bugada" report on long chats). A dead widget forces the full re-measure,
 -- which rebuilds the doc from the same content.
 local function layout_html_alive(layout)
-    if not layout or not layout.entries then return true end
-    for ei = 1, #layout.entries do
+    if not layout then return true end
+    for ei = 1, #(layout.entries or {}) do
         local entry = layout.entries[ei]
+        if entry.kind == "html" then
+            if not entry.widget or entry.widget.document == nil then
+                return false
+            end
+        end
+    end
+    for ri = 1, #(layout.reasoning_entries or {}) do
+        local entry = layout.reasoning_entries[ri]
         if entry.kind == "html" then
             if not entry.widget or entry.widget.document == nil then
                 return false
@@ -1524,6 +1544,32 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         view._chat_reasoning_cache = reasoning_cache
     end
     local function measure_reasoning(reasoning, rtw, inline)
+        -- HTML mode: the reasoning body renders through the SAME MuPDF path
+        -- as message bodies (real markdown), but muted: css_extra layers a
+        -- muted color + ambient font-family over chat_css(). Cached like the
+        -- canvas path (raw length + width + inline).
+        if html_render then
+            local rkey = "html:" .. #reasoning .. ":" .. rtw
+            local hit = reasoning_cache[rkey]
+            if not hit then
+                local doc = html_doc_for(view.app, view, reasoning, rtw, nil, nil,
+                    "body { color: " .. require("ktui/kthtml").css_hex(Theme.muted, "#666666")
+                        .. " !important; } p { color: "
+                        .. require("ktui/kthtml").css_hex(Theme.muted, "#666666")
+                        .. " !important; }")
+                if doc and doc.height then
+                    hit = { entries = { { kind = "html", widget = doc.widget,
+                        h = doc.height, doc_key = doc.key, pad = 0, offset = 0 } }, h = doc.height }
+                else
+                    -- Render failed: fall back to the canvas parse below.
+                    hit = false
+                end
+                reasoning_cache[rkey] = hit
+            end
+            if hit then
+                return hit.entries, hit.h
+            end
+        end
         local rkey = #reasoning .. ":" .. rtw .. ":" .. tostring(inline)
         local hit = reasoning_cache[rkey]
         if not hit then

@@ -363,6 +363,52 @@ do
     ok(not short_hint, "chat: SHORT expanded reasoning is not clamped (no hint)")
     dump(bb2, "chat_reasoning_expanded")
 
+    -- HTML-mode reasoning: expanded block renders through the same MuPDF doc
+    -- path as bodies, with the muted overlay, and holds a live widget.
+    local app_h = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria", send_date = os.time(),
+              content = "Resposta final.",
+              reasoning = "Pensamento interno **com markdown** e lista:\n- um\n- dois" },
+        } })
+    local view_h = { app = app_h, hitboxes = {}, refresh = function() end }
+    local rmsg_key = nil
+    for _lk, l in pairs(view_h._chat_layout_cache or {}) do end
+    local bb_h = new_bb()
+    local okp_h, err_h = pcall(function()
+        Pages.chat(view_h, bb_h, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_h, "chat html reasoning: collapsed renders (" .. tostring(err_h) .. ")")
+    -- Open it: find the reasoning hitbox by label prefix and expand.
+    local rbox = nil
+    for _i, hb in ipairs(view_h.hitboxes) do
+        if type(hb.label) == "string" and hb.label:sub(1, 10) == "reasoning_" then
+            rbox = hb break
+        end
+    end
+    ok(rbox ~= nil, "chat html reasoning: collapsed registers the expand hitbox")
+    if rbox and rbox.callback then
+        local oktap, errtap = pcall(rbox.callback, 0, 0)
+        ok(oktap, "chat html reasoning: expand tap is safe (" .. tostring(errtap) .. ")")
+        local bb_h2 = new_bb()
+        local okp_h2, err_h2 = pcall(function()
+            Pages.chat(view_h, bb_h2, 0, 0, VW, VH, 0)
+        end)
+        ok(okp_h2, "chat html reasoning: expanded render (" .. tostring(err_h2) .. ")")
+        -- The expanded layout reasoning entries must be html kind with a live doc.
+        local found = false
+        for _lk2, l in pairs(view_h._chat_layout_cache or {}) do
+            if type(l) == "table" and l.reasoning_entries and #l.reasoning_entries > 0
+                and l.reasoning_entries[1].kind == "html"
+                and l.reasoning_entries[1].widget
+                and l.reasoning_entries[1].widget.document ~= nil then
+                found = true
+            end
+        end
+        ok(found, "chat html reasoning: expanded block renders via a live MuPDF doc")
+    end
+
     -- Clamp (v0.6.4): a LONG expanded reasoning is capped at half the viewport
     -- with a pinned "Show more" hint, instead of pushing the reply off-screen
     -- (the "reasoning ocupa a tela toda" report). The hint hitbox expands the
