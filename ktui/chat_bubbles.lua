@@ -111,6 +111,172 @@ local function chat_underscore_emphasis(line, marker, open, close)
     return table.concat(output)
 end
 
+-- Case-insensitive letter for Lua tag patterns (no /i flag): ci("ab").
+local function ci_letters(s)
+    return (s:gsub("%a", function(c) return "[" .. c:lower() .. c:upper() .. "]" end))
+end
+
+-- Quoted attribute value (double or single quotes) from a raw attr string.
+local function attr_quoted(attrs, name)
+    local v = attrs:match(ci_letters(name) .. '%s*=%s*"([^"]*)"')
+    if v == nil then
+        v = attrs:match(ci_letters(name) .. "%s*=%s*'([^']*)'")
+    end
+    return v
+end
+
+-- Validated link target: http(s) only (ST drops javascript:/etc. schemes at
+-- the DOMPurify step; our tap layer would ignore them anyway, but a
+-- dead-looking link is worse than literal text).
+local function valid_href(url)
+    url = tostring(url or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if url:match("^[hH][tT][tT][pP][sS]?://") and #url <= 2048 then
+        return url
+    end
+    return nil
+end
+
+-- Validated CSS color: #rgb/#rrggbb (short form expanded) or a named color.
+-- Anything else degrades to uncolored text (a broken declaration must never
+-- break the row).
+local function valid_color(value)
+    local v = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""):gsub(";%s*$", "")
+    local hex = v:match("^#(%x+)$")
+    if hex and (#hex == 3 or #hex == 6) then
+        if #hex == 3 then
+            hex = hex:sub(1, 1):rep(2) .. hex:sub(2, 2):rep(2) .. hex:sub(3, 3):rep(2)
+        end
+        return "#" .. hex:lower()
+    end
+    if v:match("^[A-Za-z]+$") and #v <= 20 then
+        return v:lower()
+    end
+    return nil
+end
+
+-- Model-HTML allowlist (SillyTavern parity: ST renders a DOMPurify-default
+-- subset instead of escaping everything). Runs on RAW text BEFORE escaping;
+-- every conversion goes behind \1N\1 sentinels so the escape + markdown
+-- stages never see our angle brackets (and emphasis can't pair across them).
+-- Only <letter...>-shaped tags are touched (<3, "a<b", unquoted attrs stay
+-- literal, like ST showing them through). Probe-verified MuPDF notes:
+-- <u> is ignored (-> bold, same single-protocol choice the canvas path
+-- makes); style="color:#hex" is honored (-> font color remapped to it);
+-- align=center is honored (-> center remapped); tables collapse cells
+-- without spacing (-> pipe-text rows, same as markdown tables).
+local function chat_html_allowlist(raw, stash_html)
+    local line = tostring(raw or "")
+    -- Lone structural tags (no closer needed).
+    line = line:gsub("<" .. ci_letters("br") .. "%f[^%w]%s*/?%s*>",
+        function() return stash_html("<br>") end)
+    line = line:gsub("<" .. ci_letters("hr") .. "%f[^%w]%s*/?%s*>", "---")
+    -- <img ...> -> image link ([image: alt] label keeps the tap-to-open-URL
+    -- utility; plain text when the src is missing/invalid).
+    line = line:gsub("<" .. ci_letters("img") .. "%f[^%w](.-)>", function(attrs)
+        local src = valid_href(attr_quoted(attrs, "src"))
+        local alt = attr_quoted(attrs, "alt") or "image"
+        if alt == "" then alt = "image" end
+        local label = "[image: " .. chat_html_escape(alt) .. "]"
+        if src then
+            return stash_html('<a href="' .. src .. '">' .. label .. '</a>')
+        end
+        return label
+    end)
+    -- Paired tags, innermost-first to a fixpoint (nested different tags
+    -- resolve inside-out; mismatched names never convert, so this ends).
+    local changed, guard = true, 0
+    while changed and guard < 10 do
+        changed, guard = false, guard + 1
+        line = line:gsub("<(%a[%w]*)%s*([^<>]*)>([^<>]-)</(%a[%w]*)%s*>",
+            function(o, attrs, inner, c)
+                if o:lower() ~= c:lower() then return nil end
+                local name = o:lower()
+                local out = nil
+                if name == "b" or name == "strong" then
+                    out = "<b>" .. chat_html_escape(inner) .. "</b>"
+                elseif name == "i" or name == "em" then
+                    out = "<i>" .. chat_html_escape(inner) .. "</i>"
+                elseif name == "u" or name == "cite" then
+                    out = "<b>" .. chat_html_escape(inner) .. "</b>"
+                elseif name == "s" or name == "strike" or name == "del" then
+                    out = "<s>" .. chat_html_escape(inner) .. "</s>"
+                elseif name == "code" then
+                    out = '<span class="ktcode">' .. chat_html_escape(inner) .. "</span>"
+                elseif name == "small" then
+                    out = "<small>" .. chat_html_escape(inner) .. "</small>"
+                elseif name == "center" then
+                    out = '<div align="center">'
+                        .. chat_html_escape(inner) .. "</div>"
+                elseif name == "a" then
+                    local href = valid_href(attr_quoted(attrs, "href"))
+                    if href then
+                        out = '<a href="' .. href .. '">'
+                            .. chat_html_escape(inner) .. "</a>"
+                    else
+                        out = chat_html_escape(inner)
+                    end
+                elseif name == "font" then
+                    local color = valid_color(attr_quoted(attrs, "color"))
+                    if color then
+                        out = '<span style="color:' .. color .. '">'
+                            .. chat_html_escape(inner) .. "</span>"
+                    else
+                        out = chat_html_escape(inner)
+                    end
+                elseif name == "span" then
+                    local style = attr_quoted(attrs, "style") or ""
+                    local color = valid_color(style:match("[cC][oO][lL][oO][rR]%s*:%s*([^;]+)") or "")
+                    if color then
+                        out = '<span style="color:' .. color .. '">'
+                            .. chat_html_escape(inner) .. "</span>"
+                    else
+                        out = chat_html_escape(inner)
+                    end
+                end
+                -- Unknown pairs (div/p/li/table/details/summary/...) are NOT
+                -- converted here: block-level tags belong to the row scan
+                -- (which consumes them structurally); reaching this point as
+                -- inline means stray markup -> fall through to the strip.
+                if out then
+                    changed = true
+                    return stash_html(out)
+                end
+                return nil
+            end)
+    end
+    -- Lone allowlisted openers convert (browser auto-close parity: <b>oops
+    -- bolds to the block end); lone closers fall into the strip below (ST
+    -- drops them too).
+    line = line:gsub("<(%a[%w]*)%s*([^<>]*)>", function(o, attrs)
+        local name = o:lower()
+        local open = nil
+        if name == "b" or name == "strong" or name == "u" or name == "cite" then
+            open = "<b>"
+        elseif name == "i" or name == "em" then
+            open = "<i>"
+        elseif name == "s" or name == "strike" or name == "del" then
+            open = "<s>"
+        elseif name == "code" then
+            open = '<span class="ktcode">'
+        elseif name == "small" then
+            open = "<small>"
+        elseif name == "a" then
+            local href = valid_href(attr_quoted(attrs, "href"))
+            if href then open = '<a href="' .. href .. '">' end
+        elseif name == "font" then
+            local color = valid_color(attr_quoted(attrs, "color"))
+            if color then open = '<span style="color:' .. color .. '">' end
+        end
+        if open then return stash_html(open) end
+        return nil
+    end)
+    -- Whatever <letter...> is left is unknown/stray markup: drop the brackets
+    -- (DOMPurify parity: unknown tags go, inner text stays). Non-letters
+    -- (<3, a<b, unclosed) and already-stashed spans survive untouched.
+    line = line:gsub("</?%a[%w]*%s*[^>]*>", "")
+    return line
+end
+
 -- Inline markdown over ALREADY-ESCAPED text. Order matters: links and code
 -- spans are converted FIRST and stashed behind \1N\1 sentinels so emphasis
 -- never pairs markers across their payloads (two code spans each holding one
@@ -121,16 +287,25 @@ end
 -- state = { revealed = { [n]=true }, spl_n = 0 }: spoiler numbering is
 -- document order across the whole body; a revealed index re-renders as an
 -- open span, otherwise as an <a href="kt:spl:N"> the tap layer flips.
-local function chat_html_inline(line, state)
-    local stash = {}
-    local function stash_html(html)
-        stash[#stash + 1] = html
-        return "\1" .. #stash .. "\1"
-    end
-    -- [label](url) -> anchor. Runs on ESCAPED text: a & in the url is
-    -- already & (valid href), no double-escape risk.
+local function chat_html_markdown(line, state, stash_html)
+    -- ![alt](url) -> image link (keeps the tap-to-open-URL utility; the
+    -- stray "!" prefix would otherwise survive as literal noise).
+    line = line:gsub("!%[([^%]]*)%]%(([^)%s]+)%)", function(alt, url)
+        if alt == "" then alt = "image" end
+        local label = "[image: " .. alt .. "]"
+        if valid_href(url) then
+            return stash_html('<a href="' .. url .. '">' .. label .. '</a>')
+        end
+        return label
+    end)
+    -- [label](url) -> anchor, http(s) only (ST drops other schemes at the
+    -- sanitizer; a dead-looking link is worse than literal text). Runs on
+    -- ESCAPED text: a & in the url is already &amp; (valid href).
     line = line:gsub("%[([^%]]*)%]%(([^)%s]+)%)", function(label, url)
-        return stash_html('<a href="' .. url .. '">' .. label .. '</a>')
+        if valid_href(url) then
+            return stash_html('<a href="' .. url .. '">' .. label .. '</a>')
+        end
+        return "[" .. label .. "](" .. url .. ")"
     end)
     line = line:gsub("`([^`]*)`", function(code)
         return stash_html('<span class="ktcode">' .. code .. '</span>')
@@ -148,10 +323,25 @@ local function chat_html_inline(line, state)
     line = chat_underscore_emphasis(line, "__", "<b>", "</b>")
     line = line:gsub("%*(.-)%*", "<i>%1</i>")
     line = chat_underscore_emphasis(line, "_", "<i>", "</i>")
-    if #stash > 0 then
-        line = line:gsub("\1(%d+)\1", function(n) return stash[tonumber(n)] or "" end)
-    end
     return line
+end
+
+-- One inline fragment (row payload, summary text, table cell): model-HTML
+-- allowlist on the RAW text, then escape, then the markdown stage, then
+-- stash restore. Stash tokens (\1N\1, no markup chars) survive the escape
+-- untouched, so converted spans never participate in emphasis pairing.
+local function chat_html_fragment(raw, state)
+    local stash = {}
+    local function stash_html(html)
+        stash[#stash + 1] = html
+        return "\1" .. #stash .. "\1"
+    end
+    local conv = chat_html_allowlist(raw, stash_html)
+    local out = chat_html_markdown(chat_html_escape(conv), state, stash_html)
+    if #stash > 0 then
+        out = out:gsub("\1(%d+)\1", function(n) return stash[tonumber(n)] or "" end)
+    end
+    return out
 end
 
 -- One markdown line -> one HTML row. Block structure is detected on the RAW
@@ -175,28 +365,437 @@ local function chat_html_line(line, out, state)
     elseif number then
         payload = indent .. number .. ". " .. ordered_text
     end
-    out[#out + 1] = open .. chat_html_inline(chat_html_escape(payload), state) .. close
+    out[#out + 1] = open .. chat_html_fragment(payload, state) .. close
 end
 
-local function chat_html_body(content, revealed)
+-- Match an opening tag by exact name (case-insensitive, attrs allowed):
+-- has_open_tag(line, "details") finds <details>, <details open>, <DETAILS
+-- class="x"> but NOT <detailsxyz> (the %f frontier requires a name
+-- boundary: space, / or > right after the name). NOTE: Lua patterns have no
+-- (group)? optionals - quantifiers only apply to single items.
+local function has_open_tag(line, name)
+    return line:find("<" .. ci_letters(name) .. "%f[^%w]")
+end
+
+-- Own-line tag (<tag ...> or </tag> alone, optional whitespace around).
+local function own_line_tag(line, name)
+    return line:match("^%s*</?" .. ci_letters(name) .. "%f[^%w][^>]*>%s*$")
+end
+
+local function chat_html_body(content, revealed, det_revealed)
     -- Rows are tagged text|fence; consecutive fence rows flush as CONTIGUOUS
     -- <p class="ktfence"> blocks (probe: contiguous <p> bands touch, no gap;
     -- a <br> inside/between inline-block spans left an empty white band),
     -- text rows join with <br>. Groups always join with <br> - probe-verified
     -- safe on both block boundaries (text->fence, fence->text).
+    --
+    -- Model-HTML block scan (ST parity): script/style ranges are dropped
+    -- (no JS/CSS executes in MuPDF and literal code would be garbage rows);
+    -- <pre> becomes fence rows; table rows become pipe-text rows (MuPDF
+    -- collapses table cells without spacing); <ul>/<ol>/<li> become bullet
+    -- /numbered rows; <blockquote> becomes quote rows; <h1-h6> become bold
+    -- rows; <details> becomes a tap-to-expand group (MuPDF has no native
+    -- disclosure widget, so it's re-expressed with the spoiler machinery:
+    -- a kt:det:N summary header, body rows only when revealed).
     local rows = {}
-    local in_code = false
-    local state = { revealed = revealed, spl_n = 0 }
+    local state = { revealed = revealed, spl_n = 0,
+        det_revealed = det_revealed, det_n = 0 }
+    -- Details stack: frames { sum_raw, sum_acc, sum_done, rows }. Body rows
+    -- buffer per frame; numbering (det_n) counts every group even when
+    -- collapsed, so rebuilds number identically.
+    local det_stack = {}
+    local in_code, in_pre, in_script, in_style = false, false, false, false
+    local in_quote, in_ol, ol_n = false, false, 0
+
+    local function target_rows()
+        if #det_stack > 0 then return det_stack[#det_stack].rows end
+        return rows
+    end
+    local function emit(row)
+        local t = target_rows()
+        t[#t + 1] = row
+    end
+    local function text_row(html) emit({ kind = "text", html = html or "" }) end
+    local function fence_row(html) emit({ kind = "fence", html = html or "" }) end
+
+    -- Pop one details group: number it, emit the tappable summary header,
+    -- then the buffered body only when revealed.
+    local function close_details()
+        local frame = det_stack[#det_stack]
+        if not frame then return end
+        det_stack[#det_stack] = nil
+        state.det_n = state.det_n + 1
+        local n = state.det_n
+        local sum_raw = frame.sum_raw
+        if not sum_raw or sum_raw == "" then sum_raw = "…" end
+        local sum_html = chat_html_fragment(sum_raw, state)
+        local is_open = state.det_revealed and state.det_revealed[n] and true or false
+        local marker = is_open and "▾" or "▸"
+        local t = target_rows()
+        t[#t + 1] = { kind = "text",
+            html = '<a href="kt:det:' .. n .. '" class="ktdet">'
+                .. marker .. " " .. sum_html .. "</a>" }
+        if is_open then
+            for ri = 1, #frame.rows do
+                t[#t + 1] = frame.rows[ri]
+            end
+        end
+    end
+
+    local function sum_append(top, t)
+        if t == "" then return end
+        if top.sum_raw and top.sum_raw ~= "" then
+            top.sum_raw = top.sum_raw .. "\n" .. t
+        else
+            top.sum_raw = t
+        end
+    end
+
+    local DET_O = "<" .. ci_letters("details") .. "%f[^%w][^>]*>"
+    local DET_C = "</" .. ci_letters("details") .. "%f[^%w]%s*>"
+    local SUM_O = "<" .. ci_letters("summary") .. "%f[^%w][^>]*>"
+    local SUM_C = "</" .. ci_letters("summary") .. "%f[^%w]%s*>"
+
+    -- Full block pipeline for one marker-free text line.
+    local function process_block_line(text)
+        -- Table cells -> pipe-text row (structure-only lines vanish).
+        if has_open_tag(text, "table") or has_open_tag(text, "thead")
+            or has_open_tag(text, "tbody") or has_open_tag(text, "tfoot")
+            or has_open_tag(text, "tr") or has_open_tag(text, "td")
+            or has_open_tag(text, "th") or has_open_tag(text, "caption") then
+            local cap_o, cap_e, cap_inner = text:find("^%s*<"
+                .. ci_letters("caption") .. "%f[^%w][^>]*>(.-)</"
+                .. ci_letters("caption") .. "%f[^%w]%s*>%s*$")
+            if cap_inner then
+                text_row("<b>" .. chat_html_fragment(cap_inner, state) .. "</b>")
+                return
+            end
+            local cells = {}
+            for cell in text:gmatch("<[tT][dDhH]%f[^%w][^>]*>([^<]*)") do
+                cells[#cells + 1] = cell
+            end
+            if #cells > 0 then
+                local parts = {}
+                for ci = 1, #cells do
+                    parts[#parts + 1] = chat_html_fragment(cells[ci], state)
+                end
+                text_row("| " .. table.concat(parts, " | ") .. " |")
+            end
+            return
+        end
+        -- Lists: <ol> opens a numbered range (</ol> or <ul> closes it);
+        -- <li> items emit bullet/numbered rows (flat, ST nests - noted).
+        if has_open_tag(text, "ol") then in_ol, ol_n = true, 0 end
+        if text:find("</" .. ci_letters("ol") .. "%f[^%w]%s*>")
+            or has_open_tag(text, "ul") or text:find("</" .. ci_letters("ul") .. "%f[^%w]%s*>") then
+            in_ol = false
+        end
+        do
+            local pos, found_li = 1, false
+            while true do
+                local s, e = text:find("<" .. ci_letters("li") .. "%f[^%w][^>]*>", pos)
+                if not s then break end
+                found_li = true
+                local e1 = text:find("</" .. ci_letters("li") .. "%f[^%w]%s*>", e + 1)
+                local e2 = text:find("<" .. ci_letters("li") .. "%f[^%w]", e + 1)
+                local e3 = text:find("</" .. ci_letters("ol") .. "%f[^%w]%s*>", e + 1)
+                    or text:find("</" .. ci_letters("ul") .. "%f[^%w]%s*>", e + 1)
+                local cut = #text + 1
+                local ends = { e1, e2, e3 }
+                for ei = 1, #ends do
+                    if ends[ei] and ends[ei] < cut then cut = ends[ei] end
+                end
+                local item = text:sub(e + 1, cut - 1)
+                local prefix = nil
+                if in_ol then
+                    ol_n = ol_n + 1
+                    prefix = tostring(ol_n) .. ". "
+                else
+                    prefix = "\194\183 "
+                end
+                text_row(prefix .. chat_html_fragment(item, state))
+                pos = cut
+                if cut > #text then break end
+                -- cut landed on a nested <li: loop continues from there;
+                -- on a closer/EOL the next find fails and we stop.
+                if text:sub(cut, cut) ~= "<" then break end
+            end
+            if found_li then return end
+            -- Structure-only lines (<ul>, </ol>, ...) vanish entirely: as
+            -- normal rows they would become empty <br> bands.
+            if has_open_tag(text, "ul") or has_open_tag(text, "ol")
+                or text:find("</" .. ci_letters("ul") .. "%f[^%w]%s*>")
+                or text:find("</" .. ci_letters("ol") .. "%f[^%w]%s*>") then
+                return
+            end
+        end
+        -- Blockquote: full-single line or alone-line range (flat, no nest).
+        do
+            local bq = text:match("^%s*<" .. ci_letters("blockquote")
+                .. "%f[^%w][^>]*>(.-)</" .. ci_letters("blockquote") .. "%f[^%w]%s*>%s*$")
+            if bq then
+                text_row("\u{250c} " .. '<span class="ktq">'
+                    .. chat_html_fragment(bq, state) .. "</span>")
+                return
+            end
+            if own_line_tag(text, "blockquote") then
+                in_quote = not text:find("</")
+                return
+            end
+            if in_quote then
+                text_row("\u{250c} " .. '<span class="ktq">'
+                    .. chat_html_fragment(text, state) .. "</span>")
+                return
+            end
+        end
+        -- Headings h1-h6, full-single line only (lone markers strip away).
+        do
+            local h1, inner, h2 = text:match("^%s*<[hH]([1-6])%f[^%w][^>]*>(.-)</[hH]([1-6])%f[^%w]%s*>%s*$")
+            if h1 and tonumber(h1) == tonumber(h2) then
+                text_row("<b>" .. chat_html_fragment(inner, state) .. "</b>")
+                return
+            end
+        end
+        -- Centered block, full-single line: <center> or <div|p align>.
+        -- align validates left/right/center/justify (MuPDF honors them);
+        -- plain div/p unwrap to a normal row; alone structure lines vanish.
+        do
+            local cinner = text:match("^%s*<" .. ci_letters("center")
+                .. "%f[^%w][^>]*>(.-)</" .. ci_letters("center") .. "%f[^%w]%s*>%s*$")
+            if cinner then
+                text_row('<div align="center">' .. chat_html_fragment(cinner, state) .. "</div>")
+                return
+            end
+            -- NOTE: Lua patterns have no %1 backreference; open/close names
+            -- are matched in separate alternatives below.
+            do
+                local dinner = text:match("^%s*<"
+                    .. ci_letters("div") .. "%f[^%w]%s*[^>]*>(.-)</"
+                    .. ci_letters("div") .. "%f[^%w]%s*>%s*$")
+                local pinner = text:match("^%s*<"
+                    .. ci_letters("p") .. "%f[^%w]%s*[^>]*>(.-)</"
+                    .. ci_letters("p") .. "%f[^%w]%s*>%s*$")
+                if dinner ~= nil or pinner ~= nil then
+                    local open = text:match("^%s*(<[^>]*>)") or ""
+                    local av = (attr_quoted(open, "align") or ""):lower()
+                    local alg = nil
+                    if av == "left" or av == "right" or av == "center"
+                        or av == "justify" then
+                        alg = av
+                    end
+                    local payload = dinner or pinner or ""
+                    -- div without useful align unwraps; p likewise.
+                    if alg then
+                        text_row('<div align="' .. alg .. '">'
+                            .. chat_html_fragment(payload, state) .. "</div>")
+                    else
+                        text_row(chat_html_fragment(payload, state))
+                    end
+                    return
+                end
+            end
+            if text:match("^%s*</?" .. ci_letters("div") .. "%f[^%w][^>]*>%s*$")
+                or text:match("^%s*</?" .. ci_letters("p") .. "%f[^%w][^>]*>%s*$")
+                or own_line_tag(text, "center") then
+                return
+            end
+        end
+        -- Markdown detection (lists/quotes/headings) on the raw line.
+        local one = {}
+        chat_html_line(text, one, state)
+        text_row(one[1] or "")
+    end
+
+    -- Text segment: summary capture when the innermost group still needs one,
+    -- otherwise the normal block pipeline (appends to the group buffer).
+    local function text_segment(seg)
+        if seg == "" then return end
+        local top = det_stack[#det_stack]
+        if top and not top.sum_done then
+            local s, e = seg:find(SUM_O)
+            if s then
+                local pre = seg:sub(1, s - 1)
+                if pre ~= "" then
+                    if top.sum_acc then sum_append(top, pre)
+                    else process_block_line(pre) end
+                end
+                local rest = seg:sub(e + 1)
+                local cs, ce = rest:find(SUM_C)
+                if cs then
+                    sum_append(top, rest:sub(1, cs - 1))
+                    top.sum_done, top.sum_acc = true, false
+                    local post = rest:sub(ce + 1)
+                    if post ~= "" then text_segment(post) end
+                else
+                    sum_append(top, rest)
+                    top.sum_acc = true
+                end
+                return
+            end
+            local cs, ce = seg:find(SUM_C)
+            if cs and top.sum_acc then
+                sum_append(top, seg:sub(1, cs - 1))
+                top.sum_done, top.sum_acc = true, false
+                local post = seg:sub(ce + 1)
+                if post ~= "" then text_segment(post) end
+                return
+            end
+            if top.sum_acc then sum_append(top, seg); return end
+            -- Pre-summary text without markers: buffered as body rows.
+        end
+        process_block_line(seg)
+    end
+
+    -- <script>/<style>: drop marker-to-close spans (single-line or range);
+    -- surrounding text stays (ST parity: the tags never render, but the
+    -- prose around them does).
+    local function drop_script_style(ln)
+        local rest = ln
+        while rest ~= "" do
+            local ss = rest:find("<" .. ci_letters("script") .. "%f[^%w]")
+            local ys = rest:find("<" .. ci_letters("style") .. "%f[^%w]")
+            local ms, is_script = nil, false
+            if ss and (not ys or ss < ys) then
+                ms, is_script = ss, true
+            elseif ys then
+                ms, is_script = ys, false
+            else
+                break
+            end
+            local head = rest:sub(1, ms - 1)
+            if head:match("%S") then text_segment(head) end
+            local cpat = is_script
+                and ("</" .. ci_letters("script") .. "%f[^%w]%s*>")
+                or ("</" .. ci_letters("style") .. "%f[^%w]%s*>")
+            local cs, ce = rest:find(cpat, ms)
+            if cs then
+                rest = rest:sub(ce + 1)
+            else
+                if is_script then in_script = true else in_style = true end
+                return
+            end
+        end
+        if rest:match("%S") then text_segment(rest) end
+    end
+
     for line in (tostring(content or "") .. "\n"):gmatch("(.-)\n") do
-        if line:match("^%s*```") then
+        if in_script or in_style then
+            -- Close whichever ranges end on this line (possibly both); a
+            -- tail that reopens a range routes through the same drop logic.
+            -- Anything still in range (or empty) is dropped: literal JS/CSS
+            -- would be garbage rows.
+            local rest = line
+            local again = true
+            while again and (in_script or in_style) do
+                again = false
+                if in_script then
+                    local cs, ce = rest:find("</" .. ci_letters("script") .. "%f[^%w]%s*>")
+                    if cs then
+                        in_script = false
+                        rest = rest:sub(ce + 1)
+                        again = true
+                    end
+                end
+                if in_style then
+                    local cs, ce = rest:find("</" .. ci_letters("style") .. "%f[^%w]%s*>")
+                    if cs then
+                        in_style = false
+                        rest = rest:sub(ce + 1)
+                        again = true
+                    end
+                end
+            end
+            if rest ~= "" and not in_script and not in_style then
+                drop_script_style(rest)
+            end
+        elseif line:match("^%s*```") then
             in_code = not in_code
         elseif in_code then
-            rows[#rows + 1] = { kind = "fence", html = chat_html_escape(line) }
+            fence_row(chat_html_escape(line))
+        elseif has_open_tag(line, "script") or has_open_tag(line, "style") then
+            drop_script_style(line)
+        elseif in_pre then
+            local s, e = line:find("</" .. ci_letters("pre") .. "%f[^%w]%s*>")
+            if s then
+                in_pre = false
+                local tail = line:sub(e + 1)
+                if tail:match("%S") then text_segment(tail) end
+            else
+                fence_row(chat_html_escape(line))
+            end
+        elseif own_line_tag(line, "pre") then
+            in_pre = true
         else
-            local one = {}
-            chat_html_line(line, one, state)
-            rows[#rows + 1] = { kind = "text", html = one[1] or "" }
+            -- Single-line <pre>inner</pre> anywhere on the line.
+            local ps, pe, pinner = line:find("<" .. ci_letters("pre")
+                .. "%f[^%w][^>]*>(.-)</" .. ci_letters("pre") .. "%f[^%w]%s*>")
+            if ps then
+                local head, tail = line:sub(1, ps - 1), line:sub(pe + 1)
+                if head:match("%S") then text_segment(head) end
+                fence_row(chat_html_escape(pinner))
+                if tail:match("%S") then text_segment(tail) end
+            else
+                -- Details markers split the line; text pieces route through
+                -- the summary/block pipeline above.
+                local rest, handled = line, false
+                while true do
+                    local s, e = rest:find(DET_O)
+                    local cs, ce = rest:find(DET_C)
+                    local kind, ms, me = nil, nil, nil
+                    if s and (not cs or s < cs) then
+                        kind, ms, me = "open", s, e
+                    elseif cs then
+                        kind, ms, me = "close", cs, ce
+                    else
+                        break
+                    end
+                    handled = true
+                    local pre = rest:sub(1, ms - 1)
+                    local top = det_stack[#det_stack]
+                    if kind == "open" then
+                        if top and top.sum_acc and not top.sum_done then
+                            -- Pathological: nested open inside summary
+                            -- accumulation -> kept literally in the summary.
+                            sum_append(top, rest:sub(ms, me))
+                        elseif #det_stack >= 4 then
+                            -- Absurd nesting: markers degrade through the
+                            -- strip (vanish), content stays.
+                            text_segment(rest:sub(ms, me))
+                        else
+                            if pre ~= "" then text_segment(pre) end
+                            det_stack[#det_stack + 1] = {
+                                sum_raw = nil, sum_acc = false,
+                                sum_done = false, rows = {},
+                            }
+                        end
+                    else
+                        if top and top.sum_acc and not top.sum_done then
+                            top.sum_done, top.sum_acc = true, false
+                        end
+                        if #det_stack == 0 then
+                            -- Stray close: strip path vanishes it.
+                            if pre ~= "" then text_segment(pre) end
+                            text_segment(rest:sub(ms, me))
+                        else
+                            if pre ~= "" then text_segment(pre) end
+                            close_details()
+                        end
+                    end
+                    rest = rest:sub(me + 1)
+                    if rest == "" then break end
+                end
+                if not handled then
+                    text_segment(line)
+                elseif rest ~= "" then
+                    text_segment(rest)
+                end
+            end
         end
+    end
+    -- Unclosed groups flush as collapsed (markers dropped, body kept only
+    -- in the buffer for a later toggle... no: collapsed shows summary only).
+    while #det_stack > 0 do
+        close_details()
     end
     local parts, pending_text = {}, nil
     for _, r in ipairs(rows) do
@@ -233,7 +832,7 @@ local function chat_html_body(content, revealed)
     return table.concat(body)
 end
 
-local function html_doc_for(app, view, content, width, revealed)
+local function html_doc_for(app, view, content, width, revealed, det_revealed)
     if not app or not app.state then return nil end
     local docs = app.state.chat_html_docs
     if not docs then
@@ -248,18 +847,19 @@ local function html_doc_for(app, view, content, width, revealed)
     local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
     local font_id = tostring(Theme.scale(Theme.get_base_font_size()))
         .. ":" .. tostring((app.state.settings and app.state.settings.chat_font_size) or "")
-    -- Revealed-spoiler indices participate in the key: the toggle re-runs the
-    -- measure with a new set, which lands on a fresh doc without touching the
-    -- masked render still cached for other messages.
-    local rev_sig = ""
-    if type(revealed) == "table" then
+    -- Revealed-spoiler / details indices participate in the key: a toggle
+    -- re-runs the measure with a new set, which lands on a fresh doc without
+    -- touching the masked render still cached for other messages.
+    local function set_sig_local(set)
+        if type(set) ~= "table" then return "" end
         local ks = {}
-        for rk in pairs(revealed) do ks[#ks + 1] = tostring(rk) end
+        for rk in pairs(set) do ks[#ks + 1] = tostring(rk) end
         table.sort(ks)
-        rev_sig = table.concat(ks, ",")
+        return table.concat(ks, ",")
     end
     local key = table.concat({ tostring(content), "\0", tostring(width), "\0", font_id,
-        "\0", Theme.get_theme(), "\0", rev_sig }, "")
+        "\0", Theme.get_theme(), "\0", set_sig_local(revealed),
+        "\0", set_sig_local(det_revealed) }, "")
     local cached = docs[key]
     if cached and cached.width == width then
         return cached
@@ -314,14 +914,14 @@ local function html_doc_for(app, view, content, width, revealed)
     local okp, perr = pcall(function()
         local css = require("ktui/kthtml").chat_css()
         local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
-        widget:setContent(chat_html_body(content, revealed), css,
+        widget:setContent(chat_html_body(content, revealed, det_revealed), css,
             Theme.scale(Theme.get_base_font_size()),
             false, nil, Constants.PLUGIN_DIR .. "/assets")
         local pages = widget.page_count or 1
         -- Tall bitmap: relayout at pages*96 then scan the exact bottom.
         local tall = math.max(96, pages * 96)
         widget.dimen = Geom:new{ w = width, h = tall }
-        widget:setContent(chat_html_body(content, revealed), css,
+        widget:setContent(chat_html_body(content, revealed, det_revealed), css,
             Theme.scale(Theme.get_base_font_size()),
             false, nil, Constants.PLUGIN_DIR .. "/assets")
         widget:_render()
@@ -342,13 +942,13 @@ end
 
 -- Reveal set for one message (session-scoped: dies with app.state, like the
 -- reasoning open map). Lazy-created; the measure pass reads it to decide
--- which spoilers re-render as open spans.
-function ChatBubbles.spoiler_state(app, msg_key)
+-- which spoilers/details re-render open.
+local function reveal_store(app, field, msg_key)
     if not app or not app.state or not msg_key then return {} end
-    local all = app.state.chat_spoilers_revealed
+    local all = app.state[field]
     if not all then
         all = {}
-        app.state.chat_spoilers_revealed = all
+        app.state[field] = all
     end
     local set = all[msg_key]
     if not set then
@@ -356,6 +956,14 @@ function ChatBubbles.spoiler_state(app, msg_key)
         all[msg_key] = set
     end
     return set
+end
+
+function ChatBubbles.spoiler_state(app, msg_key)
+    return reveal_store(app, "chat_spoilers_revealed", msg_key)
+end
+
+function ChatBubbles.details_state(app, msg_key)
+    return reveal_store(app, "chat_details_revealed", msg_key)
 end
 
 -- The fast path may only reuse a cached layout while every html entry still
@@ -376,17 +984,40 @@ local function layout_html_alive(layout)
     return true
 end
 
--- Layout-cache signature of the revealed set ("" when nothing is revealed):
+-- Layout-cache signature of a reveal set ("" when nothing is revealed):
 -- a toggle must force the full re-measure, or the fast path would keep the
 -- masked layout even after the doc cache entry was dropped.
-local function spoiler_sig(app, msg_key)
+local function set_sig(app, field, msg_key)
     if not app or not app.state or not msg_key then return "" end
-    local set = app.state.chat_spoilers_revealed and app.state.chat_spoilers_revealed[msg_key]
+    local all = app.state[field]
+    local set = all and all[msg_key]
     if not set then return "" end
     local ks = {}
     for sk in pairs(set) do ks[#ks + 1] = tostring(sk) end
     table.sort(ks)
     return table.concat(ks, ",")
+end
+
+local function spoiler_sig(app, msg_key)
+    return set_sig(app, "chat_spoilers_revealed", msg_key)
+end
+
+local function details_sig(app, msg_key)
+    return set_sig(app, "chat_details_revealed", msg_key)
+end
+
+-- Drop one cached HTML doc (toggle path): the widget is freed now because
+-- the next paint re-measures (reveal sig changed) and rebuilds before
+-- painting anything, so nothing can still reference it.
+local function invalidate_doc(app, entry)
+    local docs = app.state and app.state.chat_html_docs
+    if docs and entry.doc_key then
+        local old = docs[entry.doc_key]
+        if old and old.widget then
+            pcall(function() old.widget:free() end)
+        end
+        docs[entry.doc_key] = nil
+    end
 end
 
 -- Tap inside a chat HTML band, already translated to widget-local
@@ -406,17 +1037,14 @@ function ChatBubbles.chat_html_tap(view, entry, msg_key, lx, ly)
         if not n or not view.app then return end
         local set = ChatBubbles.spoiler_state(view.app, msg_key)
         if set[n] then set[n] = nil else set[n] = true end
-        local docs = view.app.state and view.app.state.chat_html_docs
-        if docs and entry.doc_key then
-            -- Free the evicted widget now: the next paint re-measures
-            -- (spoiler sig changed) and rebuilds before painting anything,
-            -- so nothing can still reference it.
-            local old = docs[entry.doc_key]
-            if old and old.widget then
-                pcall(function() old.widget:free() end)
-            end
-            docs[entry.doc_key] = nil
-        end
+        invalidate_doc(view.app, entry)
+        if view.refresh then view:refresh() end
+    elseif uri:find("^kt:det:", 1) then
+        local n = tonumber(uri:match("^kt:det:(%d+)$"))
+        if not n or not view.app then return end
+        local set = ChatBubbles.details_state(view.app, msg_key)
+        if set[n] then set[n] = nil else set[n] = true end
+        invalidate_doc(view.app, entry)
         if view.refresh then view:refresh() end
     elseif uri:find("^https?://", 1) then
         ChatBubbles.show_external_link(view.app, uri)
@@ -539,7 +1167,8 @@ local function block_entries(blocks, width, app, show_inline, view, body_face)
             -- failed render falls back to the plain-text parse, never a blank
             -- bubble. doc.key rides along so the spoiler tap can invalidate
             -- exactly this doc.
-            local doc = html_doc_for(app, view, block.text, width, block.revealed)
+            local doc = html_doc_for(app, view, block.text, width,
+                block.revealed, block.det_revealed)
             if doc and doc.height then
                 table.insert(entries, {
                     kind = "html", widget = doc.widget,
@@ -906,6 +1535,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local function full_sig(msg, key, msg_key, content_text, reasoning, is_last)
         return sig_msg(msg, key, msg_key, content_text, reasoning, is_last) .. ":" .. regex_sig
             .. ":" .. spoiler_sig(view.app, msg_key)
+            .. ":" .. details_sig(view.app, msg_key)
     end
 
     -- Re-measure one message into a fresh layout (the slow path; unchanged
@@ -1030,7 +1660,8 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 if html_render and not is_user then
                     blocks = { { kind = "html", text = content_text,
                         msg_key = msg_key,
-                        revealed = ChatBubbles.spoiler_state(view.app, msg_key) } }
+                        revealed = ChatBubbles.spoiler_state(view.app, msg_key),
+                        det_revealed = ChatBubbles.details_state(view.app, msg_key) } }
                 end
             end
             local entries, content_h, block_gap = block_entries(blocks, text_w, view.app, show_inline, view, body_face)
@@ -1541,8 +2172,8 @@ end
 
 -- TEST-ONLY hook (ui_smoke): expose the HTML-mode body encoder without a
 -- paint. Not used by the app path. revealed = optional { [n]=true } set.
-function ChatBubbles._test_chat_html_body(content, revealed)
-    return chat_html_body(content, revealed)
+function ChatBubbles._test_chat_html_body(content, revealed, det_revealed)
+    return chat_html_body(content, revealed, det_revealed)
 end
 
 return ChatBubbles

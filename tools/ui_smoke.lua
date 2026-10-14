@@ -2316,11 +2316,188 @@ do
             "chat html md: - item gets the bullet")
         ok(body:find('<p class="ktfence">code_row</p>', 1, true) ~= nil,
             "chat html md: fenced rows flush as mono <p> blocks")
-        ok(body:find("5&lt;b&gt;&amp;&lt;tail", 1, true) ~= nil,
-            "chat html md: model text is escaped (tags/entities)")
+        -- Lone allowlisted openers convert (browser auto-close parity);
+        -- unknown tags vanish keeping inner text; non-letters stay literal.
+        ok(body:find("5<b>&amp;&lt;tail", 1, true) ~= nil,
+            "chat html md: lone <b> converts, entities still escaped")
         ok(body:find("~~", 1, true) == nil and body:find("||", 1, true) == nil,
             "chat html md: no raw ~~ or || markers survive")
     end
+end
+
+-- Model-HTML allowlist (ST parity): paired tags convert, unknown markup
+-- degrades to inner text, non-tag < stays literal, dangerous schemes and
+-- script/style never reach the document.
+do
+    local DbgChat = require("ktui/chat_bubbles")
+    local inline = DbgChat._test_chat_html_body(
+        "<b>B</b> <I>I</I> <u>U</u> <s>S</s> <code>C</code> <small>sm</small>")
+    ok(inline:find("<b>B</b>", 1, true) ~= nil
+        and inline:find("<i>I</i>", 1, true) ~= nil
+        and inline:find("<s>S</s>", 1, true) ~= nil,
+        "chat html allow: b/i/s convert (case-insensitive)")
+    ok(inline:find('<span class="ktcode">C</span>', 1, true) ~= nil
+        and inline:find("<small>sm</small>", 1, true) ~= nil,
+        "chat html allow: code/small convert")
+    ok(inline:find("<b>U</b>", 1, true) ~= nil,
+        "chat html allow: u falls back to bold (MuPDF ignores <u>)")
+    local links = DbgChat._test_chat_html_body(
+        '<a href="https://x.com">L</a> <A HREF=\'https://y.com\'>M</A> '
+        .. '<a href="javascript:alert(1)">X</a> [t](ftp://x.com/y)')
+    ok(links:find('<a href="https://x.com">L</a>', 1, true) ~= nil
+        and links:find('<a href="https://y.com">M</a>', 1, true) ~= nil,
+        "chat html allow: http(s) anchors pass (either quote style)")
+    local nAnchors = 0
+    for _m in links:gmatch("<a href") do nAnchors = nAnchors + 1 end
+    ok(links:find("javascript", 1, true) == nil and nAnchors == 2,
+        "chat html allow: javascript: scheme never becomes a link")
+    ok(links:find("[t](ftp://x.com/y)", 1, true) ~= nil,
+        "chat html allow: ftp markdown link stays literal")
+    local misc = DbgChat._test_chat_html_body(
+        "<foo>F</foo> a < b and c > d I <3 hearts stray </b> here")
+    ok(misc:find("<foo", 1, true) == nil
+        and misc:find("a &lt; b and c &gt; d", 1, true) ~= nil,
+        "chat html allow: unknown tags drop brackets, comparisons literal")
+    ok(misc:find("I &lt;3 hearts", 1, true) ~= nil
+        and misc:find("stray  here", 1, true) ~= nil,
+        "chat html allow: <3 literal, lone closer stripped")
+    local style = DbgChat._test_chat_html_body(
+        '<font color="#b41e1e">R</font> <font color="#ABC">S</font> '
+        .. '<span style="color:#b41e1e">T</span> <center>C</center>')
+    ok(style:find('style="color:#b41e1e"', 1, true) ~= nil
+        and style:find('style="color:#aabbcc"', 1, true) ~= nil,
+        "chat html allow: font color remapped (short hex expanded)")
+    ok(style:find('align="center"', 1, true) ~= nil,
+        "chat html allow: center remapped to aligned div")
+    local drop = DbgChat._test_chat_html_body(
+        "<script>alert(1)</script> keep\n<script>\nevil()\n</script> tail")
+    ok(drop:find("alert", 1, true) == nil and drop:find("evil", 1, true) == nil,
+        "chat html allow: script blocks dropped with content")
+    ok(drop:find("keep", 1, true) ~= nil and drop:find("tail", 1, true) ~= nil,
+        "chat html allow: text around script survives")
+    ok(DbgChat._test_chat_html_body("<style>p{}</style>") == "",
+        "chat html allow: style blocks dropped")
+    local img = DbgChat._test_chat_html_body(
+        '<img src="https://e.com/i.png" alt="A pic"> ![B](https://e.com/j.png)')
+    ok(img:find("[image: A pic]", 1, true) ~= nil
+        and img:find("[image: B]", 1, true) ~= nil,
+        "chat html allow: img tags and images labeled, urls linked")
+    -- Markdown emphasis still works around (and never inside) model tags.
+    local mix = DbgChat._test_chat_html_body("**md** and <b>html</b> and `a*b`")
+    ok(mix:find("<b>md</b>", 1, true) ~= nil
+        and mix:find("<b>html</b>", 1, true) ~= nil
+        and mix:find("<i>", 1, true) == nil,
+        "chat html allow: markdown + model tags compose, code stays inert")
+end
+
+-- Model-HTML blocks: tables, lists, quotes, headings, pre, details.
+do
+    local DbgChat = require("ktui/chat_bubbles")
+    local tbl = DbgChat._test_chat_html_body(
+        "<table>\n<tr><td>A</td><td>B</td></tr>\n</table>")
+    ok(tbl:find("| A | B |", 1, true) ~= nil
+        and tbl:find("<table", 1, true) == nil,
+        "chat html blocks: table rows become pipe-text, no remnants")
+    local lst = DbgChat._test_chat_html_body(
+        "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<ol>\n<li>c</li>\n<li>d</li>\n</ol>")
+    ok(lst:find("\194\183 a", 1, true) ~= nil
+        and lst:find("1. c", 1, true) ~= nil
+        and lst:find("2. d", 1, true) ~= nil
+        and lst:find("<li", 1, true) == nil,
+        "chat html blocks: ul bullets, ol numbering, no remnants")
+    local bq = DbgChat._test_chat_html_body("<blockquote>Q</blockquote>")
+    ok(bq:find("ktq", 1, true) ~= nil and bq:find(">Q<", 1, true) ~= nil,
+        "chat html blocks: blockquote becomes the quote row")
+    local hd = DbgChat._test_chat_html_body("<h2>Title</h2>")
+    ok(hd:find("<b>Title</b>", 1, true) ~= nil,
+        "chat html blocks: h2 becomes a bold row")
+    local pre = DbgChat._test_chat_html_body("<pre>\nx = 1\n</pre>")
+    ok(pre:find("ktfence", 1, true) ~= nil and pre:find("x = 1", 1, true) ~= nil,
+        "chat html blocks: pre becomes fence rows")
+    local pp = DbgChat._test_chat_html_body("<p>Para</p>")
+    ok(pp == "Para",
+        "chat html blocks: p unwraps to its text")
+end
+
+-- <details> tap-to-expand (ST disclosure parity via the spoiler machinery):
+-- collapsed by default, numbered in document order, body only when revealed.
+do
+    local DbgChat = require("ktui/chat_bubbles")
+    local d1 = DbgChat._test_chat_html_body(
+        "<details><summary>Thoughts</summary>hidden body</details>")
+    ok(d1:find('href="kt:det:1"', 1, true) ~= nil
+        and d1:find("Thoughts", 1, true) ~= nil,
+        "chat html details: summary anchors kt:det:1")
+    ok(d1:find("hidden body", 1, true) == nil
+        and d1:find("<details", 1, true) == nil,
+        "chat html details: collapsed body hidden, no remnants")
+    local d1o = DbgChat._test_chat_html_body(
+        "<details><summary>Thoughts</summary>hidden body</details>",
+        nil, { [1] = true })
+    ok(d1o:find("hidden body", 1, true) ~= nil
+        and d1o:find("kt:det:1", 1, true) ~= nil,
+        "chat html details: revealed body shows, toggle kept")
+    local d2 = DbgChat._test_chat_html_body(
+        "line one\n<details>\n<summary>Multi\npart</summary>\nbody row\n</details>\nafter")
+    ok(d2:find("kt:det:1", 1, true) ~= nil
+        and d2:find("line one", 1, true) ~= nil
+        and d2:find("after", 1, true) ~= nil
+        and d2:find("body row", 1, true) == nil,
+        "chat html details: multiline group, neighbors kept, body hidden")
+    local d3 = DbgChat._test_chat_html_body(
+        "<details><summary>A</summary>aa</details>\n<details><summary>B</summary>bb</details>",
+        nil, { [2] = true })
+    ok(d3:find("kt:det:1", 1, true) ~= nil
+        and d3:find("kt:det:2", 1, true) ~= nil
+        and d3:find(">aa<", 1, true) == nil
+        and d3:find("bb", 1, true) ~= nil,
+        "chat html details: independent numbering, selective reveal")
+    local d4 = DbgChat._test_chat_html_body(
+        "<details><summary>Never closed\nbody here")
+    ok(d4:find("Never closed", 1, true) ~= nil
+        and d4:find("<details", 1, true) == nil
+        and d4:find("<summary", 1, true) == nil,
+        "chat html details: unclosed degrades to collapsed, markers dropped")
+    local d5 = DbgChat._test_chat_html_body(
+        "<details><summary>**B** and ||s||</summary>bd</details>",
+        { [1] = true }, { [1] = true })
+    ok(d5:find("<b>B</b>", 1, true) ~= nil
+        and d5:find("ktsplopen", 1, true) ~= nil,
+        "chat html details: markdown and spoilers work inside summary")
+end
+
+-- Model-HTML render probes (probe-verified MuPDF behavior, mirroring the
+-- allowlist notes in chat_bubbles.lua): <u> is ignored by this MuPDF (hence
+-- the bold fallback mapping), while style="color:" and align="center" are
+-- honored. If a MuPDF upgrade changes any of these, the mapping must follow.
+do
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local KtHTML = require("ktui/kthtml")
+    local function render_sig(inner)
+        local w = HtmlBoxWidget:new{ dimen = Geom:new{ w = 400, h = 200 } }
+        w:setContent("<p>" .. inner .. "</p>", KtHTML.chat_css(),
+            Theme.scale(Theme.get_base_font_size()),
+            false, nil, PLUGIN .. "/assets")
+        w:_render()
+        local n, s = 0, 0
+        for yy = 0, 199, 2 do
+            for xx = 0, 399, 2 do
+                local okp, px = pcall(function() return w.bb:getPixel(xx, yy) end)
+                if okp and px and px:getR() < 200 then n = n + 1; s = s + xx + yy end
+            end
+        end
+        local sig = n .. ":" .. s
+        pcall(function() w:free() end)
+        return sig
+    end
+    local plain_sig = render_sig("Probe alpha beta gamma")
+    ok(render_sig("<u>Probe alpha beta gamma</u>") == plain_sig,
+        "chat html render: <u> ignored by MuPDF (bold fallback stands)")
+    ok(render_sig('<span style="color:#b41e1e">Probe alpha beta gamma</span>') ~= plain_sig,
+        "chat html render: style color honored")
+    ok(render_sig('<div align="center">Probe alpha beta gamma</div>') ~= plain_sig,
+        "chat html render: align center honored")
 end
 
 -- Long-message tall-bitmap integrity (the "mensagem cortada" report): the
@@ -2927,6 +3104,128 @@ do
     UIManager.show, UIManager.close = real_show, real_close
     package.loaded["ui/widget/buttondialog"] = real_dialog
     Device.canOpenLink, Device.openLink = real_can, real_open
+end
+
+-- Chat HTML details tap-to-expand end to end: paint a collapsed group, tap
+-- its kt:det link rect through the band hitbox, the reveal state flips, the
+-- doc is rebuilt and the repaint paints the body rows (pixel proof); a
+-- second tap collapses it again.
+do
+    local now5 = os.time()
+    local app5 = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria",
+              content = "<details><summary>Thoughts</summary>hidden body</details>",
+              send_date = now5 },
+        } })
+    local refreshed5 = 0
+    local view5 = { app = app5, hitboxes = {},
+        refresh = function() refreshed5 = refreshed5 + 1 end }
+    local b5 = new_bb()
+    local okp5 = pcall(function() Pages.chat(view5, b5, 0, 0, VW, VH, 0) end)
+    ok(okp5, "chat html details tap: collapsed paint renders without crashing")
+    local box5 = nil
+    for _sk5, hb in ipairs(view5.hitboxes) do
+        if hb.label and hb.label:sub(1, 9) == "chathtml_" then box5 = hb break end
+    end
+    ok(box5 ~= nil, "chat html details tap: html band registers a tap hitbox")
+    local lay5, entry5 = nil, nil
+    for _lk6, l in pairs(view5._chat_layout_cache or {}) do
+        if type(l) == "table" and l.entries then
+            for _ek6, e in ipairs(l.entries) do
+                if e.kind == "html" then lay5, entry5 = l, e break end
+            end
+        end
+    end
+    ok(lay5 ~= nil and entry5 ~= nil and entry5.widget ~= nil,
+        "chat html details tap: html entry with a widget")
+    local function det_sig(w)
+        if not w or not w.bb then return nil end
+        local n, s = 0, 0
+        for yy = 0, w.bb:getHeight() - 1, 3 do
+            for xx = 0, w.bb:getWidth() - 1, 3 do
+                local okp, px = pcall(function() return w.bb:getPixel(xx, yy) end)
+                if okp and px and px:getR() < 200 then n = n + 1; s = s + xx + yy end
+            end
+        end
+        return n .. ":" .. s
+    end
+    local sig_shut = det_sig(entry5.widget)
+    local det_link = nil
+    if entry5.widget and entry5.widget.document then
+        local okp, pg = pcall(function() return entry5.widget.document:openPage(1) end)
+        if okp and pg then
+            local okp2, links = pcall(function() return pg:getPageLinks() end)
+            pcall(function() pg:close() end)
+            if okp2 and type(links) == "table" then
+                for _gl3, lk in ipairs(links) do
+                    if type(lk) == "table" and tostring(lk.uri or lk.url or "") == "kt:det:1" then
+                        det_link = lk break
+                    end
+                end
+            end
+        end
+    end
+    ok(det_link ~= nil, "chat html details tap: summary exposes a kt:det:1 link")
+    if box5 and det_link then
+        local tap_at = function(lk)
+            return pcall(function()
+                box5.callback(box5.x + (lk.x0 or 0) + 2, box5.y + (lk.y0 or 0) + 2)
+            end)
+        end
+        ok(tap_at(det_link), "chat html details tap: expanding does not crash")
+        local rev = app5.state.chat_details_revealed
+        local key5 = lay5 and lay5.msg_key or nil
+        ok(rev ~= nil and key5 ~= nil and rev[key5] ~= nil and rev[key5][1] == true,
+            "chat html details tap: tap flips the reveal state")
+        ok(refreshed5 > 0, "chat html details tap: tap requests a refresh")
+        view5.hitboxes = {}
+        local b5b = new_bb()
+        local okp6 = pcall(function() Pages.chat(view5, b5b, 0, 0, VW, VH, 0) end)
+        ok(okp6, "chat html details tap: expanded repaint renders without crashing")
+        local entry5b = nil
+        for _lk7, l in pairs(view5._chat_layout_cache or {}) do
+            if type(l) == "table" and l.entries then
+                for _ek7, e in ipairs(l.entries) do
+                    if e.kind == "html" then entry5b = e break end
+                end
+            end
+        end
+        local sig_open = entry5b and det_sig(entry5b.widget)
+        ok(sig_open ~= nil and sig_open ~= sig_shut,
+            "chat html details tap: expanded paint shows the body rows")
+        dump(b5b, "chat_html_details_open")
+        -- Collapse again through a fresh hitbox + link rect.
+        local box5b = nil
+        for _sk8, hb in ipairs(view5.hitboxes) do
+            if hb.label and hb.label:sub(1, 9) == "chathtml_" then box5b = hb break end
+        end
+        local det_link2 = nil
+        if entry5b and entry5b.widget and entry5b.widget.document then
+            local okp, pg = pcall(function() return entry5b.widget.document:openPage(1) end)
+            if okp and pg then
+                local okp2, links = pcall(function() return pg:getPageLinks() end)
+                pcall(function() pg:close() end)
+                if okp2 and type(links) == "table" then
+                    for _gl4, lk in ipairs(links) do
+                        if type(lk) == "table" and tostring(lk.uri or lk.url or "") == "kt:det:1" then
+                            det_link2 = lk break
+                        end
+                    end
+                end
+            end
+        end
+        if box5b and det_link2 then
+            box5 = box5b
+            ok(tap_at(det_link2), "chat html details tap: collapsing does not crash")
+            local rev2 = app5.state.chat_details_revealed
+            ok(rev2 ~= nil and rev2[key5] ~= nil and rev2[key5][1] == nil,
+                "chat html details tap: second tap collapses again")
+        else
+            ok(false, "chat html details tap: expanded band keeps a kt:det:1 link")
+        end
+    end
 end
 
 -- Sheets with two-line sublabel rows get a taller slot (Author's Note fix).
