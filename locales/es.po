@@ -1849,3 +1849,6 @@ msgstr "Error al exportar."
 
 msgid "Theme not found."
 msgstr "Tema no encontrado."
+
+msgid "Theme CSS"
+msgstr "CSS de tema"

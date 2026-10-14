@@ -230,7 +230,7 @@ function App:apply_settings()
     -- Debug Mode CSS overlay (experimental): re-bakes the palette with the
     -- selected theme file when debug mode is on; no-op otherwise.
     if s.debug_mode == true then
-        require("ktui/uidsl").apply_theme_to_app(self)
+        require("ktui/theme_css").apply_to_app(self)
     end
 end
 
@@ -572,7 +572,7 @@ function App:disable_debug_mode()
     self.state.debug_theme_errors = nil
     -- Leaving a debug page? Back to Settings so the (now hidden) category
     -- change is visible instead of a silent no-op.
-    if self.state.page == "settings_debug" or self.state.page == "css_test" then
+    if self.state.page == "settings_debug" then
         self:navigate("settings")
     else
         self:refresh(true)
@@ -583,13 +583,14 @@ function App:show_debug_actions()
     local Sheets = require("ktui/sheets")
     local _ = require("gettext")
     local actions = {}
-    for _i, file in ipairs(require("ktui/uidsl").list_theme_files()) do
+    for _i, file in ipairs(require("ktui/theme_css").list_files()) do
         actions[#actions + 1] = {
             label = file.name,
             icon = "magic",
             on_tap = function()
                 self:save_setting("debug_theme_css", file.name)
-                self:navigate("css_test")
+                self:apply_settings()
+                self:refresh(true)
             end,
         }
     end
@@ -599,56 +600,19 @@ function App:show_debug_actions()
             icon = "magic",
             on_tap = function()
                 self:save_setting("debug_theme_css", "")
-                self:navigate("css_test")
+                self:apply_settings()
+                self:refresh(true)
             end,
         }
     end
-    Sheets.show(self, { title = _("Test CSS"), actions = actions })
+    Sheets.show(self, { title = _("Theme CSS"), actions = actions })
 end
 
 -- Write the sandbox demo screen to <data>/themes/pages/sandbox.html so users
 -- have a starting file. Tapping again resets it to the current skeleton:
--- the old file is kept as sandbox.html.bak first (user-owned, never lost).
-function App:install_sandbox_file()
-    local UiDSL = require("ktui/uidsl")
-    local InfoMessage = require("ui/widget/infomessage")
-    local _ = require("gettext")
-    if UiDSL.sandbox_exists() then
-        -- Backup first, then force-overwrite with the current skeleton.
-        pcall(function()
-            local path = UiDSL.sandbox_path()
-            local src = io.open(path, "r")
-            if src then
-                local body = src:read("*a")
-                src:close()
-                local dst = io.open(path .. ".bak", "w")
-                if dst then dst:write(body) dst:close() end
-            end
-        end)
-        local ok = UiDSL.install_sandbox(true)
-        if ok then
-            UIManager:show(InfoMessage:new{
-                text = _("sandbox.html reset (backup kept)"), timeout = 3 })
-            self:navigate("css_test")
-        else
-            UIManager:show(InfoMessage:new{
-                text = _("Could not write sandbox.html"), timeout = 3 })
-        end
-        return
-    end
-    local ok, errcode = UiDSL.install_sandbox()
-    if ok then
-        UIManager:show(InfoMessage:new{
-            text = _("sandbox.html created in themes/pages/"), timeout = 3 })
-        self:navigate("css_test")
-    elseif errcode == "exists" then
-        UIManager:show(InfoMessage:new{
-            text = _("sandbox.html already exists"), timeout = 3 })
-    else
-        UIManager:show(InfoMessage:new{
-            text = _("Could not write sandbox.html"), timeout = 3 })
-    end
-end
+-- the old file is kept as sandbox.html.bak first (user-owned, never lost).-- (sandbox.html installer removed with the UIDSL engine: the surviving
+-- html_sandbox.html install covers the kthtml page path; pure-CSS theme
+-- files keep working through ktui/theme_css.lua.)
 
 -- Write the HTML sandbox demo page to <data>/themes/pages/html_sandbox.html.
 -- Tapping again resets it to the current skeleton: the old file is kept as
@@ -713,7 +677,19 @@ function App:install_demo_theme()
             text = _("Could not write the theme file"), timeout = 3 })
         return
     end
-    f:write(require("ktui/uidsl").DEMO_CSS)
+    -- The demo theme is plain CSS (the surviving palette-overlay surface):
+    -- background/color + the named accent slots, ktui/theme_css.lua.
+    f:write([[
+/* KOTavern demo theme - edit anything, pick it in Test CSS, see it live. */
+page {
+  background: gray(0.04);
+  color: #111111;
+  panel-color: #ffffff;
+  soft-color: gray(0.25);
+  border-color: gray(0.2);
+  muted-color: gray(0.45);
+}
+]])
     f:close()
     local InfoMessage = require("ui/widget/infomessage")
     local _ = require("gettext")
