@@ -393,11 +393,13 @@ function App:prompt_custom_css()
     local Modals = require("ktui/modals")
     local _ = require("gettext")
     local self_ref = self
+    -- multiline=true: CSS is a stylesheet, one rule per line; the single-line
+    -- input made multi-rule customizations impossible to type.
     Modals.input(_("Custom CSS"), self.state.settings.custom_css or "",
         _("e.g. p { margin: 0 0 4px 0; }"), _("Save"), function(text)
             self_ref:save_setting("custom_css", text)
             self_ref:refresh(true)
-        end)
+        end, nil, true)
 end
 
 -- Size override for the chat font (0 = follow the base font size).
@@ -4211,8 +4213,7 @@ function App:choose_default_bubble_theme()
     Sheets.show(self, { title = _("Default bubble theme"), actions = actions })
 end
 
-function App:prompt_base_font_size()
-    local Modals = require("ktui/modals")
+function App:choose_chat_preset()
     local _ = require("gettext")
     local self_ref = self
     local presets = Storage.list_presets()

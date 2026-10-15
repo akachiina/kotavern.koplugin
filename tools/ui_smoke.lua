@@ -370,11 +370,9 @@ do
         messages = {
             { role = "assistant", name = "Aria", send_date = os.time(),
               content = "Resposta final.",
-              reasoning = "Pensamento interno **com markdown** e lista:\n- um\n- dois" },
+              reasoning = "Pensamento interno **com markdown** e lista:\n- um\n- dois ||segredo||" },
         } })
     local view_h = { app = app_h, hitboxes = {}, refresh = function() end }
-    local rmsg_key = nil
-    for _lk, l in pairs(view_h._chat_layout_cache or {}) do end
     local bb_h = new_bb()
     local okp_h, err_h = pcall(function()
         Pages.chat(view_h, bb_h, 0, 0, VW, VH, 0)
@@ -398,15 +396,70 @@ do
         ok(okp_h2, "chat html reasoning: expanded render (" .. tostring(err_h2) .. ")")
         -- The expanded layout reasoning entries must be html kind with a live doc.
         local found = false
+        local rkey_h, rentry_h = nil, nil
         for _lk2, l in pairs(view_h._chat_layout_cache or {}) do
             if type(l) == "table" and l.reasoning_entries and #l.reasoning_entries > 0
                 and l.reasoning_entries[1].kind == "html"
                 and l.reasoning_entries[1].widget
                 and l.reasoning_entries[1].widget.document ~= nil then
                 found = true
+                rkey_h = l.msg_key
+                rentry_h = l.reasoning_entries[1]
             end
         end
         ok(found, "chat html reasoning: expanded block renders via a live MuPDF doc")
+        -- Spoiler inside reasoning: masked link exists under the |r namespace,
+        -- tapping it through the band flips the namespace-scoped reveal state
+        -- and rebuilds the doc (old widget freed, new one live).
+        if found and rkey_h then
+            local r_ns = rkey_h .. "|r"
+            local spl_rect = nil
+            local okp, pg = pcall(function()
+                return rentry_h.widget.document:openPage(1)
+            end)
+            if okp and pg then
+                local okp2, links = pcall(function() return pg:getPageLinks() end)
+                pcall(function() pg:close() end)
+                if okp2 and type(links) == "table" then
+                    for _gl, lk in ipairs(links) do
+                        if type(lk) == "table" and tostring(lk.uri or lk.url or "") == "kt:spl:1" then
+                            spl_rect = lk break
+                        end
+                    end
+                end
+            end
+            ok(spl_rect ~= nil, "chat html reasoning: spoiler exposes a kt:spl:1 link")
+            local rband = nil
+            for _sb, hb in ipairs(view_h.hitboxes) do
+                if hb.label == "chathtml_" .. r_ns then rband = hb break end
+            end
+            ok(rband ~= nil, "chat html reasoning: reasoning band registers its own tap hitbox")
+            if spl_rect and rband then
+                local old_widget = rentry_h.widget
+                local okp3 = pcall(function()
+                    rband.callback(rband.x + (spl_rect.x0 or 0) + 2,
+                        rband.y + (spl_rect.y0 or 0) + 2)
+                end)
+                ok(okp3, "chat html reasoning: spoiler tap does not crash")
+                local rev = app_h.state.chat_spoilers_revealed
+                ok(rev ~= nil and rev[r_ns] ~= nil and rev[r_ns][1] == true,
+                    "chat html reasoning: tap flips the |r-namespaced reveal state")
+                local bb_h3 = new_bb()
+                local okp_h3, err_h3 = pcall(function()
+                    Pages.chat(view_h, bb_h3, 0, 0, VW, VH, 0)
+                end)
+                ok(okp_h3, "chat html reasoning: revealed render (" .. tostring(err_h3) .. ")")
+                local new_widget = nil
+                for _lk3, l in pairs(view_h._chat_layout_cache or {}) do
+                    if type(l) == "table" and l.msg_key == rkey_h
+                        and l.reasoning_entries and #l.reasoning_entries > 0 then
+                        new_widget = l.reasoning_entries[1].widget
+                    end
+                end
+                ok(new_widget ~= nil and new_widget ~= old_widget,
+                    "chat html reasoning: reveal rebuilds the reasoning doc")
+            end
+        end
     end
 
     -- Clamp (v0.6.4): a LONG expanded reasoning is capped at half the viewport
@@ -2368,8 +2421,13 @@ do
     for _k, l in pairs(view._chat_layout_cache or {}) do
         if not l.is_user and not l.is_system then bl = bl or l end
     end
-    for _k, d in pairs(app.state.chat_html_docs or {}) do
-        if type(d) == "table" then doc = doc or d end
+    -- The doc comes from the ASSISTANT layout's own html entry (user
+    -- messages render through the doc path too, so scanning chat_html_docs
+    -- with pairs can pick the "ping" doc).
+    if bl and bl.entries then
+        for _e, e in ipairs(bl.entries) do
+            if e.kind == "html" then doc = { widget = e.widget, height = e.h } break end
+        end
     end
     ok(bl ~= nil and doc ~= nil, "chat html: assistant bubble measured + doc cached")
     if bl and doc then
@@ -3354,6 +3412,181 @@ do
         else
             ok(false, "chat html details tap: expanded band keeps a kt:det:1 link")
         end
+    end
+end
+
+-- Chat HTML: USER messages render through the doc path too (their
+-- markdown/links/spoilers get the same treatment as assistant bodies).
+do
+    local now_u = os.time()
+    local app_u = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "user", name = "You", send_date = now_u,
+              content = "*it* and ||secret|| and [l](https://x.com)" },
+        } })
+    local view_u = { app = app_u, hitboxes = {}, refresh = function() end }
+    local bb_u = new_bb()
+    local okp_u = pcall(function() Pages.chat(view_u, bb_u, 0, 0, VW, VH, 0) end)
+    ok(okp_u, "chat html user: paint renders without crashing")
+    local ul = nil
+    for _uk, l in pairs(view_u._chat_layout_cache or {}) do
+        if type(l) == "table" and l.is_user and l.entries then ul = l end
+    end
+    ok(ul ~= nil, "chat html user: user layout measured")
+    local uentry = ul and ul.entries and ul.entries[1]
+    ok(uentry ~= nil and uentry.kind == "html"
+        and uentry.widget ~= nil and uentry.widget.document ~= nil,
+        "chat html user: user message renders via a live MuPDF doc")
+    local uband = nil
+    for _ub, hb in ipairs(view_u.hitboxes) do
+        if hb.label == "chathtml_" .. tostring(ul and ul.msg_key) then uband = hb break end
+    end
+    ok(uband ~= nil, "chat html user: user band registers a tap hitbox (links work)")
+end
+
+-- Chat width (ST parity): the whole column narrows INCLUDING the bubble
+-- panels, and the long-press zone follows the narrowed panel (a full-width
+-- origin used to sit inset px left of the actual bubble).
+do
+    local now_w = os.time()
+    for _cw, cw in ipairs({ "50", "100" }) do
+        local app_w = fake_app({ page = "chat",
+            settings = { chat_html_render = true, chat_width = cw },
+            messages = {
+                { role = "user", name = "You", content = "hi", send_date = now_w },
+                { role = "assistant", name = "Aria",
+                  content = "long enough body for the bubble panel", send_date = now_w },
+            } })
+        local view_w = { app = app_w, hitboxes = {}, refresh = function() end }
+        local bb_w = new_bb()
+        local okp_w = pcall(function() Pages.chat(view_w, bb_w, 0, 0, VW, VH, 0) end)
+        ok(okp_w, "chat width " .. cw .. ": paint renders without crashing")
+        local al, hold = nil, nil
+        for _wk, l in pairs(view_w._chat_layout_cache or {}) do
+            if type(l) == "table" and not l.is_user and not l.is_system then al = l end
+        end
+        for _wh, hb in ipairs(view_w.hitboxes) do
+            if hb.label and hb.label:sub(1, 8) == "msghold_" then hold = hb end
+        end
+        ok(al ~= nil and hold ~= nil, "chat width " .. cw .. ": layout + hold zone found")
+        if al and hold then
+            ok(hold.x == al.bx and hold.w == al.bubble_w,
+                "chat width " .. cw .. ": hold zone spans the bubble panel (hold="
+                .. tostring(hold.x) .. "+" .. tostring(hold.w)
+                .. " panel=" .. tostring(al.bx) .. "+" .. tostring(al.bubble_w) .. ")")
+        end
+        if cw == "50" and al then
+            ok(al.bx > 10 and al.bubble_w < VW - 40,
+                "chat width 50: panel narrows and centers (bx=" .. tostring(al.bx)
+                .. " w=" .. tostring(al.bubble_w) .. ")")
+        end
+    end
+end
+
+-- Reasoning doc identity: two messages with SAME-LENGTH reasoning at the
+-- same width must hold distinct docs (the old length-keyed cache showed
+-- one message's reasoning inside the other's bubble).
+do
+    local now_c = os.time()
+    local app_c = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria", send_date = now_c,
+              content = "r1", reasoning = "internal thought A" },
+            { role = "assistant", name = "Aria", send_date = now_c,
+              content = "r2", reasoning = "internal thought B" },
+        } })
+    -- Same length, different text.
+    ok(#"internal thought A" == #"internal thought B",
+        "reasoning id: fixture lengths match")
+    local view_c = { app = app_c, hitboxes = {}, refresh = function() end }
+    local bb_c = new_bb()
+    local okp_c = pcall(function() Pages.chat(view_c, bb_c, 0, 0, VW, VH, 0) end)
+    ok(okp_c, "reasoning id: paint renders without crashing")
+    -- Expand every reasoning block via the expand hitboxes.
+    for _cb, hb in ipairs(view_c.hitboxes) do
+        if type(hb.label) == "string" and hb.label:sub(1, 10) == "reasoning_" then
+            pcall(hb.callback, 0, 0)
+        end
+    end
+    view_c.hitboxes = {}
+    local bb_c2 = new_bb()
+    local okp_c2 = pcall(function() Pages.chat(view_c, bb_c2, 0, 0, VW, VH, 0) end)
+    ok(okp_c2, "reasoning id: expanded paint renders without crashing")
+    local widgets = {}
+    for _ck, l in pairs(view_c._chat_layout_cache or {}) do
+        if type(l) == "table" and l.reasoning_entries and #l.reasoning_entries > 0
+            and l.reasoning_entries[1].kind == "html"
+            and l.reasoning_entries[1].widget then
+            widgets[#widgets + 1] = l.reasoning_entries[1].widget
+        end
+    end
+    ok(#widgets == 2 and widgets[1] ~= widgets[2],
+        "reasoning id: same-length reasonings hold distinct docs (got "
+        .. #widgets .. ")")
+end
+
+-- Clipped bubble keeps its rounded corners + border ring (the "balao fica
+-- quadrado/torto" report): expanding a reasoning block grows the bubble
+-- past the viewport; the panel must stay rounded wherever it is visible,
+-- keep the top border, and leak NOTHING below the messages band (where the
+-- composer bar lives). Direct ChatBubbles.draw on a marked buffer.
+do
+    local now_v = os.time()
+    local msgs_v = {
+        { role = "assistant", name = "Aria", content = "short one", send_date = now_v },
+        { role = "assistant", name = "Aria",
+          content = string.rep("content line that wraps and fills the bubble\n", 45),
+          send_date = now_v + 1 },
+    }
+    local app_v = fake_app({ page = "chat",
+        settings = { chat_html_render = false } })
+    app_v.state.messages = msgs_v
+    local view_v = { app = app_v, hitboxes = {}, refresh = function() end }
+    local band_h = 500
+    local MARK = Blitbuffer.gray(0.5)
+    local bb_v = new_bb()
+    -- Surface inside the band (like Pages.chat paints it) + marker below.
+    P.rect(bb_v, 0, 0, VW, band_h, Theme.chat_bg)
+    bb_v:paintRect(0, band_h, VW, VH - band_h, MARK)
+    local okp_v, err_v = pcall(function()
+        ChatBubbles.draw(view_v, bb_v, 0, 0, VW, band_h, 0, msgs_v,
+            "Aria", false, "You", nil, nil)
+    end)
+    ok(okp_v, "clipped panel: bottom-clipped bubble renders (" .. tostring(err_v) .. ")")
+    local lay_v = nil
+    for _vk, l in pairs(view_v._chat_layout_cache or {}) do
+        if type(l) == "table" and (l.bubble_h or 0) > band_h then lay_v = l end
+    end
+    ok(lay_v ~= nil, "clipped panel: a bubble extends past the band")
+    if lay_v then
+        local function vpx(xx, yy)
+            local okp, p = pcall(function() return bb_v:getPixel(xx, yy) end)
+            return okp and p:getR() or -1
+        end
+        local radius = Theme.bubble_radius_px()
+        ok(radius >= 4, "clipped panel: fixture has a real corner radius (" .. tostring(radius) .. ")")
+        local surface_v = vpx(lay_v.bx - 5, lay_v.bubble_y + 5)
+        local corner_v = vpx(lay_v.bx + 1, lay_v.bubble_y + 1)
+        ok(math.abs(corner_v - surface_v) <= 10,
+            "clipped panel: top-left corner stays ROUNDED (corner="
+            .. corner_v .. " surface=" .. surface_v .. ")")
+        local corner_r = vpx(lay_v.bx + lay_v.bubble_w - 2, lay_v.bubble_y + 1)
+        ok(math.abs(corner_r - surface_v) <= 10,
+            "clipped panel: top-right corner stays ROUNDED (corner="
+            .. corner_r .. " surface=" .. surface_v .. ")")
+        local top_border = vpx(lay_v.bx + math.floor(lay_v.bubble_w / 2),
+            lay_v.bubble_y)
+        ok(top_border < surface_v - 25,
+            "clipped panel: top border paints (px=" .. top_border
+            .. " surface=" .. surface_v .. ")")
+        local leak = vpx(lay_v.bx + math.floor(lay_v.bubble_w / 2), band_h + 4)
+        local mark_r = MARK:getR()
+        ok(math.abs(leak - mark_r) <= 2,
+            "clipped panel: nothing leaks below the band (px=" .. leak
+            .. " marker=" .. mark_r .. ")")
+        dump(bb_v, "clipped_panel_rounded")
     end
 end
 

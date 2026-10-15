@@ -839,7 +839,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
     if not docs then
         docs = {}
         app.state.chat_html_docs = docs
-        if #docs == 0 then docs.cap = 24 end -- cap the tall-bitmap cache;
+        if #docs == 0 then docs.cap = 32 end -- cap the tall-bitmap cache;
                                               -- prune below (see paint epoch)
     end
     local Constants = require("kt_constants")
@@ -906,7 +906,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
     end
     local n = 0
     for k in pairs(docs) do n = n + 1 end
-    if n > (docs.cap or 24) + 1 then
+    if n > (docs.cap or 32) + 1 then
         local victims = {}
         for k, v in pairs(docs) do
             if k ~= key and type(v) == "table" and v.paint_id ~= paint_id
@@ -916,7 +916,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         end
         local removed = 0
         for vi = 1, #victims do
-            if removed >= n - (docs.cap or 24) then break end
+            if removed >= n - (docs.cap or 32) then break end
             local k = victims[vi]
             local v = docs[k]
             pcall(function() if v.widget then v.widget:free() end end)
@@ -1447,19 +1447,20 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local pn_pad = panel_mode and Theme.scale(10) or 0
     local panel_x = x + pad
     local panel_right = content_right - pad
-    local inner_left = panel_mode and (panel_x + pn_pad) or (x + pad)
-    local inner_right = panel_mode and (panel_right - pn_pad) or (content_right - pad)
-    -- ST chat_width (25..100%): narrows the whole message column against
-    -- the content area, centered (ST centers #chat via --sheldWidth).100
-    -- and anything bigger keep the old full-width geometry.
+    -- ST chat_width (25..100%): narrows the whole message column - panels
+    -- included (ST narrows #chat itself via --sheldWidth), centered. 100 and
+    -- anything above keep the old full-width geometry. Flat has no panels,
+    -- so the same bounds ARE the text column.
     local cw_pct = tonumber(settings.chat_width) or 100
     if cw_pct < 100 then
         cw_pct = math.max(25, math.min(100, cw_pct))
-        local col_w = math.floor((inner_right - inner_left) * (cw_pct / 100))
-        local inset = math.floor(((inner_right - inner_left) - col_w) / 2)
-        inner_left = inner_left + inset
-        inner_right = inner_right - inset
+        local full_w = panel_right - panel_x
+        local inset = math.floor((full_w - math.floor(full_w * (cw_pct / 100))) / 2)
+        panel_x = panel_x + inset
+        panel_right = panel_right - inset
     end
+    local inner_left = panel_mode and (panel_x + pn_pad) or panel_x
+    local inner_right = panel_mode and (panel_right - pn_pad) or panel_right
     local area = math.max(8, inner_right - inner_left)
     -- ST bubbles cap at 78% of the area; flat uses the full area.
     local max_bubble_w = math.floor(area * 0.78)
@@ -1543,16 +1544,41 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         reasoning_cache = {}
         view._chat_reasoning_cache = reasoning_cache
     end
-    local function measure_reasoning(reasoning, rtw, inline)
+    -- Reasoning reveal state lives under the message key suffixed "|r": its
+    -- spoilers/details number independently of the message body (each doc
+    -- numbers its own kt:spl/kt:det from 1, so body and reasoning would
+    -- collide on the plain msg_key).
+    local function reasoning_ns(msg_key)
+        return tostring(msg_key or "?") .. "|r"
+    end
+    local function measure_reasoning(reasoning, rtw, inline, msg_key)
         -- HTML mode: the reasoning body renders through the SAME MuPDF path
         -- as message bodies (real markdown), but muted: css_extra layers a
-        -- muted color + ambient font-family over chat_css(). Cached like the
-        -- canvas path (raw length + width + inline).
+        -- muted color + ambient font-family over chat_css(). The cache key
+        -- carries a content sample (same-length reasonings of different
+        -- messages used to share a doc - the wrong one showed) plus the
+        -- reveal sigs, so a spoiler/details toggle rebuilds this doc.
         if html_render then
-            local rkey = "html:" .. #reasoning .. ":" .. rtw
+            local ns = reasoning_ns(msg_key)
+            local rkey = "html:" .. #reasoning .. ":" .. rtw .. ":"
+                .. reasoning:sub(1, 24) .. ":" .. reasoning:sub(-16)
+                .. ":" .. spoiler_sig(view.app, ns)
+                .. ":" .. details_sig(view.app, ns)
             local hit = reasoning_cache[rkey]
+            -- A cached hit may hold a widget FREED by a later reveal toggle
+            -- (invalidate_doc) - reusing it would paint a blank band on the
+            -- ON->OFF->ON cycle. Dead hits rebuild like misses.
+            if hit and type(hit) == "table" then
+                local hw = hit.entries and hit.entries[1] and hit.entries[1].widget
+                if not hw or hw.document == nil then
+                    hit = nil
+                    reasoning_cache[rkey] = nil
+                end
+            end
             if not hit then
-                local doc = html_doc_for(view.app, view, reasoning, rtw, nil, nil,
+                local doc = html_doc_for(view.app, view, reasoning, rtw,
+                    ChatBubbles.spoiler_state(view.app, ns),
+                    ChatBubbles.details_state(view.app, ns),
                     "body { color: " .. require("ktui/kthtml").css_hex(Theme.muted, "#666666")
                         .. " !important; } p { color: "
                         .. require("ktui/kthtml").css_hex(Theme.muted, "#666666")
@@ -1722,10 +1748,13 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- stays underneath as fallback; the bubble carries the RAW
                 -- content as one html block (see block_entries' html branch).
                 -- Streaming keeps the plain path (partial HTML re-layouts per
-                -- chunk are jumpy and 10x the cost). The message identity and
-                -- the revealed-spoiler set ride along: the doc body re-renders
+                -- chunk are jumpy and 10x the cost). USER messages render
+                -- through it too (their markdown/links/spoilers deserve the
+                -- same treatment); system/narrator lines keep the canvas
+                -- centered-muted style. The message identity and the
+                -- revealed-spoiler set ride along: the doc body re-renders
                 -- per reveal state, and the tap layer keys reveals by msg_key.
-                if html_render and not is_user then
+                if html_render then
                     blocks = { { kind = "html", text = content_text,
                         msg_key = msg_key,
                         revealed = ChatBubbles.spoiler_state(view.app, msg_key),
@@ -1748,7 +1777,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- width it is drawn at (text column minus the rule gutter).
                 if reasoning_open[layout.msg_key] then
                     local rtw = math.max(8, text_w - Theme.scale(8))
-                    local rentries, rh = measure_reasoning(reasoning, rtw, show_inline)
+                    local rentries, rh = measure_reasoning(reasoning, rtw, show_inline, msg_key)
                     layout.reasoning_entries = rentries
                     layout.reasoning_tw = rtw
                     local head_pad = Theme.line_h("tiny") + Theme.scale(4) + Theme.scale(8)
@@ -1855,6 +1884,14 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     scroll = clamped
 
     -- Pass 2: draw
+    -- Bubble panels paint through a viewport clamped to the messages band:
+    -- the FULL rounded box can be drawn for every bubble (also the ones
+    -- grown past the viewport, e.g. an expanded reasoning block) and the
+    -- clipping keeps the on-screen part exact - rounded corners stay rounded
+    -- wherever they are visible, and nothing leaks below the band (where
+    -- the composer bar lives).
+    local clip_bb = bb:viewport(0, 0, bb:getWidth(),
+        math.min(y + h, bb:getHeight()))
     -- NOTE: the loop variable must NOT be `_` - it would shadow the gettext
     -- alias inside the body (the reasoning rows call _("Reasoning") here and
     -- crashed with "attempt to call local '_' (a number value)").
@@ -1878,25 +1915,18 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 if panel_mode and not l.is_thinking then
                     local pb_color = (l.is_streaming and Theme.ink) or Theme.soft
                     local pb_size = l.is_streaming and 2 or 1
-                    local p_top = math.max(bubble_y, y)
-                    local p_bottom = math.min(bubble_y + l.bubble_h, y + h)
-                    local fully = bubble_y >= y and (bubble_y + l.bubble_h) <= y + h
-                    if fully then
-                        P.box(bb, panel_x, bubble_y, l.bubble_w, l.bubble_h, {
-                            border_color = pb_color, border_size = pb_size,
-                            background = panel_color, radius = Theme.bubble_radius_px(),
-                        })
-                    else
-                        local vis_h = p_bottom - p_top
-                        if vis_h > 0 then
-                            P.rect(bb, panel_x, p_top, l.bubble_w, vis_h, panel_color)
-                            P.rect(bb, panel_x, p_top, pb_size, vis_h, pb_color)
-                            P.rect(bb, panel_x + l.bubble_w - pb_size, p_top, pb_size, vis_h, pb_color)
-                            if p_bottom >= bubble_y + l.bubble_h then
-                                P.rect(bb, panel_x, p_bottom - pb_size, l.bubble_w, pb_size, pb_color)
-                            end
-                        end
-                    end
+                    -- The FULL rounded box paints through a viewport clamped
+                    -- to the messages band: a bubble grown past the viewport
+                    -- (expanding a reasoning block used to flip every corner
+                    -- square AND drop the top border - the "balao fica
+                    -- quadrado/torto" report) keeps its rounded visible
+                    -- corners and the whole border ring; the off-band part is
+                    -- clipped away safely (probe-verified: viewport painting
+                    -- clamps - no overflow writes, no crash, negative y ok).
+                    P.box(clip_bb, panel_x, bubble_y, l.bubble_w, l.bubble_h, {
+                        border_color = pb_color, border_size = pb_size,
+                        background = panel_color, radius = Theme.bubble_radius_px(),
+                    })
                 end
 
                 -- Sender row.
@@ -1996,11 +2026,13 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- BEFORE the reasoning/swipe hits below so the narrower bands
                 -- win their taps (hitboxes are checked in reverse order);
                 -- onHoldKotavern only fires boxes that declare on_hold.
+                -- The zone spans the NARROWED panel bounds (chat_width): a
+                -- full-width origin left it inset px off the bubble column.
                 if not l.is_thinking then
                     local hy = math.max(top, y)
                     local hh = math.min(bottom, y + h) - hy
                     if hh > 0 then
-                        P.hit_hold(view, x + pad, hy, area, hh, function()
+                        P.hit_hold(view, panel_x, hy, panel_right - panel_x, hh, function()
                             if view.app.show_message_actions then
                                 view.app:show_message_actions(l.idx)
                             end
@@ -2081,7 +2113,10 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         end
                         draw_blocks(view, bb, l.reasoning_entries, rul_x + Theme.scale(8), ry,
                             rtw, Theme.muted, panel_mode and panel_color or Theme.chat_bg,
-                            math.max(ry, y), body_bottom)
+                            math.max(ry, y), body_bottom,
+                            -- hit_ctx: reasoning taps resolve under the "|r"
+                            -- namespace (own spoiler/details numbering).
+                            { msg_key = reasoning_ns(l.msg_key) })
                         P.hit(view, rul_x, reasoning_y, l.bubble_w - Theme.scale(8), math.min(l.reasoning_h, y + h - reasoning_y), function()
                             reasoning_open[l.msg_key] = nil
                             reasoning_full[l.msg_key] = nil
@@ -2119,26 +2154,15 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 local vis_bottom = math.min(bubble_y + l.bubble_h, y + h)
 
                 if boxed then
-                    if bubble_y >= y then
-                        P.box(bb, l.bx, bubble_y, l.bubble_w, l.bubble_h, {
-                            border_color = border_color,
-                            border_size = border_size,
-                            background = bg,
-                            radius = radius,
-                        })
-                    else
-                        local vis_h = vis_bottom - vis_top
-                        if vis_h > 0 then
-                            P.rect(bb, l.bx, vis_top, l.bubble_w, vis_h, bg)
-                            if border_size > 0 then
-                                P.rect(bb, l.bx, vis_top, border_size, vis_h, border_color)
-                                P.rect(bb, l.bx + l.bubble_w - border_size, vis_top, border_size, vis_h, border_color)
-                                if vis_bottom >= bubble_y + l.bubble_h then
-                                    P.rect(bb, l.bx, vis_bottom - border_size, l.bubble_w, border_size, border_color)
-                                end
-                            end
-                        end
-                    end
+                    -- Full rounded box through the band viewport (same fix as
+                    -- the bubbles panel): clipped bottoms used to square-cut
+                    -- every corner and drop the top border.
+                    P.box(clip_bb, l.bx, bubble_y, l.bubble_w, l.bubble_h, {
+                        border_color = border_color,
+                        border_size = border_size,
+                        background = bg,
+                        radius = radius,
+                    })
                     if l.is_streaming then
                         local ind_h = vis_bottom - vis_top
                         if ind_h > 0 then

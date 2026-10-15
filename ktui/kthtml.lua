@@ -1,7 +1,7 @@
--- KtHTML: literal HTML+CSS pages rendered by MuPDF (separate sandbox).
+-- KtHTML: literal HTML+CSS rendered by MuPDF.
 --
--- The uidsl node engine stays untouched as the experimental file; this
--- module hosts REAL html/css documents through KOReader's own pipeline:
+-- The old uidsl node engine is retired (kept nothing behind); this module
+-- hosts REAL html/css documents through KOReader's own pipeline:
 -- HtmlBoxWidget (ffi/mupdf story API) renders, we handle geometry (two
 -- scroll modes), taps (own hitbox -> getLinkByPosition, never the global
 -- tap_to_follow_links switch) and lifecycle (free on navigate).
@@ -369,7 +369,7 @@ function KtHTML.render_body(template, app)
         return ""
     end)
     template = template:gsub("{{e:([^}:]+):([^}]*)}}", function(path, fb)
-        -- Hint semantics (mirrors uidsl value's data-empty): fallback shows
+        -- Hint semantics (data-empty value fallback): the fallback shows
         -- ONLY when the value is missing, so <span>{{s:p}}</span><span
         -- class="hint">{{e:p:hint}}</span> never doubles the text.
         local v = state_lookup(app, path)
@@ -1113,9 +1113,8 @@ end
 
 -- ======================================================== sandbox skeleton ===
 -- HTML_SKELETON is written to themes/pages/html_sandbox.html on demand
--- (never overwritten: the file is user-owned). It mirrors the uidsl sandbox
--- card by card so the two engines can be compared side by side - but this
--- one is LITERAL html+css rendered by MuPDF, no custom parser anywhere.
+-- (never overwritten: the file is user-owned). The debug sandbox page:
+-- LITERAL html+css rendered by MuPDF, no custom parser anywhere.
 -- Templates {{s:}}/{{c:}}/{{px:}} read live app.state; links use the kt:
 -- scheme (nav/back/toggle/input/action). pt-BR (debug page, NOT gettext).
 

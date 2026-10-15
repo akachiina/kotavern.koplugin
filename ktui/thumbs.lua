@@ -153,7 +153,11 @@ local wp_cache = {}
 function Thumbs.wallpaper(path, w, h)
     w = math.max(1, math.floor(w or 240))
     h = math.max(1, math.floor(h or 320))
-    local key = tostring(Thumbs.key_for(path)) .. ":" .. w .. "x" .. h
+    -- The art is pre-mixed toward the current theme's bg at generation time,
+    -- so the THEME rides in the cache key: a light<->dark switch must not
+    -- reuse the stale-mixed PNG.
+    local theme_tag = tostring(require("ktui/theme").get_theme() or "x"):gsub("[^%w]", "_")
+    local key = tostring(Thumbs.key_for(path)) .. ":" .. theme_tag .. ":" .. w .. "x" .. h
     if wp_cache[key] and lfs.attributes(wp_cache[key], "mode") == "file" then
         return wp_cache[key]
     end
@@ -162,7 +166,8 @@ function Thumbs.wallpaper(path, w, h)
         tp = Thumbs.generate(path)
     end
     if not tp then return nil end
-    local out = thumbs_dir() .. "/wp_" .. Thumbs.key_for(path) .. "_" .. w .. "x" .. h .. ".png"
+    local out = thumbs_dir() .. "/wp_" .. Thumbs.key_for(path) .. "_" .. theme_tag
+        .. "_" .. w .. "x" .. h .. ".png"
     if lfs.attributes(out, "mode") == "file" and (lfs.attributes(out, "size") or 0) > 0 then
         wp_cache[key] = out
         return out
