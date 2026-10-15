@@ -477,62 +477,175 @@ end
 -- (style, background, avatars, metadata toggles, custom chat font).
 function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     local app = view.app
+    local ChatTheme = require("ktui/chat_theme")
+
+    -- Live preview: a pinned band above the editor rows, painted through
+    -- the REAL chat pipeline (ChatBubbles.draw with sample messages on a
+    -- throwaway view - its hitboxes/layout cache never reach the page).
+    -- Every theme knob shows exactly as it will in the chat: style,
+    -- panels, colors, font, spacing, avatars, markdown, spoilers.
+    local band_h = math.min(math.floor(h * 0.30), Theme.scale(230))
+    P.rect(bb, x, y, w, band_h, Theme.chat_bg)
+    local now = os.time()
+    local sample = {
+        { role = "user", name = "You", send_date = now - 2,
+          content = "Hi! **bold**, *italic* and ||secret||." },
+        { role = "assistant", name = "Aria", send_date = now - 1,
+          content = "Hello! *This* is the look:\n> a quote\n- a list item" },
+    }
+    local okp_prev = pcall(function()
+        local ChatBubbles = require("ktui/chat_bubbles")
+        local pview = { app = app, hitboxes = {}, refresh = function() end }
+        ChatBubbles.draw(pview, bb, x, y, w, band_h, 0, sample,
+            app.state.current_character or "Aria", false, "You", nil, nil)
+    end)
+    P.rect(bb, x, y + band_h, w, Theme.scale(1), Theme.soft)
+
+    -- The editor reads ONE thing: the current look (theme or settings).
+    local look = app:chat_look()
+    local active_id = app:active_bubble_theme_id()
+    local active_name = nil
+    if active_id then
+        local _, nm = app:find_chat_theme(active_id)
+        active_name = nm
+    end
+
+    local style_labels = {
+        bubbles = _("Bubbles (ST)"), flat = _("Flat"), document = _("Document"),
+    }
+    local shape_labels = {
+        round = _("Round"), rounded = _("Rounded"),
+        square = _("Square"), rect = _("Rectangular"),
+    }
+    local width_labels = {
+        ["100"] = _("Full"), ["85"] = _("Wide"),
+        ["70"] = _("Medium"), ["50"] = _("Narrow"),
+    }
+    local height_labels = {
+        ["100"] = _("Full page"), ["70"] = _("70%"),
+        ["55"] = _("55%"), ["40"] = _("VN (40%)"),
+    }
+    local spacing_labels = {
+        ["85"] = _("Compact"), ["100"] = _("Normal"),
+        ["115"] = _("Airy"), ["130"] = _("Relaxed"),
+    }
+    local radius_labels = {
+        small = _("Small"), normal = _("Normal"), large = _("Large"),
+    }
     local density_labels = {
-        compact = _("Compact"),
-        normal = _("Normal"),
-        spacious = _("Spacious"),
+        compact = _("Compact"), normal = _("Normal"), spacious = _("Spacious"),
     }
-    local bubble_labels = {
-        bubbles = _("Bubbles (ST)"),
-        st = _("SillyTavern"),
-        flat = _("Flat"),
-        rounded = _("Rounded"),
-        square = _("Square"),
-        none = _("None"),
-    }
-    local rows = {
-        { section = true, text = _("Messages") },
-        {
-            text = _("Chat style"),
-            value = function() return bubble_labels[app.state.settings.bubble_style] or app.state.settings.bubble_style end,
+    local function pct_value(map, v)
+        return map[tostring(v)] or tostring(v)
+    end
+    local function pick_row(text, current, options, on_pick)
+        return {
+            text = text,
+            value = function() return current end,
             callback = function()
-                app:choose_setting("bubble_style", _("Chat style"), {
-                    { label = _("Bubbles (ST)"), value = "bubbles" },
-                    { label = _("Flat"), value = "flat" },
-                })
+                local Sheets = require("ktui/sheets")
+                local actions = {}
+                for oi = 1, #options do
+                    local opt = options[oi]
+                    actions[#actions + 1] = {
+                        label = opt.label,
+                        checked = (tostring(opt.value) == tostring(current)),
+                        on_tap = function()
+                            on_pick(opt.value)
+                        end,
+                    }
+                end
+                Sheets.show(app, { title = text, actions = actions })
             end,
-        },
-        {
-            text = _("Chat background"),
-            value = function()
-                local labels = { ["paper"] = _("Paper"), ["gray"] = _("Light gray"), ["none"] = _("None") }
-                return labels[app.state.settings.chat_bg] or app.state.settings.chat_bg
-            end,
-            callback = function()
-                app:choose_setting("chat_bg", _("Chat background"), {
-                    { label = _("Paper"), value = "paper" },
-                    { label = _("Light gray"), value = "gray" },
-                    { label = _("None"), value = "none" },
-                })
-            end,
-        },
-        {
-            text = _("Inline images"),
+        }
+    end
+    local function toggle_row(text, current, key)
+        return {
+            text = text,
             toggle = true,
-            value = function() return app.state.settings.show_inline_images end,
-            callback = function() app:toggle_setting("show_inline_images") end,
-        },
-        { section = true, text = _("Themes") },
+            value = function() return current end,
+            callback = function()
+                app:edit_chat_theme_key(key, not current)
+                app:refresh(true)
+            end,
+        }
+    end
+
+    local rows = {
+        { section = true, text = _("Chat theme") },
         {
-            text = _("Bubble themes"),
-            subtext = _("Save, apply and manage chat looks"),
+            text = _("Chat theme"),
+            subtext = _("Tap: global default · in a chat, Manage to apply per chat"),
+            value = function() return active_name or _("Default (settings)") end,
+            callback = function() app:choose_default_bubble_theme() end,
+        },
+        {
+            text = _("Manage themes…"),
             callback = function() app:navigate("settings_bubble_themes") end,
         },
+        {
+            text = _("Save current look as theme"), icon = "plus",
+            callback = function()
+                local Modals = require("ktui/modals")
+                local _ = require("gettext")
+                Modals.input(_("Theme name"), "", _("e.g. Warm paper"), _("Save"),
+                    function(name)
+                        app:save_bubble_theme_from_current(name)
+                        app:refresh(true)
+                    end)
+            end,
+        },
+        { section = true, text = _("Chat") },
+        pick_row(_("Chat style"), style_labels[look.style] or look.style, {
+            { label = _("Bubbles (ST)"), value = "bubbles" },
+            { label = _("Flat"), value = "flat" },
+            { label = _("Document"), value = "document" },
+        }, function(v)
+            app:edit_chat_theme_key("style", v)
+            app:refresh(true)
+        end),
+        pick_row(_("Chat width"), width_labels[tostring(look.chat_width)]
+            or tostring(look.chat_width), {
+            { label = _("Full"), value = "100" },
+            { label = _("Wide"), value = "85" },
+            { label = _("Medium"), value = "70" },
+            { label = _("Narrow"), value = "50" },
+        }, function(v)
+            app:edit_chat_theme_key("chat_width", tonumber(v))
+            app:refresh(true)
+        end),
+        pick_row(_("Chat height"),
+            height_labels[tostring(look.chat_height)] or tostring(look.chat_height), {
+            { label = _("Full page"), value = "100" },
+            { label = _("70%"), value = "70" },
+            { label = _("55%"), value = "55" },
+            { label = _("VN (40%)"), value = "40" },
+        }, function(v)
+            app:edit_chat_theme_key("chat_height", tonumber(v))
+            app:refresh(true)
+        end),
+        pick_row(_("Bubble radius"),
+            radius_labels[look.bubble_radius] or look.bubble_radius, {
+            { label = _("Small"), value = "small" },
+            { label = _("Normal"), value = "normal" },
+            { label = _("Large"), value = "large" },
+        }, function(v)
+            app:edit_chat_theme_key("bubble_radius", v)
+            app:refresh(true)
+        end),
+        pick_row(_("Density"), density_labels[look.density] or look.density, {
+            { label = _("Compact"), value = "compact" },
+            { label = _("Normal"), value = "normal" },
+            { label = _("Spacious"), value = "spacious" },
+        }, function(v)
+            app:edit_chat_theme_key("density", v)
+            app:refresh(true)
+        end),
         { section = true, text = _("Text") },
         {
             text = _("Chat font"),
             value = function()
-                local f = app.state.settings.chat_font_file or ""
+                local f = look.font_file or ""
                 return (f ~= "") and (f:match("[^/]+$") or f) or _("System default")
             end,
             callback = function() app:choose_chat_font() end,
@@ -540,99 +653,114 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
         {
             text = _("Chat font size"),
             value = function()
-                local v = tonumber(app.state.settings.chat_font_size) or 0
-                return v > 0 and tostring(v) or _("Follow base size")
+                return (look.font_size > 0) and tostring(look.font_size)
+                    or _("Follow base size")
             end,
             callback = function() app:prompt_chat_font_size() end,
         },
+        pick_row(_("Line spacing"),
+            pct_value(spacing_labels, look.line_spacing), {
+            { label = _("Compact"), value = "85" },
+            { label = _("Normal"), value = "100" },
+            { label = _("Airy"), value = "115" },
+            { label = _("Relaxed"), value = "130" },
+        }, function(v)
+            app:edit_chat_theme_key("line_spacing", tonumber(v))
+            app:refresh(true)
+        end),
+        { section = true, text = _("Colors") },
+        {
+            text = _("Text"),
+            value = function() return (look.colors.text ~= "") and look.colors.text or _("Default") end,
+            callback = function() app:prompt_theme_color("text", _("Text")) end,
+        },
+        {
+            text = _("Chat surface"),
+            value = function() return (look.colors.surface ~= "") and look.colors.surface or _("Default") end,
+            callback = function() app:prompt_theme_color("surface", _("Chat surface")) end,
+        },
+        {
+            text = _("AI messages"),
+            value = function() return (look.colors.ai_panel ~= "") and look.colors.ai_panel or _("Default") end,
+            callback = function() app:prompt_theme_color("ai_panel", _("AI messages")) end,
+        },
+        {
+            text = _("User messages"),
+            value = function() return (look.colors.user_panel ~= "") and look.colors.user_panel or _("Default") end,
+            callback = function() app:prompt_theme_color("user_panel", _("User messages")) end,
+        },
+        {
+            text = _("Border"),
+            value = function() return (look.colors.border ~= "") and look.colors.border or _("Default") end,
+            callback = function() app:prompt_theme_color("border", _("Border")) end,
+        },
+        {
+            text = _("Italics"),
+            value = function() return (look.colors.italics ~= "") and look.colors.italics or _("Default") end,
+            callback = function() app:prompt_theme_color("italics", _("Italics")) end,
+        },
+        {
+            text = _("Quote"),
+            value = function() return (look.colors.quote ~= "") and look.colors.quote or _("Default") end,
+            callback = function() app:prompt_theme_color("quote", _("Quote")) end,
+        },
+        { section = true, text = _("Messages") },
+        toggle_row(_("Show avatars"), look.show_avatars, "show_avatars"),
+        pick_row(_("Avatar shape"),
+            shape_labels[look.avatar_shape] or look.avatar_shape, {
+            { label = _("Round"), value = "round" },
+            { label = _("Rounded"), value = "rounded" },
+            { label = _("Square"), value = "square" },
+            { label = _("Rectangular"), value = "rect" },
+        }, function(v)
+            app:edit_chat_theme_key("avatar_shape", v)
+            app:refresh(true)
+        end),
+        pick_row(_("Avatar size"),
+            (look.avatar_size == "small" and _("Small"))
+            or (look.avatar_size == "large" and _("Large")) or _("Normal"), {
+            { label = _("Small"), value = "small" },
+            { label = _("Normal"), value = "normal" },
+            { label = _("Large"), value = "large" },
+        }, function(v)
+            app:edit_chat_theme_key("avatar_size", v)
+            app:refresh(true)
+        end),
+        toggle_row(_("Show timestamps"), look.show_timestamps, "show_timestamps"),
+        toggle_row(_("Show token counts"), look.show_tokens, "show_tokens"),
+        toggle_row(_("Show message IDs"), look.show_msg_ids, "show_msg_ids"),
+        toggle_row(_("Generation timer"), look.show_gen_timer, "show_gen_timer"),
+        toggle_row(_("Inline images"), look.show_inline_images, "show_inline_images"),
+        {
+            text = _("Outline user bubbles"),
+            toggle = true,
+            value = function() return app.state.settings.outline_user_bubbles == true end,
+            callback = function() app:toggle_setting("outline_user_bubbles") end,
+        },
+        { section = true, text = _("Advanced") },
         {
             text = _("Custom CSS"),
             subtext = _("CSS appended to the chat stylesheet (ST custom_css)"),
             value = function()
-                local c = app.state.settings.custom_css or ""
+                local c = look.custom_css or ""
                 return (c ~= "") and tostring(#c) .. " chars" or _("None")
             end,
             callback = function() app:prompt_custom_css() end,
         },
         {
-            text = _("Chat background"),
+            text = _("Chat wallpaper"),
             subtext = _("Character card art behind the messages (ST wallpaper)"),
             toggle = true,
             value = function() return app.state.settings.chat_wallpaper == true end,
             callback = function() app:toggle_setting("chat_wallpaper") end,
         },
-        { section = true, text = _("Details") },
-        {
-            text = _("Show avatars"),
-            toggle = true,
-            value = function() return app.state.settings.show_avatars end,
-            callback = function() app:toggle_setting("show_avatars") end,
-        },
-        {
-            text = _("Avatar size"),
-            value = function()
-                local labels = { ["small"] = _("Small"), ["normal"] = _("Normal"), ["large"] = _("Large") }
-                return labels[app.state.settings.avatar_size] or app.state.settings.avatar_size
-            end,
-            callback = function()
-                app:choose_setting("avatar_size", _("Avatar size"), {
-                    { label = _("Small"), value = "small" },
-                    { label = _("Normal"), value = "normal" },
-                    { label = _("Large"), value = "large" },
-                })
-            end,
-        },
-        {
-            text = _("Chat width"),
-            value = function()
-                local pct = tonumber(app.state.settings.chat_width) or 100
-                if pct >= 100 then return _("Full") end
-                return tostring(pct) .. "%"
-            end,
-            callback = function()
-                app:choose_setting("chat_width", _("Chat width"), {
-                    { label = _("Full"), value = "100" },
-                    { label = _("Wide"), value = "85" },
-                    { label = _("Medium"), value = "70" },
-                    { label = _("Narrow"), value = "50" },
-                })
-            end,
-        },
-        {
-            text = _("Avatar shape"),
-            value = function()
-                local labels = { ["round"] = _("Round"), ["rounded"] = _("Rounded"), ["square"] = _("Square") }
-                return labels[app.state.settings.avatar_shape] or app.state.settings.avatar_shape
-            end,
-            callback = function()
-                app:choose_setting("avatar_shape", _("Avatar shape"), {
-                    { label = _("Round"), value = "round" },
-                    { label = _("Rounded"), value = "rounded" },
-                    { label = _("Square"), value = "square" },
-                })
-            end,
-        },
-        {
-            text = _("Outline user bubbles"),
-            toggle = true,
-            value = function() return app.state.settings.outline_user_bubbles end,
-            callback = function() app:toggle_setting("outline_user_bubbles") end,
-        },
-        {
-            text = _("Show timestamps"),
-            toggle = true,
-            value = function() return app.state.settings.show_timestamps end,
-            callback = function() app:toggle_setting("show_timestamps") end,
-        },
-        {
-            text = _("Show token counts"),
-            toggle = true,
-            value = function() return app.state.settings.show_tokens end,
-            callback = function() app:toggle_setting("show_tokens") end,
-        },
     }
-    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+
+    local gap = Theme.scale(6)
+    return Pages.settings_section(view, bb, x, y + band_h + gap, w,
+        h - band_h - gap, scroll, rows)
 end
+
 
 -- Appearance > Chat > Bubble themes: manage the saved chat-look themes and
 -- pick the global default. Per-theme actions live in a sheet (apply to THIS

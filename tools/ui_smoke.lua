@@ -144,6 +144,38 @@ local function fake_app(state_overrides)
             { name = "Sol", path = nil, tags = {}, tokens = 1, creator = "Sol" },
         }
     end
+    -- Theme editor surface (mirrors kt_app): the Appearance>Chat page reads
+    -- the current look through these; rows only call the write paths on tap.
+    function app:chat_look()
+        local ChatTheme = require("ktui/chat_theme")
+        local live = self.state.chat_theme_applied
+        if live then return ChatTheme.normalize(live) end
+        local s = self.state.settings
+        return ChatTheme.normalize({
+            style = s.bubble_style, chat_width = s.chat_width,
+            font_file = s.chat_font_file, font_size = s.chat_font_size,
+            custom_css = s.custom_css, avatar_shape = s.avatar_shape,
+            avatar_size = s.avatar_size, show_avatars = s.show_avatars,
+            show_timestamps = s.show_timestamps, show_tokens = s.show_tokens,
+        })
+    end
+    function app:active_bubble_theme_id()
+        local meta_id = self.state.current_chat_bubble_theme_id
+        if meta_id ~= nil then return (meta_id ~= "" and meta_id) or nil end
+        local g = self.state.settings.bubble_theme_id
+        return (type(g) == "string" and g ~= "") and g or nil
+    end
+    function app:find_chat_theme(id)
+        local ChatTheme = require("ktui/chat_theme")
+        local Storage = require("kt_storage")
+        for _, b in ipairs(ChatTheme.BUILTINS()) do
+            if b.id == id then return b.theme, b.name end
+        end
+        for _, t in ipairs(Storage.list_chat_themes() or {}) do
+            if t.id == id then return ChatTheme.normalize(t.theme), t.name end
+        end
+        return nil
+    end
     return app
 end
 
@@ -3285,6 +3317,71 @@ do
     -- (fake_app data_dir points at /tmp; the store migrates on first read)
     local themes = Storage.list_chat_themes()
     ok(type(themes) == "table", "theme: chat theme store loads/migrates")
+end
+
+-- Theme editor page (B1): the Appearance>Chat page paints a LIVE preview
+-- (real chat pipeline, sample messages) above the editor rows; a dark
+-- theme must show in the preview band, and the page must not leak the
+-- preview's hitboxes into the page view.
+do
+    local app_e = fake_app({ page = "settings_appearance_chat",
+        settings = { chat_html_render = true } })
+    local view_e = { app = app_e, hitboxes = {}, refresh = function() end }
+    local bb_e = new_bb()
+    local okp_e = pcall(function()
+        Pages.settings_appearance_chat(view_e, bb_e, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_e, "editor: page paints without crashing")
+    -- Preview band (top ~30%): must hold message ink from the sample chat.
+    local function band_ink(b, y0, y1, dark)
+        local n = 0
+        for yy = y0, y1, 4 do
+            for xx = 20, VW - 20, 8 do
+                local okp, px = pcall(function() return b:getPixel(xx, yy) end)
+                if okp and px then
+                    if dark and px:getR() < 80 then n = n + 1
+                    elseif not dark and px:getR() < 128 then n = n + 1 end
+                end
+            end
+        end
+        return n
+    end
+    ok(band_ink(bb_e, 10, 200) > 30,
+        "editor: live preview band holds message ink")
+    dump(bb_e, "editor_page")
+    -- Dark theme applied: the preview band must flip dark (the "room"
+    -- semantic is visible while editing).
+    app_e.state.chat_theme_applied = require("ktui/chat_theme").normalize({
+        name = "Dark editor", style = "bubbles",
+        colors = { surface = "#101010", text = "#f0f0f0",
+            ai_panel = "#181818", user_panel = "#202020" },
+    })
+    local bb_e2 = new_bb()
+    local okp_e2 = pcall(function()
+        Pages.settings_appearance_chat(view_e, bb_e2, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_e2, "editor: dark theme page paints without crashing")
+    local dark_n = 0
+    for yy = 4, 196, 4 do
+        for xx = 20, VW - 20, 8 do
+            local okp, px = pcall(function() return bb_e2:getPixel(xx, yy) end)
+            if okp and px and px:getR() < 60 then dark_n = dark_n + 1 end
+        end
+    end
+    ok(dark_n > 200,
+        "editor: dark theme shows in the preview band (" .. dark_n .. " dark px)")
+    dump(bb_e2, "editor_page_dark")
+    -- The preview runs on a throwaway view: the page view must not carry
+    -- chat hitboxes (rows only).
+    local chat_boxes = 0
+    for hb_i = 1, #view_e.hitboxes do
+        local lab = view_e.hitboxes[hb_i].label
+        if type(lab) == "string" and (lab:sub(1, 8) == "msghold_"
+            or lab:sub(1, 9) == "chathtml_") then
+            chat_boxes = chat_boxes + 1
+        end
+    end
+    ok(chat_boxes == 0, "editor: preview hitboxes never reach the page view")
 end
 
 -- Chat Theme render: a dark theme must flip the doc colors (the "room"

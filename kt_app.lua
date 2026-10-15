@@ -356,11 +356,14 @@ function App:choose_chat_font()
     local FontList = require("fontlist")
     local _ = require("gettext")
     local self_ref = self
-    local current = self.state.settings.chat_font_file or ""
+    -- The editor view: the applied chat theme wins over the plain setting
+    -- (full-snapshot semantics), so the picker reads AND writes through it.
+    local current = self:chat_look().font_file
     local actions = {
         { label = _("System default"), checked = current == "",
           on_tap = function()
-              self_ref:save_setting("chat_font_file", "")
+              self_ref:edit_chat_theme_key("font_file", "")
+              self_ref.state.chat_font_cache = nil
               self_ref:refresh(true)
           end },
     }
@@ -377,7 +380,7 @@ function App:choose_chat_font()
             label = label,
             checked = current == path,
             on_tap = function()
-                self_ref:save_setting("chat_font_file", path)
+                self_ref:edit_chat_theme_key("font_file", path)
                 self_ref.state.chat_font_cache = nil
                 self_ref:refresh(true)
             end,
@@ -395,11 +398,14 @@ function App:prompt_custom_css()
     local self_ref = self
     -- multiline=true: CSS is a stylesheet, one rule per line; the single-line
     -- input made multi-rule customizations impossible to type.
-    Modals.input(_("Custom CSS"), self.state.settings.custom_css or "",
+    Modals.input(_("Custom CSS"), self:chat_look().custom_css or "",
         _("e.g. p { margin: 0 0 4px 0; }"), _("Save"), function(text)
-            self_ref:save_setting("custom_css", text)
+            self_ref:edit_chat_theme_key("custom_css", text)
             self_ref:refresh(true)
-        end, nil, true)
+        end, function()
+            self_ref:edit_chat_theme_key("custom_css", "")
+            self_ref:refresh(true)
+        end, true)
 end
 
 -- Size override for the chat font (0 = follow the base font size).
@@ -411,13 +417,13 @@ function App:prompt_chat_font_size()
     UIManager:show(SpinWidget:new{
         title_text = _("Chat font size"),
         text = _("0 follows the base font size"),
-        value = tonumber(self.state.settings.chat_font_size) or 0,
+        value = tonumber(self:chat_look().font_size) or 0,
         value_min = 0,
         value_max = Theme.MAX_BASE_FONT_SIZE,
         value_step = 1,
         value_hold_step = 2,
         callback = function(spin)
-            self_ref:save_setting("chat_font_size", spin.value)
+            self_ref:edit_chat_theme_key("font_size", spin.value)
             self_ref:refresh(true)
         end,
     })
@@ -4240,6 +4246,127 @@ function App:choose_default_bubble_theme()
     Sheets.show(self, { title = _("Default bubble theme"), actions = actions })
 end
 
+-- === Theme editor (Appearance > Chat) ==================================
+--
+-- The Appearance page edits ONE thing: the CURRENT look. Rows read it
+-- through chat_look() and write through edit_chat_theme_key(), which
+-- routes the edit to whoever owns the knob:
+--   * a theme is active  -> the theme (built-ins duplicate into a user
+--     copy first - code is read-only; the edit switches to the copy in
+--     the SAME scope, per-chat or global);
+--   * no theme          -> the plain setting, when one exists; theme-only
+--     keys (colors, line spacing, chat height) first promote the current
+--     look into a real "Current look" theme (global default) and then
+--     edit it - so a color edit never silently fights the settings.
+
+function App:chat_look()
+    local ChatTheme = require("ktui/chat_theme")
+    local live = self.state.chat_theme_applied
+    if live then return ChatTheme.normalize(live) end
+    local s = self.state.settings
+    return ChatTheme.normalize({
+        style = s.bubble_style, bubble_radius = s.bubble_radius,
+        density = s.density, chat_width = s.chat_width,
+        font_file = s.chat_font_file, font_size = s.chat_font_size,
+        custom_css = s.custom_css,
+        avatar_shape = s.avatar_shape, avatar_size = s.avatar_size,
+        show_avatars = s.show_avatars, show_timestamps = s.show_timestamps,
+        show_tokens = s.show_tokens, show_inline_images = s.show_inline_images,
+    })
+end
+
+function App:edit_chat_theme_key(key, value)
+    local ChatTheme = require("ktui/chat_theme")
+    local id = self:active_bubble_theme_id()
+    if not id then
+        local settings_keys = {
+            style = "bubble_style", bubble_radius = "bubble_radius",
+            density = "density", chat_width = "chat_width",
+            font_file = "chat_font_file", font_size = "chat_font_size",
+            custom_css = "custom_css", avatar_shape = "avatar_shape",
+            avatar_size = "avatar_size", show_avatars = "show_avatars",
+            show_timestamps = "show_timestamps", show_tokens = "show_tokens",
+            show_inline_images = "show_inline_images",
+        }
+        local sk = settings_keys[key]
+        if sk then
+            self:save_setting(sk, value)
+            return
+        end
+        -- Theme-only key: promote the current look into a real theme
+        -- ("Current look") and make it the global default, then edit it.
+        local themes = Storage.list_chat_themes()
+        local cur
+        for ti = 1, #themes do
+            if themes[ti].name == "Current look" then cur = themes[ti] end
+        end
+        if not cur then
+            self:save_bubble_theme_from_current("Current look")
+            themes = Storage.list_chat_themes()
+            for ti = 1, #themes do
+                if themes[ti].name == "Current look" then cur = themes[ti] end
+            end
+        end
+        if not cur then return end
+        self:save_setting("bubble_theme_id", cur.id)
+        id = cur.id
+    end
+    -- Built-ins are code: duplicate into a user copy, switch the SAME
+    -- scope to the copy, and edit there.
+    if id:sub(1, 8) == "builtin:" then
+        self:duplicate_bubble_theme(id)
+        local themes = Storage.list_chat_themes()
+        local copy = themes and themes[#themes] or nil
+        if not copy then return end
+        if self.state.current_chat_bubble_theme_id == id then
+            self:set_chat_bubble_theme(copy.id)
+        else
+            self:save_setting("bubble_theme_id", copy.id)
+            self:refresh_bubble_theme()
+        end
+        id = copy.id
+    end
+    local themes = Storage.list_chat_themes()
+    for ti = 1, #themes do
+        local t = themes[ti]
+        if t.id == id then
+            local th = ChatTheme.normalize(t.theme)
+            local ckey = key:match("^colors%.(%w+)$")
+            if ckey then
+                th.colors[ckey] = value
+            else
+                th[key] = value
+            end
+            t.theme = th
+            Storage.save_chat_themes(themes)
+            self:refresh_bubble_theme()
+            return
+        end
+    end
+end
+
+-- One theme color row: hex input ("#rrggbb", validated), Clear = inherit
+-- the palette again.
+function App:prompt_theme_color(key, title)
+    local Modals = require("ktui/modals")
+    local ChatTheme = require("ktui/chat_theme")
+    local _ = require("gettext")
+    local self_ref = self
+    local current = self:chat_look().colors[key] or ""
+    Modals.input(title, current, "#aabbcc", _("Save"), function(text)
+        local hex = ChatTheme.hex_color(text)
+        if not hex then
+            UIManager:show(InfoMessage:new{
+                text = _("Invalid color") .. " (#rrggbb)", timeout = 2 })
+            return
+        end
+        self_ref:edit_chat_theme_key("colors." .. key, hex)
+        self_ref:refresh(true)
+    end, function()
+        self_ref:edit_chat_theme_key("colors." .. key, "")
+        self_ref:refresh(true)
+    end)
+end
 
 function App:choose_chat_preset()
     local _ = require("gettext")

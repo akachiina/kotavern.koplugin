@@ -1861,3 +1861,72 @@ msgstr "Documento"
 
 msgid "Rectangular"
 msgstr "Rectangular"
+
+msgid "Chat theme"
+msgstr "Tema del chat"
+
+msgid "Tap: global default · in a chat, Manage to apply per chat"
+msgstr "Toque: predeterminado global · en un chat, Gestionar aplica solo a él"
+
+msgid "Chat height"
+msgstr "Altura del chat"
+
+msgid "Full page"
+msgstr "Página completa"
+
+msgid "70%"
+msgstr "70%"
+
+msgid "55%"
+msgstr "55%"
+
+msgid "VN (40%)"
+msgstr "VN (40%)"
+
+msgid "Bubble radius"
+msgstr "Radio de las burbujas"
+
+msgid "Line spacing"
+msgstr "Espaciado de líneas"
+
+msgid "Airy"
+msgstr "Amplio"
+
+msgid "Relaxed"
+msgstr "Relajado"
+
+msgid "Colors"
+msgstr "Colores"
+
+msgid "Chat surface"
+msgstr "Superficie del chat"
+
+msgid "AI messages"
+msgstr "Mensajes de la IA"
+
+msgid "User messages"
+msgstr "Tus mensajes"
+
+msgid "Border"
+msgstr "Borde"
+
+msgid "Italics"
+msgstr "Cursiva"
+
+msgid "Quote"
+msgstr "Cita"
+
+msgid "Show message IDs"
+msgstr "Mostrar IDs de los mensajes"
+
+msgid "Generation timer"
+msgstr "Tiempo de generación"
+
+msgid "Advanced"
+msgstr "Avanzado"
+
+msgid "Chat wallpaper"
+msgstr "Fondo de pantalla del chat"
+
+msgid "Invalid color"
+msgstr "Color no válido"
