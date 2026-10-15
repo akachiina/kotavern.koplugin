@@ -94,15 +94,25 @@ KtHTML.TALL_CACHE_MAX = 32
 -- rendered tall bitmap itself bottom-up for the last non-background row
 -- (the same bitmap paint_window blits from - already cached, no extra
 -- render). ±4px precision, one-time cost per file/theme change.
-function KtHTML.scan_bottom(bb, w)
+-- bg: the doc's own background color (hex); defaults to Theme.bg for the
+-- legacy callers. Dark chat themes must not scan against the app palette.
+function KtHTML.scan_bottom(bb, w, bg)
     if not bb then return nil end
     local bw, bh = bb:getWidth(), bb:getHeight()
     if not bw or not bh or bw <= 0 or bh <= 0 then return nil end
-    local br, bg, bbq = 255, 255, 255
+    local br, bgc, bbq = 255, 255, 255
     pcall(function()
         local c = Theme.bg
-        br, bg, bbq = c:getR(), c:getG(), c:getB()
+        br, bgc, bbq = c:getR(), c:getG(), c:getB()
     end)
+    if type(bg) == "string" and bg ~= "" then
+        local c = tonumber(bg:sub(2, 3), 16)
+        local g = tonumber(bg:sub(4, 5), 16)
+        local b = tonumber(bg:sub(6, 7), 16)
+        if c and g and b then
+            br, bgc, bbq = c, g, b
+        end
+    end
     w = math.min(w or bw, bw)
     for y = bh - 1, 0, -4 do
         for x = 0, w - 1, 4 do
@@ -111,7 +121,7 @@ function KtHTML.scan_bottom(bb, w)
                 local ok2, r, g, b = pcall(function()
                     return px:getR(), px:getG(), px:getB()
                 end)
-                if ok2 and (r ~= br or g ~= bg or b ~= bbq) then
+                if ok2 and (r ~= br or g ~= bgc or b ~= bbq) then
                     return math.min(bh, y + 4)
                 end
             end
@@ -148,11 +158,13 @@ end
 -- must measure only the text itself. body background is set but the widget
 -- bitmap box is cropped to the scanned text band, so the bubble's own
 -- panel color (painted by chat_bubbles around the blit) stays visible.
-function KtHTML.chat_css(settings)
-    -- body bg = the chat panel surface (chat_bubbles blits the opaque MuPDF
-    -- bitmap over the panel; assistant panels are Theme.bg-tinted) and
-    -- scan_bottom compares against Theme.bg - one color everywhere.
-    -- The @font-face block is REQUIRED here (not only theme_css): without
+function KtHTML.chat_css(resolved)
+    -- `resolved` = ChatTheme.resolved(app) output: theme colors/text knobs
+    -- already merged with the plain settings and the live palette. nil
+    -- (probes/legacy callers) builds straight from the Theme defaults.
+    -- body bg = the chat surface (chat_bubbles blits the opaque MuPDF
+    -- bitmap over the panel) and scan_bottom must compare against the
+    -- SAME color, so callers pass it down.
     -- PROBE-VERIFIED limits of this MuPDF (all still true):
     -- span background paints ONLY with display:inline-block AND stretches
     -- the full line when alone on its row (fine for the spoiler mask); inline
@@ -160,43 +172,65 @@ function KtHTML.chat_css(settings)
     -- needs !important on color - MuPDF's own blue UA rule beats a plain
     -- a{color}. Spoilers are <a class="ktspl"> (masked bar;
     -- text-decoration:none keeps the anchor underline from cutting the bar);
-    -- .ktsplopen comes AFTER and re-paints the revealed span with body bg +
-    -- ink (same inline-block box, so masked/revealed geometry is identical).
-    -- PROBE-VERIFIED additions (this round):
+    -- .ktsplopen comes AFTER and re-paints the revealed span with surface +
+    -- text (same inline-block box, so masked/revealed geometry is identical).
+    -- PROBE-VERIFIED additions:
     -- * @font-face src accepts an ABSOLUTE file path - the user's custom
-    --   chat font (chat_font_file, the same path the canvas path uses via
-    --   Theme.chat_face) rides in as family 'KTUser' BEFORE 'KTSans' so
+    --   chat font rides in as family 'KTUser' BEFORE 'KTSans' so
     --   it shadows every KTSans face (KTSans stays listed for fallback).
     -- * body{font-size: Npx} IS honored and layers on top of the
     --   default_font_size layout parameter - chat_font_size support.
+    -- * body{line-height: N} IS honored (probe: 1.2 vs 2.0 spreads rows);
+    --   chat line_spacing maps to 1.2 * N/100 (100 = MuPDF's default).
     -- * Emoji: the default chain renders NOTHING for emoji codepoints
     --   (missing glyph, no tofu: ink 0, probe-verified). A bundled
     --   MONOCHROME scalable emoji font (assets/emoji-noto.ttf, Noto Emoji)
     --   as family 'KTEmoji' LAST in the chain fixes it. Color emoji fonts
-    --   (CBDT) CANNOT work: MuPDF/FreeType rejects bitmap-only strikes
-    --   ("invalid pixel size" - probe-verified on Twemoji/NotoColor).
-    -- custom CSS (Appearance > Chat > Custom CSS, ST custom_css parity)
-    -- is appended LAST so author rules win every tie.
-    local s = settings or (KtHTML.get_settings and KtHTML.get_settings()) or {}
+    --   (CBDT) CANNOT work: MuPDF/FreeType rejects bitmap-only strikes.
+    -- * rgba() is IGNORED (probe) - the theme engine composites alpha in
+    --   Lua and only hex colors reach this stylesheet.
+    -- custom CSS (ST custom_css parity) is appended LAST so author rules
+    -- win every tie.
+    local r = resolved
+    if not r then
+        r = {
+            font_file = "", font_size = 0, font_scale = 1, line_spacing = 100,
+            custom_css = "",
+            colors = {
+                surface = KtHTML.css_hex(Theme.chat_bg, "#ffffff"),
+                text = KtHTML.css_hex(Theme.ink, "#000000"),
+                ai_panel = KtHTML.css_hex(Theme.chat_panel, "#ffffff"),
+                user_panel = KtHTML.css_hex(Theme.chat_panel_user, "#ffffff"),
+                border = KtHTML.css_hex(Theme.soft, "#d8d8d8"),
+                italics = KtHTML.css_hex(Theme.ink, "#000000"),
+                quote = KtHTML.css_hex(Theme.muted, "#999999"),
+                mask = KtHTML.css_hex(Theme.muted, "#999999"),
+            },
+        }
+    end
+    local c = r.colors
     local font_block = ""
-    if s.chat_font_file and s.chat_font_file ~= "" then
+    if r.font_file and r.font_file ~= "" then
         font_block = font_block .. string.format(
             "@font-face { font-family: 'KTUser'; src: url('%s'); }\n",
-            s.chat_font_file:gsub("'", ""))
+            r.font_file:gsub("'", ""))
     end
-    local size_px = tonumber(s.chat_font_size) or 0
+    local size_px = math.floor(tonumber(r.font_size) or 0)
     local size_css = size_px > 0 and string.format("font-size: %dpx;", size_px) or ""
-    local user_css = tostring(s.custom_css or "")
+    local lh = 1.2 * ((tonumber(r.line_spacing) or 100) / 100)
+    local lh_css = string.format("line-height: %.2f;", lh)
+    local user_css = tostring(r.custom_css or "")
     return string.format([[
 %s@font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
 @font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
 @font-face { font-family: 'KTSans'; font-style: italic; src: url('sans-italic.ttf'); }
 @font-face { font-family: 'KTEmoji'; src: url('emoji-noto.ttf'); }
 @page { margin: 0; }
-body { margin: 0; padding: 0; %s background: %s; color: %s; font-family: 'KTUser', 'KTSans', 'KTEmoji', sans-serif; }
+body { margin: 0; padding: 0; %s %s background: %s; color: %s; font-family: 'KTUser', 'KTSans', 'KTEmoji', sans-serif; }
 p { margin: 0; }
 b { font-weight: bold; }
 s { text-decoration: line-through; }
+i { font-style: italic; }
 .ktcode { font-family: monospace; }
 p.ktfence { background: %s; font-family: monospace; }
 .ktspl { display: inline-block; background: %s; color: %s !important; text-decoration: none !important; }
@@ -207,17 +241,19 @@ a { color: %s !important; text-decoration: underline; }
 ]],
         font_block,
         size_css,
-        KtHTML.css_hex(Theme.bg, "#ffffff"),
-        KtHTML.css_hex(Theme.ink, "#000000"),
-        KtHTML.css_hex(Theme.soft, "#d8d8d8"),
-        KtHTML.css_hex(Theme.muted, "#999999"),
-        KtHTML.css_hex(Theme.muted, "#999999"),
-        KtHTML.css_hex(Theme.bg, "#ffffff"),
-        KtHTML.css_hex(Theme.ink, "#000000"),
-        KtHTML.css_hex(Theme.muted, "#999999"),
-        KtHTML.css_hex(Theme.ink, "#000000"),
+        lh_css,
+        c.surface,
+        c.text,
+        c.mask,
+        c.mask,
+        c.mask,
+        c.surface,
+        c.text,
+        c.quote,
+        c.text,
         user_css)
 end
+
 
 function KtHTML.theme_css()
     local font_px = Theme.scale(Theme.get_base_font_size())

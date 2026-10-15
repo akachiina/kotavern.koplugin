@@ -3932,22 +3932,27 @@ end
 local BUBBLE_TINT_MAP = { none = 0.0, paper = 0.05, gray = 0.09 }
 local BUBBLE_TINT_USER = { none = 0.06, paper = 0.10, gray = 0.14 }
 
-local function bubble_theme_snapshot(s)
-    return {
-        style = s.bubble_style or "bubbles",
-        chat_bg = s.chat_bg or "paper",
-        tint_user = nil,          -- nil = derive from chat_bg (see below)
-        radius = s.bubble_radius or "normal",
-        density = s.density or "normal",
-        show_avatars = (s.show_avatars ~= false),
-        show_timestamps = (s.show_timestamps == true),
-        show_tokens = (s.show_tokens == true),
-    }
+-- === Chat themes (full-appearance successors of bubble themes) =========
+-- One theme owns the WHOLE chat look (ktui/chat_theme.lua schema). The
+-- ids keep flowing through the same fields (settings.bubble_theme_id,
+-- chat_metadata.bubble_theme_id) so per-chat overrides survive the
+-- upgrade; built-in ST presets live under "builtin:*" ids.
+local ChatTheme = require("ktui/chat_theme")
+
+function App:find_chat_theme(id)
+    if type(id) ~= "string" or id == "" then return nil end
+    for _, b in ipairs(ChatTheme.BUILTINS()) do
+        if b.id == id then return b.theme, b.name end
+    end
+    for _, t in ipairs(Storage.list_chat_themes() or {}) do
+        if t.id == id then return ChatTheme.normalize(t.theme), t.name end
+    end
+    return nil
 end
 
 -- Effective theme id for the CURRENT chat (or the global default outside a
--- chat): chat override first, then the global selection.nil means "no theme
--- in play" (everything renders from the plain settings).
+-- chat): chat override first, then the global selection. nil means "no
+-- theme in play" (everything renders from the plain settings).
 function App:active_bubble_theme_id()
     local meta_id = self.state.current_chat_bubble_theme_id
     if meta_id ~= nil then return (meta_id ~= "" and meta_id) or nil end
@@ -3955,35 +3960,36 @@ function App:active_bubble_theme_id()
     return (type(g) == "string" and g ~= "") and g or nil
 end
 
--- Apply a bubble theme (by id) to the LIVE palette: Theme state setters are
--- non-persistent (any apply_settings/setting save resets them from settings),
--- and the plain settings are never written. state.chat_theme_applied holds
--- the snapshot in effect so the chat page reads its toggles and "save
--- current look as theme" snapshots the truth.
+-- Apply a chat theme (normalized table) to the LIVE state: Theme setters
+-- for the canvas geometry, color overrides for the surface/panels (unset
+-- keys inherit the palette), the canvas chat font when the theme sets
+-- one. state.chat_theme_applied holds the normalized theme so the paint
+-- paths read one resolved object. nil = plain settings (overrides clear).
 function App:apply_bubble_theme(theme)
     local Theme = require("ktui/theme")
     local s = self.state.settings
     if not theme then
         Theme.set_bubble_style(s.bubble_style)
-        Theme.set_chat_bg(s.chat_bg)
         Theme.set_bubble_radius(s.bubble_radius)
         Theme.set_density(s.density)
+        Theme.set_chat_color_overrides(nil)
+        Theme.set_chat_font(s.chat_font_file, s.chat_font_size)
         self.state.chat_theme_applied = nil
         return
     end
     Theme.set_bubble_style(theme.style or s.bubble_style)
-    Theme.set_chat_bg(theme.chat_bg or s.chat_bg)
-    Theme.set_bubble_radius(theme.radius or s.bubble_radius)
+    Theme.set_bubble_radius(theme.bubble_radius or s.bubble_radius)
     Theme.set_density(theme.density or s.density)
-    self.state.chat_theme_applied = {
-        style = theme.style,
-        chat_bg = theme.chat_bg,
-        radius = theme.radius,
-        density = theme.density,
-        show_avatars = theme.show_avatars,
-        show_timestamps = theme.show_timestamps,
-        show_tokens = theme.show_tokens,
-    }
+    Theme.set_chat_color_overrides({
+        surface = theme.colors.surface,
+        ai_panel = theme.colors.ai_panel,
+        user_panel = theme.colors.user_panel,
+    })
+    -- Canvas chat font: theme keys win when set, settings otherwise.
+    Theme.set_chat_font(
+        (theme.font_file ~= "" and theme.font_file) or s.chat_font_file,
+        (theme.font_size > 0 and theme.font_size) or s.chat_font_size)
+    self.state.chat_theme_applied = ChatTheme.normalize(theme)
 end
 
 -- Startup/reload path: resolve and apply the active theme (otherwise the
@@ -3994,20 +4000,14 @@ function App:refresh_bubble_theme()
         self:apply_bubble_theme(nil)
         return
     end
-    for _, t in ipairs(Storage.list_bubble_themes() or {}) do
-        if t.id == id then
-            self:apply_bubble_theme(t)
-            return
-        end
-    end
-    self:apply_bubble_theme(nil) -- dangling id: plain settings
+    local theme = self:find_chat_theme(id)
+    self:apply_bubble_theme(theme) -- nil (dangling id) = plain settings
 end
 
 function App:choose_chat_bubble_theme()
     local Sheets = require("ktui/sheets")
     local _ = require("gettext")
     local self_ref = self
-    local themes = Storage.list_bubble_themes() or {}
     local current = self.state.current_chat_bubble_theme_id
     local actions = {
         { label = _("Default (settings)"), checked = current == nil or current == "",
@@ -4015,14 +4015,19 @@ function App:choose_chat_bubble_theme()
               self_ref:set_chat_bubble_theme("")
           end },
     }
-    for _, t in ipairs(themes) do
+    for _, b in ipairs(ChatTheme.BUILTINS()) do
         table.insert(actions, {
-            label = t.name or "?",
-            checked = (current == t.id),
+            label = b.name, checked = (current == b.id),
+            on_tap = function()
+                self_ref:set_chat_bubble_theme(b.id)
+            end })
+    end
+    for _, t in ipairs(Storage.list_chat_themes() or {}) do
+        table.insert(actions, {
+            label = t.name or "?", checked = (current == t.id),
             on_tap = function()
                 self_ref:set_chat_bubble_theme(t.id)
-            end,
-        })
+            end })
     end
     table.insert(actions, {
         label = _("Manage themes…"), icon = "sliders",
@@ -4045,67 +4050,75 @@ function App:set_chat_bubble_theme(theme_id)
     self:refresh(true)
 end
 
--- Snapshot the CURRENT look (live theme if one is applied, plain settings
--- otherwise) into a new named theme.
+-- Snapshot the CURRENT look into a new named theme: the applied theme
+-- (if any) copied under the new name, otherwise the plain settings
+-- raised to the full schema.
 function App:save_bubble_theme_from_current(name)
     local s = self.state.settings
+    name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then return end
+    local raw
     local live = self.state.chat_theme_applied
-    local snap = bubble_theme_snapshot(setmetatable({
-        bubble_style = (live and live.style) or s.bubble_style,
-        chat_bg = (live and live.chat_bg) or s.chat_bg,
-        bubble_radius = (live and live.radius) or s.bubble_radius,
-        density = (live and live.density) or s.density,
-        show_avatars = (live and live.show_avatars ~= nil)
-            and live.show_avatars or (s.show_avatars ~= false),
-        show_timestamps = (live and live.show_timestamps ~= nil)
-            and live.show_timestamps or (s.show_timestamps == true),
-        show_tokens = (live and live.show_tokens ~= nil)
-            and live.show_tokens or (s.show_tokens == true),
-    }, { __index = s }))
-    snap.name = Util.trim(tostring(name or ""))
-    if snap.name == "" then snap.name = _("Theme") end
-    snap.id = Util.uuid()
-    local themes = Storage.list_bubble_themes() or {}
-    table.insert(themes, snap)
-    Storage.save_bubble_themes(themes)
-    return snap
+    if live then
+        raw = live
+    else
+        -- Plain settings: keep the 3 chat_bg tints recognizable as the
+        -- same migration the store does (bubble themes -> chat themes).
+        local presets = { none = "#ffffff", paper = "#f2f2f2", gray = "#e8e8e8" }
+        local presets_user = { none = "#f0f0f0", paper = "#e6e6e6", gray = "#dbdbdb" }
+        local bg = s.chat_bg or "paper"
+        raw = {
+            style = s.bubble_style, bubble_radius = s.bubble_radius,
+            density = s.density,
+            colors = { surface = presets[bg], user_panel = presets_user[bg] },
+            font_file = s.chat_font_file, font_size = s.chat_font_size,
+            show_avatars = s.show_avatars, show_timestamps = s.show_timestamps,
+            show_tokens = s.show_tokens,
+        }
+    end
+    local theme = ChatTheme.normalize(raw)
+    theme.name = name
+    local themes = Storage.list_chat_themes() or {}
+    themes[#themes + 1] = { id = Util.uuid(), name = name, theme = theme }
+    Storage.save_chat_themes(themes)
 end
 
 function App:rename_bubble_theme(id, name)
-    name = Util.trim(tostring(name or ""))
+    name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
     if name == "" then return end
-    local themes = Storage.list_bubble_themes() or {}
+    local themes = Storage.list_chat_themes() or {}
     for _, t in ipairs(themes) do
-        if t.id == id then t.name = name end
+        if t.id == id then
+            t.name = name
+            if type(t.theme) == "table" then t.theme.name = name end
+        end
     end
-    Storage.save_bubble_themes(themes)
+    Storage.save_chat_themes(themes)
     self:refresh(true)
 end
 
 function App:duplicate_bubble_theme(id)
+    local theme = self:find_chat_theme(id)
+    if not theme then return end
+    local _ = require("gettext")
     local copy_label = _("copy")
-    local themes = Storage.list_bubble_themes() or {}
-    for _, t in ipairs(themes) do
-        if t.id == id then
-            local copy = {}
-            for k, v in pairs(t) do copy[k] = v end
-            copy.id = Util.uuid()
-            copy.name = (t.name or "?") .. " " .. copy_label
-            table.insert(themes, copy)
-            Storage.save_bubble_themes(themes)
-            self:refresh(true)
-            return copy
-        end
-    end
+    local themes = Storage.list_chat_themes() or {}
+    local copy = ChatTheme.normalize(theme)
+    copy.name = (theme.name or "?") .. " " .. copy_label
+    themes[#themes + 1] = { id = Util.uuid(), name = copy.name, theme = copy }
+    Storage.save_chat_themes(themes)
+    self:refresh(true)
 end
 
 function App:delete_bubble_theme(id)
-    local themes = Storage.list_bubble_themes() or {}
+    -- Built-ins are code, not data: they can only be duplicated.
+    if tostring(id):sub(1, 8) == "builtin:" then return end
+    local themes = Storage.list_chat_themes() or {}
     local out = {}
     for _, t in ipairs(themes) do
         if t.id ~= id then table.insert(out, t) end
     end
-    Storage.save_bubble_themes(out)
+    Storage.save_chat_themes(out)
     -- Dangling references cleared: global default and the CURRENT chat's
     -- override both fall back when the id is gone.
     if self.state.settings.bubble_theme_id == id then
@@ -4118,8 +4131,9 @@ function App:delete_bubble_theme(id)
     self:refresh(true)
 end
 
--- Import one theme JSON:
--- { name=, style=, chat_bg=, radius=, density=, show_* }.
+-- Import a theme .json: our own format (carries the full schema) or an
+-- ST UI-theme file (from_st maps the ST knobs; name falls back to the
+-- file name like ST does). Both normalize into the store.
 function App:import_bubble_theme()
     local _ = require("gettext")
     local self_ref = self
@@ -4136,37 +4150,43 @@ function App:import_bubble_theme()
             f:close()
             return require("json").decode(content)
         end)
-        if not ok or type(data) ~= "table" or type(data.style) ~= "string" then
+        if not ok or type(data) ~= "table" then
             UIManager:show(InfoMessage:new{ text = _("Import failed: invalid theme file."), timeout = 3 })
             return
         end
-        local themes = Storage.list_bubble_themes() or {}
-        local base = tostring(file_path):match("([^/\\]+)%.json$") or (data.name or "Theme")
-        data.name = base
-        data.id = Util.uuid()
-        table.insert(themes, data)
-        Storage.save_bubble_themes(themes)
+        local theme
+        if type(data.format) == "string" and data.format == "kotavern-chat-theme" then
+            -- Our own export: the full schema (theme may sit at the root).
+            theme = ChatTheme.normalize(type(data.theme) == "table" and data.theme or data)
+        else
+            -- ST UI theme (the shareable format ST itself imports).
+            if type(data.name) ~= "string" or data.name == "" then
+                data.name = tostring(file_path):match("([^/\\]+)%.json$") or ""
+            end
+            theme = ChatTheme.from_st(data)
+        end
+        if not theme or theme.name == "" then
+            UIManager:show(InfoMessage:new{ text = _("Import failed: invalid theme file."), timeout = 3 })
+            return
+        end
+        local themes = Storage.list_chat_themes() or {}
+        themes[#themes + 1] = { id = Util.uuid(), name = theme.name, theme = theme }
+        Storage.save_chat_themes(themes)
         self_ref:refresh(true)
-        UIManager:show(InfoMessage:new{ text = _("Theme imported!") .. " (" .. base .. ")", timeout = 2 })
+        UIManager:show(InfoMessage:new{ text = _("Theme imported!") .. " (" .. theme.name .. ")", timeout = 2 })
     end)
 end
 
--- Export one theme as a standalone .json (ST themes are shareable files;
--- import_bubble_theme reads the same shape back).
+-- Export one theme as an ST-format UI-theme .json (the format ST itself
+-- imports - only the keys ST understands, rgba colors, chat_display).
 function App:export_bubble_theme(id)
     local _ = require("gettext")
-    local themes = Storage.list_bubble_themes() or {}
-    local theme
-    for _, t in ipairs(themes) do
-        if t.id == id then theme = t break end
-    end
+    local theme = self:find_chat_theme(id)
     if not theme then
         UIManager:show(InfoMessage:new{ text = _("Theme not found."), timeout = 2 })
         return
     end
-    local data = {}
-    for k, v in pairs(theme) do data[k] = v end
-    data.id = nil -- exports are identity-free (import assigns a fresh id)
+    local data = ChatTheme.to_st(theme)
     local fname = (Util.safe_filename(theme.name or "theme")) .. ".json"
     self:choose_export_dir(function(dir)
         local okr, res = pcall(function()
@@ -4189,7 +4209,6 @@ function App:choose_default_bubble_theme()
     local Sheets = require("ktui/sheets")
     local _ = require("gettext")
     local self_ref = self
-    local themes = Storage.list_bubble_themes() or {}
     local current = self.state.settings.bubble_theme_id or ""
     local actions = {
         { label = _("None (settings)"), checked = current == "",
@@ -4199,10 +4218,18 @@ function App:choose_default_bubble_theme()
               self_ref:refresh(true)
           end },
     }
-    for _, t in ipairs(themes) do
+    for _, b in ipairs(ChatTheme.BUILTINS()) do
         table.insert(actions, {
-            label = t.name or "?",
-            checked = (current == t.id),
+            label = b.name, checked = (current == b.id),
+            on_tap = function()
+                self_ref:save_setting("bubble_theme_id", b.id)
+                self_ref:refresh_bubble_theme()
+                self_ref:refresh(true)
+            end })
+    end
+    for _, t in ipairs(Storage.list_chat_themes() or {}) do
+        table.insert(actions, {
+            label = t.name or "?", checked = (current == t.id),
             on_tap = function()
                 self_ref:save_setting("bubble_theme_id", t.id)
                 self_ref:refresh_bubble_theme()
@@ -4212,6 +4239,7 @@ function App:choose_default_bubble_theme()
     end
     Sheets.show(self, { title = _("Default bubble theme"), actions = actions })
 end
+
 
 function App:choose_chat_preset()
     local _ = require("gettext")

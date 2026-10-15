@@ -44,15 +44,22 @@ local function effective_style(style)
     if style == "bubbles" then
         return "bubbles"
     end
+    if style == "document" then
+        -- Document (ST documentstyle): a book, not a chat - rendered as
+        -- flat with the whole chrome hidden (B2 paints the real thing).
+        return "flat"
+    end
     return "st" -- st / rounded / square / unknown
 end
 
 -- ST avatar shape: the shared Widgets avatar (square cover-fit image,
--- corners carved back to the surface color, ring). shape comes from
--- settings.avatar_shape (round | rounded | square - ST avatar_styles).
+-- corners carved back to the surface color, ring). shape comes from the
+-- applied chat theme first (round | rounded | square | rect - ST
+-- avatar_styles), then the plain settings.
 local function draw_avatar(view, bb, x, y, size, image_file, name, carve_color)
-    local shape = (view.app and view.app.state and view.app.state.settings
-        and view.app.state.settings.avatar_shape) or "round"
+    local st = view.app and view.app.state or nil
+    local shape = (st and st.chat_theme_applied and st.chat_theme_applied.avatar_shape)
+        or (st and st.settings and st.settings.avatar_shape) or "round"
     if Widgets.avatar(bb, x, y, size, image_file, name, carve_color, shape) then
         view.dithered = true
     end
@@ -846,13 +853,10 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
     local Theme = require("ktui/theme")
     local Geom = require("ui/geometry")
     local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
-    -- Cache signature covers everything chat_css() bakes in: base size,
-    -- custom font file/size and custom CSS (a CSS edit must rebuild docs).
-    local app_s = app.state.settings or {}
-    local font_id = tostring(Theme.scale(Theme.get_base_font_size()))
-        .. ":" .. tostring(app_s.chat_font_size or "")
-        .. ":" .. tostring(app_s.chat_font_file or "")
-        .. ":" .. tostring(app_s.custom_css or "")
+    local ChatTheme = require("ktui/chat_theme")
+    -- One resolved theme (colors/text knobs merged with the settings) feeds
+    -- the stylesheet AND the cache key: any knob change rebuilds the doc.
+    local resolved = ChatTheme.resolved(app)
     -- Revealed-spoiler / details indices participate in the key: a toggle
     -- re-runs the measure with a new set, which lands on a fresh doc without
     -- touching the masked render still cached for other messages.
@@ -863,8 +867,9 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         table.sort(ks)
         return table.concat(ks, ",")
     end
-    local key = table.concat({ tostring(content), "\0", tostring(width), "\0", font_id,
-        "\0", Theme.get_theme(), "\0", set_sig_local(revealed),
+    local key = table.concat({ tostring(content), "\0", tostring(width), "\0",
+        resolved.sig,
+        "\0", set_sig_local(revealed),
         "\0", set_sig_local(det_revealed), "\0", tostring(css_extra or "") }, "")
     local cached = docs[key]
     if cached and cached.width == width then
@@ -928,26 +933,31 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         -- Live settings thread through so the custom chat font (KTUser
         -- @font-face), chat_font_size and custom_css all ride inside the
         -- same stylesheet; by-sig callers cache on the settings hash anyway.
-        local app_s = (app and app.state and app.state.settings) or nil
-        local css = require("ktui/kthtml").chat_css(app_s)
+        local css = require("ktui/kthtml").chat_css(resolved)
         -- Reasoning docs ride the same stylesheet plus a mute + indent layer
         -- (the canvas reasoning look): colors come from Theme live.
         if css_extra and css_extra ~= "" then
             css = css .. "\n" .. css_extra
         end
+        -- font_scale layers on the base size (ST font_scale parity).
+        local base_px = Theme.scale(Theme.get_base_font_size())
+            * (tonumber(resolved.font_scale) or 1)
+        base_px = math.max(8, math.floor(base_px + 0.5))
         local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
         widget:setContent(chat_html_body(content, revealed, det_revealed), css,
-            Theme.scale(Theme.get_base_font_size()),
-            false, nil, Constants.PLUGIN_DIR .. "/assets")
+            base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
         local pages = widget.page_count or 1
         -- Tall bitmap: relayout at pages*96 then scan the exact bottom.
         local tall = math.max(96, pages * 96)
         widget.dimen = Geom:new{ w = width, h = tall }
         widget:setContent(chat_html_body(content, revealed, det_revealed), css,
-            Theme.scale(Theme.get_base_font_size()),
-            false, nil, Constants.PLUGIN_DIR .. "/assets")
+            base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
         widget:_render()
-        local last = require("ktui/kthtml").scan_bottom(widget.bb, width)
+        -- scan_bottom must compare against the DOC's own background (the
+        -- theme surface), not the app palette - dark themes made every row
+        -- read as ink.
+        local last = require("ktui/kthtml").scan_bottom(widget.bb, width,
+            resolved.colors.surface)
         local h = last and math.max(16, last) or 96
         docs[key] = { widget = widget, height = h, width = width, key = key,
             paint_id = view and view._chat_paint_id or 0 }
@@ -1419,7 +1429,12 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
 
     local pad = Theme.scale(10 * dens)
     local gap = Theme.scale(10 * dens)
-    local av_mult = settings.avatar_size == "large" and 1.25 or (settings.avatar_size == "small" and 0.75 or 1.0)
+    -- Chat theme wins for the keys it carries (themes are FULL snapshots,
+    -- ST semantics); plain settings otherwise.
+    local av_size_setting = (theme_live and theme_live.avatar_size)
+        or settings.avatar_size
+    local av_mult = av_size_setting == "large" and 1.25
+        or (av_size_setting == "small" and 0.75 or 1.0)
     local avatar_size = math.floor(Theme.scale(48) * av_mult)
     local name_h = line_height(Theme.face("small")) + 2
     -- ST fa-ellipsis kebab (message actions) in the name row: 3 round dots.
@@ -1450,8 +1465,10 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     -- ST chat_width (25..100%): narrows the whole message column - panels
     -- included (ST narrows #chat itself via --sheldWidth), centered. 100 and
     -- anything above keep the old full-width geometry. Flat has no panels,
-    -- so the same bounds ARE the text column.
-    local cw_pct = tonumber(settings.chat_width) or 100
+    -- so the same bounds ARE the text column. The chat theme wins when one
+    -- is applied (full-snapshot semantics).
+    local cw_pct = tonumber((theme_live and theme_live.chat_width)
+        or settings.chat_width) or 100
     if cw_pct < 100 then
         cw_pct = math.max(25, math.min(100, cw_pct))
         local full_w = panel_right - panel_x
@@ -1498,6 +1515,11 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         tostring(settings.reasoning_prefix), tostring(settings.reasoning_suffix),
         tostring(settings.chat_font_file), tostring(settings.chat_font_size),
         tostring(settings.custom_css),
+        -- The applied chat theme participates whole: a theme change (or a
+        -- per-chat override) must rebuild every cached layout.
+        tostring(view.app and view.app.state
+            and view.app.state.chat_theme_applied
+            and require("ktui/chat_theme").sig(view.app.state.chat_theme_applied) or ""),
         tostring(view.app and view.app.state and view.app.state.current_chat_path),
     }, "|")
     if not layout_cache or chat_sig ~= rawget(view, "_chat_layout_sig") then

@@ -58,6 +58,8 @@ local current_theme = "light"
 local density_factor = 1.0
 local bubble_style = "bubbles" -- ST chat_styles.BUBBLES panels are the app default (v0.5)
 local chat_bg = "paper"
+-- Chat theme color overrides (hex strings; nil key = inherit the palette).
+local chat_color_overrides = nil
 local line_h_cache = {}
 local line_h_widget = nil
 
@@ -117,7 +119,8 @@ end
 
 function Theme.set_bubble_style(value)
     if value == "st" or value == "flat"
-        or value == "square" or value == "none" or value == "bubbles" then
+        or value == "square" or value == "none" or value == "bubbles"
+        or value == "document" then
         bubble_style = value
     else
         bubble_style = "bubbles"
@@ -164,6 +167,36 @@ function Theme._apply_chat_colors()
     Theme.chat_bg = s.bg
     Theme.chat_panel = s.panel
     Theme.chat_panel_user = s.panel_user
+    -- A chat theme may OWN the chat colors (set keys override; unset keys
+    -- keep the palette values above). Hex strings -> Blitbuffer colors.
+    if chat_color_overrides then
+        local function hex_to_bb(hex)
+            if not hex or hex == "" then return nil end
+            local r = tonumber(hex:sub(2, 3), 16)
+            local g = tonumber(hex:sub(4, 5), 16)
+            local b = tonumber(hex:sub(6, 7), 16)
+            if not r or not g or not b then return nil end
+            return Blitbuffer.ColorRGB8(r, g, b)
+        end
+        local function mix_over(base_hex, hex)
+            -- Themes are e-ink first: a panel tint must never kill text
+            -- contrast, but the hex is used as authored (custom_css and the
+            -- editor are the escape hatches).
+            return hex_to_bb(hex) or base_hex
+        end
+        local o = chat_color_overrides
+        Theme.chat_bg = mix_over(Theme.chat_bg, o.surface)
+        Theme.chat_panel = mix_over(Theme.chat_panel, o.ai_panel)
+        Theme.chat_panel_user = mix_over(Theme.chat_panel_user, o.user_panel)
+    end
+end
+
+-- Chat theme color overrides: {surface, ai_panel, user_panel} hex strings.
+-- nil/absent keys inherit the palette; call after the style setters so
+-- every apply path funnels through _apply_chat_colors.
+function Theme.set_chat_color_overrides(overrides)
+    chat_color_overrides = overrides
+    Theme._apply_chat_colors()
 end
 
 function Theme.normalize_base_font_size(value)

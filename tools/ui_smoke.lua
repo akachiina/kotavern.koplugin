@@ -2738,10 +2738,12 @@ do
     local tall = math.max(96, (w96.page_count or 1) * 96)
     local wtall = probe(tall)
     wtall:_render()
-    local tall_scan = KtHTML.scan_bottom(wtall.bb, 560)
+    local tall_scan = KtHTML.scan_bottom(wtall.bb, 560,
+        KtHTML.css_hex(Theme.chat_bg, "#ffffff"))
     local wtruth = probe(20000)
     wtruth:_render()
-    local truth_scan = KtHTML.scan_bottom(wtruth.bb, 560)
+    local truth_scan = KtHTML.scan_bottom(wtruth.bb, 560,
+        KtHTML.css_hex(Theme.chat_bg, "#ffffff"))
     ok(wtall.page_count == 1,
         "chat html: tall relayout fits on one page (tall=" .. tall
         .. " pages=" .. tostring(wtall.page_count) .. ")")
@@ -2883,7 +2885,8 @@ do
         KtHTML.chat_css(), Theme.scale(Theme.get_base_font_size()),
         false, nil, PLUGIN .. "/assets")
     truth_w:_render()
-    local truth_h = KtHTML.scan_bottom(truth_w.bb, lay and lay.text_w or 500)
+    local truth_h = KtHTML.scan_bottom(truth_w.bb, lay and lay.text_w or 500,
+        KtHTML.css_hex(Theme.chat_bg, "#ffffff"))
     ok(truth_h ~= nil and math.abs(measured_h - truth_h) <= 8,
         "chat html scroll: measured height matches the truth (measured="
         .. tostring(measured_h) .. " truth=" .. tostring(truth_h) .. ")")
@@ -3212,6 +3215,157 @@ do
             "chat html spoiler: revealed paint no longer paints the mask bar")
         dump(b3b, "chat_html_spoiler_open")
     end
+end
+
+-- Chat Theme engine (B0): schema, signatures, ST conversion round-trip,
+-- color compositing, built-ins and the migration bubble->chat themes.
+do
+    local ChatTheme = require("ktui/chat_theme")
+    -- normalize: junk in, schema out (ST import parity: unknown dropped).
+    local n = ChatTheme.normalize({
+        name = "  X  ", style = "weird", chat_width = 500, chat_height = 1,
+        line_spacing = 900, colors = { surface = "#ABC", text = "zzz" },
+        avatar_shape = "hexagon", show_avatars = false,
+    })
+    ok(n.style == "bubbles" and n.chat_width == 100 and n.chat_height == 40
+        and n.line_spacing == 130 and n.avatar_shape == "round",
+        "theme: normalize clamps enums and ranges")
+    ok(n.colors.surface == "#aabbcc" and n.colors.text == "",
+        "theme: short hex expands, invalid color drops to inherit")
+    ok(n.name == "  X  " and n.show_avatars == false,
+        "theme: name kept verbatim, booleans coerce")
+    -- sig: knob changes must change the signature (cache busting).
+    local base = ChatTheme.normalize({})
+    local s1 = ChatTheme.sig(base)
+    ok(ChatTheme.sig(ChatTheme.normalize({})) == s1,
+        "theme: sig is deterministic for identical themes")
+    ok(ChatTheme.sig(ChatTheme.normalize({ chat_width = 70 })) ~= s1,
+        "theme: sig changes when a knob changes")
+    ok(ChatTheme.sig(ChatTheme.normalize({ colors = { surface = "#101010" } })) ~= s1,
+        "theme: sig changes when a color changes")
+    -- color utilities
+    ok(ChatTheme.parse_color("rgba(0, 13, 57, 0.22)").r == 0,
+        "theme: rgba parses")
+    ok(ChatTheme.composite(ChatTheme.parse_color("rgba(0,0,0,0.5)"), "#ffffff")
+        == "#808080",
+        "theme: alpha composites over the base (50% black over white)")
+    ok((ChatTheme.luminance("#101010") or 1) < 0.5,
+        "theme: luminance detects dark colors")
+    -- ST conversion round-trip: every built-in must import + map + export.
+    local builtins = ChatTheme.BUILTINS()
+    ok(#builtins == 5, "theme: all five ST presets load (" .. #builtins .. ")")
+    local azure = ChatTheme.from_st(require("json").decode(
+        [[{"name":"Azure","blur_tint_color":"rgba(23, 30, 33, 0.61)","chat_tint_color":"rgba(23, 23, 23, 0)","user_mes_blur_tint_color":"rgba(0, 28, 174, 0.2)","bot_mes_blur_tint_color":"rgba(0, 13, 57, 0.22)","chat_display":1,"avatar_style":1,"chat_width":50,"waifuMode":false,"timestamps_enabled":true,"mesIDDisplay_enabled":true,"timer_enabled":true}]]))
+    ok(azure ~= nil and azure.style == "bubbles" and azure.avatar_shape == "rect",
+        "theme: ST chat_display/avatar_style map")
+    ok(azure.chat_width == 50 and azure.show_timestamps
+        and azure.show_msg_ids and azure.show_gen_timer,
+        "theme: ST knobs map (width/timestamps/mesID/timer)")
+    ok(azure.colors.surface ~= "" and azure.colors.user_panel ~= "",
+        "theme: ST rgba tints composite to hex")
+    local st_out = ChatTheme.to_st(azure)
+    ok(st_out.chat_display == 1 and st_out.avatar_style == 1
+        and st_out.name == "Azure" and st_out.waifuMode == false,
+        "theme: export maps back to the ST shape")
+    local vn = ChatTheme.from_st(require("json").decode(
+        [[{"name":"VN test","chat_display":1,"waifuMode":true}]]))
+    ok(vn and vn.chat_height == 40,
+        "theme: ST waifuMode imports as the chat_height 40 fraction")
+    ok(ChatTheme.to_st(ChatTheme.normalize({ chat_height = 40 })).waifuMode == true,
+        "theme: chat_height < 100 exports as waifuMode")
+    ok(ChatTheme.from_st({ no_name = true }) == nil,
+        "theme: ST import requires a name (ST parity)")
+    -- Dark theme import: surface must be dark, panels composited over it.
+    local dark = ChatTheme.from_st(require("json").decode(
+        [[{"name":"Dark","blur_tint_color":"rgba(23, 23, 23, 1)","chat_tint_color":"rgba(23, 23, 23, 1)","user_mes_blur_tint_color":"rgba(30, 30, 30, 0.9)","bot_mes_blur_tint_color":"rgba(30, 30, 30, 0.9)","main_text_color":"rgba(220, 220, 210, 1)"}]]))
+    ok(dark and (ChatTheme.luminance(dark.colors.surface) or 1) < 0.3,
+        "theme: dark ST theme composites to a dark surface")
+    -- Migration: bubble theme entries become full chat themes.
+    local Storage = require("kt_storage")
+    -- (fake_app data_dir points at /tmp; the store migrates on first read)
+    local themes = Storage.list_chat_themes()
+    ok(type(themes) == "table", "theme: chat theme store loads/migrates")
+end
+
+-- Chat Theme render: a dark theme must flip the doc colors (the "room"
+-- semantic - dark chat inside a light app) and scan_bottom must handle it.
+do
+    local ChatTheme = require("ktui/chat_theme")
+    local app_d = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria", send_date = os.time(),
+              content = "Dark room body text with *emphasis* in it." },
+        } })
+    app_d.state.chat_theme_applied = ChatTheme.normalize({
+        name = "Dark test",
+        colors = { surface = "#111111", text = "#eeeeee",
+            ai_panel = "#222222", user_panel = "#333333" },
+    })
+    local view_d = { app = app_d, hitboxes = {}, refresh = function() end }
+    local bb_d = new_bb()
+    local okp_d = pcall(function()
+        Pages.chat(view_d, bb_d, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_d, "theme render: dark chat theme paints without crashing")
+    -- The doc bitmap's background must be DARK, not the light palette.
+    local found_d = nil
+    for _dk, l in pairs(view_d._chat_layout_cache or {}) do
+        if type(l) == "table" and l.entries then
+            for _de, e in ipairs(l.entries) do
+                if e.kind == "html" and e.widget and e.widget.bb then
+                    found_d = e.widget
+                end
+            end
+        end
+    end
+    ok(found_d ~= nil, "theme render: dark theme produced an html doc")
+    if found_d then
+        local dark_px, light_px = 0, 0
+        for yy = 0, found_d.bb:getHeight() - 1, 7 do
+            for xx = 0, found_d.bb:getWidth() - 1, 7 do
+                local okp, px = pcall(function() return found_d.bb:getPixel(xx, yy) end)
+                if okp and px then
+                    if px:getR() < 60 then dark_px = dark_px + 1
+                    elseif px:getR() > 200 then light_px = light_px + 1 end
+                end
+            end
+        end
+        ok(dark_px > light_px,
+            "theme render: doc background is dark (" .. dark_px .. " dark vs "
+            .. light_px .. " light samples)")
+        -- scan_bottom with the theme bg must find the text bottom (not the
+        -- whole bitmap): height < bitmap height.
+        local h = require("ktui/kthtml").scan_bottom(found_d.bb,
+            found_d.bb:getWidth(), "#111111")
+        ok(h ~= nil and h < found_d.bb:getHeight(),
+            "theme render: scan_bottom trims against the theme bg (h="
+            .. tostring(h) .. "/" .. found_d.bb:getHeight() .. ")")
+    end
+    dump(bb_d, "theme_dark_chat")
+    -- chat_height: a 50% theme pins the band to the bottom; the composer
+    -- stays pinned and the top band shows the surface.
+    local app_v2 = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria", send_date = os.time(),
+              content = "body" },
+        } })
+    app_v2.state.chat_theme_applied = ChatTheme.normalize({ chat_height = 50 })
+    local view_v2 = { app = app_v2, hitboxes = {}, refresh = function() end }
+    local bb_v2 = new_bb()
+    local okp_v2 = pcall(function() Pages.chat(view_v2, bb_v2, 0, 0, VW, VH, 0) end)
+    ok(okp_v2, "theme height: 50% band paints without crashing")
+    -- The band is pinned to the BOTTOM: the first (and only) message must
+    -- start well below the page top (full-height would sit near y ~= gap).
+    local lay_y = nil
+    for _hk, l in pairs(view_v2._chat_layout_cache or {}) do
+        if type(l) == "table" and l.y and not l.is_system then lay_y = l.y end
+    end
+    ok(lay_y ~= nil and lay_y > 150,
+        "theme height: 50% band pushes the first message down (y="
+        .. tostring(lay_y) .. ")")
+    dump(bb_v2, "theme_height_50")
 end
 
 -- Chat HTML external link end to end: tapping an http(s) link opens the

@@ -481,6 +481,56 @@ function Storage.save_bubble_themes(themes)
     return write_json_file(data_dir() .. "/bubble_themes.json", themes)
 end
 
+-- === Chat themes (the full-appearance successors of bubble themes) ===
+-- One theme = the WHOLE chat look (style, geometry, text, colors, avatars,
+-- backdrop, custom CSS - ktui/chat_theme.lua owns the schema). Stored as
+-- {id, name, theme}; the first access migrates any legacy bubble_themes
+-- entries in (old file kept untouched for safety).
+function Storage.list_chat_themes()
+    local path = data_dir() .. "/chat_themes.json"
+    local themes = read_json_file(path)
+    if themes then return themes end
+    -- One-time migration: bubble themes -> full chat themes (new keys
+    -- stay unset = inherit). The old file survives for a rollback.
+    local old = read_json_file(data_dir() .. "/bubble_themes.json") or {}
+    local migrated = {}
+    local ChatTheme = require("ktui/chat_theme")
+    for mi = 1, #old do
+        local t = old[mi]
+        if type(t) == "table" then
+            local presets = {
+                none = { surface = "#ffffff", user = "#f0f0f0" },
+                paper = { surface = "#f2f2f2", user = "#e6e6e6" },
+                gray = { surface = "#e8e8e8", user = "#dbdbdb" },
+            }
+            local bg = presets[t.chat_bg] or presets.paper
+            local theme = ChatTheme.normalize({
+                name = t.name,
+                style = t.style,
+                bubble_radius = t.radius,
+                density = t.density,
+                colors = { surface = bg.surface, user_panel = bg.user },
+                show_avatars = t.show_avatars,
+                show_timestamps = t.show_timestamps,
+                show_tokens = t.show_tokens,
+            })
+            theme.name = t.name or theme.name
+            migrated[#migrated + 1] = {
+                id = t.id, name = t.name or "?", theme = theme,
+            }
+        end
+    end
+    if #migrated > 0 then
+        write_json_file(path, migrated)
+        return migrated
+    end
+    return {}
+end
+
+function Storage.save_chat_themes(themes)
+    return write_json_file(data_dir() .. "/chat_themes.json", themes)
+end
+
 -- === Personas ===
 function Storage.personas_images_dir()
     local dir = data_dir() .. "/personas"

@@ -1852,3 +1852,12 @@ msgstr "Tema não encontrado."
 
 msgid "Theme CSS"
 msgstr "CSS de tema"
+
+msgid "Built-in themes (SillyTavern presets)"
+msgstr "Temas embutidos (presets do SillyTavern)"
+
+msgid "Document"
+msgstr "Documento"
+
+msgid "Rectangular"
+msgstr "Retangular"

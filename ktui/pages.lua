@@ -641,15 +641,18 @@ end
 function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
     local app = view.app
     local Storage = require("kt_storage")
-    local themes = Storage.list_bubble_themes() or {}
+    local ChatTheme = require("ktui/chat_theme")
+    local themes = Storage.list_chat_themes() or {}
     local in_chat = (app.state.current_chat_path ~= nil)
     local default_id = app.state.settings.bubble_theme_id or ""
 
     local style_labels = {
-        bubbles = _("Bubbles (ST)"), flat = _("Flat"),
-        st = _("SillyTavern"), rounded = _("Rounded"), square = _("Square"),
+        bubbles = _("Bubbles (ST)"), flat = _("Flat"), document = _("Document"),
     }
-    local paper_label, gray_label, none_label = _( "Paper"), _("Light gray"), _("None")
+    local shape_labels = {
+        round = _("Round"), rounded = _("Rounded"),
+        square = _("Square"), rect = _("Rectangular"),
+    }
     local rows = {
         { section = true, text = _("Create") },
         { text = _("Save current look as theme"), icon = "plus",
@@ -668,11 +671,14 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
               for _, t in ipairs(themes) do
                   if t.id == default_id then return t.name end
               end
+              for _, b in ipairs(ChatTheme.BUILTINS()) do
+                  if b.id == default_id then return b.name end
+              end
               return _("None (settings)")
           end,
           callback = function() app:choose_default_bubble_theme() end },
     }
-    if #themes > 0 then
+    do
         local saved_label = _("Saved themes")
         local default_tag = _("Default")
         local apply_label = _("Apply to this chat")
@@ -684,68 +690,109 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
         local unset_default_label = _("Unset default")
         local theme_name_label = _("Theme name")
         local save_label = _("Save")
-        table.insert(rows, { section = true, text = saved_label })
-        for _, t in ipairs(themes) do
-            local theme = t
-            local summary = (style_labels[theme.style] or theme.style or "?")
-                .. " · " .. ((theme.chat_bg == "gray" and gray_label)
-                    or (theme.chat_bg == "none" and none_label) or paper_label)
-            local is_default = (theme.id == default_id)
+        local builtins_label = _("Built-in themes (SillyTavern presets)")
+        table.insert(rows, { section = true, text = builtins_label })
+        for _, b in ipairs(ChatTheme.BUILTINS()) do
+            local builtin = b
             table.insert(rows, {
-                text = theme.name or "?",
-                subtext = summary,
-                value = is_default and (function() return default_tag end) or nil,
+                text = builtin.name,
+                subtext = (style_labels[builtin.theme.style] or builtin.theme.style),
+                value = (builtin.id == default_id) and (function() return default_tag end) or nil,
                 callback = function()
                     local Sheets = require("ktui/sheets")
                     local self_ref = app
-                    local actions = {}
+                    local actions = {
+                        { label = set_default_label, icon = "star",
+                          on_tap = function()
+                              self_ref:save_setting("bubble_theme_id", builtin.id)
+                              self_ref:refresh_bubble_theme()
+                              self_ref:refresh(true)
+                          end },
+                        { label = duplicate_label, icon = "copy",
+                          on_tap = function()
+                              self_ref:duplicate_bubble_theme(builtin.id)
+                          end },
+                        { label = export_label, icon = "upload",
+                          on_tap = function()
+                              self_ref:export_bubble_theme(builtin.id)
+                          end },
+                    }
                     if in_chat then
-                        table.insert(actions, {
+                        table.insert(actions, 1, {
                             label = apply_label, icon = "check",
                             on_tap = function()
-                                self_ref:set_chat_bubble_theme(theme.id)
+                                self_ref:set_chat_bubble_theme(builtin.id)
                             end })
                     end
-                    table.insert(actions, {
-                        label = is_default and unset_default_label or set_default_label,
-                        icon = "star",
-                        on_tap = function()
-                            self_ref:save_setting("bubble_theme_id",
-                                is_default and "" or theme.id)
-                            self_ref:refresh_bubble_theme()
-                            self_ref:refresh(true)
-                        end })
-                    table.insert(actions, {
-                        label = rename_label, icon = "edit",
-                        on_tap = function()
-                            local Modals = require("ktui/modals")
-                            Modals.input(theme_name_label, theme.name or "",
-                                theme_name_label, save_label, function(text)
-                                    self_ref:rename_bubble_theme(theme.id, text)
-                                end)
-                        end })
-                    table.insert(actions, {
-                        label = duplicate_label, icon = "copy",
-                        on_tap = function()
-                            self_ref:duplicate_bubble_theme(theme.id)
-                        end })
-                    table.insert(actions, {
-                        label = export_label, icon = "upload",
-                        on_tap = function()
-                            self_ref:export_bubble_theme(theme.id)
-                        end })
-                    table.insert(actions, {
-                        label = delete_label, icon = "trash", danger = true,
-                        on_tap = function()
-                            self_ref:delete_bubble_theme(theme.id)
-                        end })
-                    Sheets.show(app, { title = theme.name or theme_name_label, actions = actions })
+                    Sheets.show(app, { title = builtin.name, actions = actions })
                 end,
             })
+        end
+        if #themes > 0 then
+            table.insert(rows, { section = true, text = saved_label })
+            for _, t in ipairs(themes) do
+                local entry = t
+                local th = ChatTheme.normalize(entry.theme)
+                local summary = (style_labels[th.style] or th.style)
+                    .. " · " .. (shape_labels[th.avatar_shape] or th.avatar_shape)
+                local is_default = (entry.id == default_id)
+                table.insert(rows, {
+                    text = entry.name or "?",
+                    subtext = summary,
+                    value = is_default and (function() return default_tag end) or nil,
+                    callback = function()
+                        local Sheets = require("ktui/sheets")
+                        local self_ref = app
+                        local actions = {}
+                        if in_chat then
+                            table.insert(actions, {
+                                label = apply_label, icon = "check",
+                                on_tap = function()
+                                    self_ref:set_chat_bubble_theme(entry.id)
+                                end })
+                        end
+                        table.insert(actions, {
+                            label = is_default and unset_default_label or set_default_label,
+                            icon = "star",
+                            on_tap = function()
+                                self_ref:save_setting("bubble_theme_id",
+                                    is_default and "" or entry.id)
+                                self_ref:refresh_bubble_theme()
+                                self_ref:refresh(true)
+                            end })
+                        table.insert(actions, {
+                            label = rename_label, icon = "edit",
+                            on_tap = function()
+                                local Modals = require("ktui/modals")
+                                Modals.input(theme_name_label, entry.name or "",
+                                    theme_name_label, save_label, function(text)
+                                        self_ref:rename_bubble_theme(entry.id, text)
+                                    end)
+                            end })
+                        table.insert(actions, {
+                            label = duplicate_label, icon = "copy",
+                            on_tap = function()
+                                self_ref:duplicate_bubble_theme(entry.id)
+                            end })
+                        table.insert(actions, {
+                            label = export_label, icon = "upload",
+                            on_tap = function()
+                                self_ref:export_bubble_theme(entry.id)
+                            end })
+                        table.insert(actions, {
+                            label = delete_label, icon = "trash", danger = true,
+                            on_tap = function()
+                                self_ref:delete_bubble_theme(entry.id)
+                            end })
+                        Sheets.show(app, { title = entry.name or theme_name_label, actions = actions })
+                    end,
+                })
+            end
         end
     end
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
+
 
 -- Dashboard customization: grid layout, card height, what to show on the
 -- cards and the caption band style.
@@ -3011,6 +3058,18 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     local action_bar_h = rects.composer.h
     local content_h = rects.messages.h
     local action_y = rects.composer.y
+    -- ST waifuMode parity, the configurable fraction ST never exposed:
+    -- chat_height (40..100) pins the message band to the BOTTOM of the
+    -- page; above it the backdrop/surface shows through. 100 = full page.
+    local theme_h = view.app.state.chat_theme_applied
+        and view.app.state.chat_theme_applied.chat_height or nil
+    local height_pct = tonumber(theme_h) or 100
+    if height_pct < 100 then
+        local full_band = content_h
+        content_h = math.max(math.floor(full_band * height_pct / 100), Theme.scale(80))
+        rects.messages.y = rects.messages.y + (full_band - content_h)
+        rects.messages.h = content_h
+    end
     local pad = Theme.scale(10)
     -- Swipe step (a few text lines - zenpm row parity).
     local ChatBubblesHead = require("ktui/chat_bubbles")
@@ -3024,8 +3083,9 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     -- makes the bar win every tap at the bottom edge.
     local max_scroll = 0
     if #messages == 0 then
+        local band_y = rects.messages.y
         if state.chat_first_mes and state.chat_first_mes ~= "" then
-            local preview_y = y + Theme.scale(12)
+            local preview_y = band_y + Theme.scale(12)
             local bubble_w = math.min(math.floor(w * 0.85), w - pad * 4)
             P.box(bb, x + pad, preview_y, bubble_w, Theme.scale(60), {
                 border_color = Theme.soft, radius = Theme.scale(6), background = Theme.panel,
@@ -3036,18 +3096,22 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
                         bubble_w - Theme.scale(20), Theme.scale(32), "default")
         else
             Widgets.empty_state(view, bb, {
-                x = x, y = y, w = w, h = content_h,
+                x = x, y = band_y, w = w, h = content_h,
                 icon = "chat",
                 text = _("Starting a new conversation. Tap Write to send a message!"),
             })
         end
-        Scroll.set_list_bounds(view, x, y, w, content_h, content_h)
+        Scroll.set_list_bounds(view, x, band_y, w, content_h, content_h)
     else
         local ChatBubbles = require("ktui/chat_bubbles")
         local user_name = view.app._active_persona_name and view.app:_active_persona_name() or "You"
         local char_image = (state.current_character_data and state.current_character_data.png_path)
             or state.current_character_file
-        local total_h = ChatBubbles.draw(view, bb, x, y, w, content_h, scroll, messages, char_name, is_generating, user_name, char_image, state.thinking_frame)
+        -- The band bounds (chat_height may have pinned the band to the
+        -- bottom): draw paints INSIDE them, scroll included.
+        local total_h = ChatBubbles.draw(view, bb, x, rects.messages.y, w,
+            content_h, scroll, messages, char_name, is_generating, user_name,
+            char_image, state.thinking_frame)
 
         -- Snap the scrollbar to whole lines so it never sits between rows
         Scroll.set_list_bounds(view, x, y, w, content_h, ChatBubbles.line_step())
