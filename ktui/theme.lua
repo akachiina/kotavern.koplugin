@@ -119,8 +119,7 @@ end
 
 function Theme.set_bubble_style(value)
     if value == "st" or value == "flat"
-        or value == "square" or value == "none" or value == "bubbles"
-        or value == "document" then
+        or value == "square" or value == "none" or value == "bubbles" then
         bubble_style = value
     else
         bubble_style = "bubbles"
@@ -167,16 +166,27 @@ function Theme._apply_chat_colors()
     Theme.chat_bg = s.bg
     Theme.chat_panel = s.panel
     Theme.chat_panel_user = s.panel_user
+    -- Chat text ink: defaults to the palette, overridden by a chat theme
+    -- (the names/hours/reasoning labels are painted INSIDE themed panels -
+    -- black palette ink on a dark theme was unreadable, the print reports).
+    Theme.chat_ink = Theme.ink
+    Theme.chat_muted = Theme.muted
+    -- Chat page chrome (header band + composer + footer): nil = the app
+    -- palette paints it; a theme that owns the ink repaints the whole chat
+    -- page in its own colors (the "chat is a room" semantic - white chrome
+    -- around a dark chat read as broken, per the print reports).
+    Theme.chat_chrome = nil
     -- A chat theme may OWN the chat colors (set keys override; unset keys
     -- keep the palette values above). Hex strings -> Blitbuffer colors.
     if chat_color_overrides then
         local function hex_to_bb(hex)
             if not hex or hex == "" then return nil end
-            local r = tonumber(hex:sub(2, 3), 16)
-            local g = tonumber(hex:sub(4, 5), 16)
-            local b = tonumber(hex:sub(6, 7), 16)
-            if not r or not g or not b then return nil end
-            return Blitbuffer.ColorRGB8(r, g, b)
+            -- This build has NO Blitbuffer.ColorRGB8 (the name boot-looped
+            -- the plugin); colorFromString is the sanctioned converter
+            -- (ColorRGB32 under the hood) and paints on every buffer type.
+            local okc, c = pcall(Blitbuffer.colorFromString, hex)
+            if okc and c then return c end
+            return nil
         end
         local function mix_over(base_hex, hex)
             -- Themes are e-ink first: a panel tint must never kill text
@@ -188,6 +198,32 @@ function Theme._apply_chat_colors()
         Theme.chat_bg = mix_over(Theme.chat_bg, o.surface)
         Theme.chat_panel = mix_over(Theme.chat_panel, o.ai_panel)
         Theme.chat_panel_user = mix_over(Theme.chat_panel_user, o.user_panel)
+        local ink_bb = hex_to_bb(o.text)
+        if ink_bb then
+            Theme.chat_ink = ink_bb
+            -- Secondary chat text (hours, tokens, "Reasoning"): the theme
+            -- ink washed 45% toward the surface keeps the hierarchy on
+            -- any palette (ChatTheme.composite is pure Lua math).
+            local ChatTheme = require("ktui/chat_theme")
+            local surf_hex = o.surface
+            if not surf_hex or surf_hex == "" then
+                surf_hex = require("ktui/kthtml").css_hex(Theme.chat_bg, "#ffffff")
+            end
+            local okm2, washed = pcall(function()
+                -- 55% theme ink over the surface = the muted secondary.
+                local ink_c = ChatTheme.parse_color(o.text)
+                if not ink_c then return nil end
+                ink_c.a = 0.55
+                return ChatTheme.composite(ink_c, surf_hex)
+            end)
+            local muted_bb = okm2 and hex_to_bb(washed) or nil
+            if muted_bb then Theme.chat_muted = muted_bb end
+            Theme.chat_chrome = {
+                bg = Theme.chat_bg,
+                ink = Theme.chat_ink,
+                muted = Theme.chat_muted,
+            }
+        end
     end
 end
 

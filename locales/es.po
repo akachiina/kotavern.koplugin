@@ -1835,9 +1835,6 @@ msgstr "CSS añadido a la hoja de estilo del chat (custom_css de ST)"
 msgid "e.g. p { margin: 0 0 4px 0; }"
 msgstr "p. ej. p { margin: 0 0 4px 0; }"
 
-msgid "Character card art behind the messages (ST wallpaper)"
-msgstr "Arte de la tarjeta detrás de los mensajes (fondo de pantalla de ST)"
-
 msgid "Export theme"
 msgstr "Exportar tema"
 
@@ -1856,9 +1853,6 @@ msgstr "CSS de tema"
 msgid "Built-in themes (SillyTavern presets)"
 msgstr "Temas integrados (preajustes de SillyTavern)"
 
-msgid "Document"
-msgstr "Documento"
-
 msgid "Rectangular"
 msgstr "Rectangular"
 
@@ -1867,21 +1861,6 @@ msgstr "Tema del chat"
 
 msgid "Tap: global default · in a chat, Manage to apply per chat"
 msgstr "Toque: predeterminado global · en un chat, Gestionar aplica solo a él"
-
-msgid "Chat height"
-msgstr "Altura del chat"
-
-msgid "Full page"
-msgstr "Página completa"
-
-msgid "70%"
-msgstr "70%"
-
-msgid "55%"
-msgstr "55%"
-
-msgid "VN (40%)"
-msgstr "VN (40%)"
 
 msgid "Bubble radius"
 msgstr "Radio de las burbujas"
@@ -1925,9 +1904,6 @@ msgstr "Tiempo de generación"
 msgid "Advanced"
 msgstr "Avanzado"
 
-msgid "Chat wallpaper"
-msgstr "Fondo de pantalla del chat"
-
 msgid "Invalid color"
 msgstr "Color no válido"
 
@@ -1958,32 +1934,26 @@ msgstr "No se pudo copiar el archivo de fuente."
 msgid "Font installed"
 msgstr "Fuente instalada"
 
-msgid "Backdrop"
-msgstr "Fondo"
+msgid "Default for every chat"
+msgstr "Predeterminado para todos los chats"
 
-msgid "Card art"
-msgstr "Arte de la tarjeta"
+msgid "This chat"
+msgstr "Este chat"
 
-msgid "Image file"
-msgstr "Archivo de imagen"
+msgid "Overrides the default for this conversation only"
+msgstr "Anula el predeterminado solo en esta conversación"
 
-msgid "Backdrop dimming"
-msgstr "Aclarado del fondo"
+msgid "Follows the default"
+msgstr "Sigue el predeterminado"
 
-msgid "Subtle (20%)"
-msgstr "Sutil (20%)"
+msgid "Default look"
+msgstr "Aspecto predeterminado"
 
-msgid "Light (40%)"
-msgstr "Suave (40%)"
+msgid "Bubbles"
+msgstr "Burbujas"
 
-msgid "Medium (60%)"
-msgstr "Medio (60%)"
+msgid "(copy)"
+msgstr "(copia)"
 
-msgid "Strong (80%)"
-msgstr "Fuerte (80%)"
-
-msgid "Backdrop image…"
-msgstr "Imagen de fondo…"
-
-msgid "Pick the image file used when Backdrop is Image file"
-msgstr "Elige la imagen usada cuando el fondo sea Archivo de imagen"
+msgid "Follow the default"
+msgstr "Seguir el predeterminado"

@@ -41,12 +41,8 @@ ChatTheme.DEFAULTS = {
     format = "kotavern-chat-theme",
     version = 1,
     name = "",
-    style = "bubbles",        -- bubbles | flat | document (ST chat_display)
+    style = "bubbles",        -- bubbles | flat (ST chat_display; document retired)
     chat_width = 100,         -- 25..100 % of the content area (ST chat_width)
-    chat_height = 100,        -- 40..100 % of the page; <100 pins the chat
-                              -- to the bottom and the backdrop shows above
-                              -- (ST waifuMode is exactly its 40vh variant;
-                              -- the FRACTION is ours - ST hardcodes 40)
     bubble_radius = "normal", -- small | normal | large (KOTavern knob)
     density = "normal",       -- compact | normal | spacious (chrome spacing)
     font_file = "",           -- "" = system default; absolute path otherwise
@@ -70,13 +66,10 @@ ChatTheme.DEFAULTS = {
     show_msg_ids = false,     -- ST mesIDDisplay_enabled
     show_gen_timer = false,   -- ST timer_enabled (generation duration)
     show_inline_images = true,
-    backdrop_mode = "off",    -- off | card | image
-    backdrop_image = "",      -- absolute path when mode == "image"
-    backdrop_dim = 60,        -- 0..100 % mixed toward the surface
     custom_css = "",          -- appended last to the chat stylesheet
 }
 
-local STYLES = { bubbles = true, flat = true, document = true }
+local STYLES = { bubbles = true, flat = true }
 local RADII = { small = true, normal = true, large = true }
 local DENSITIES = { compact = true, normal = true, spacious = true }
 local SHAPES = { round = true, rounded = true, square = true, rect = true }
@@ -175,9 +168,11 @@ function ChatTheme.normalize(raw)
         out[k] = v
     end
     out.name = tostring(raw.name or ""):sub(1, 64)
-    out.style = clamp01_enum(raw.style, STYLES, "bubbles")
+    -- Retired style: saved "document" themes land on flat (the geometry
+    -- document actually painted), not on the enum default bubbles.
+    out.style = (raw.style == "document") and "flat"
+        or clamp01_enum(raw.style, STYLES, "bubbles")
     out.chat_width = math.floor(clamp_num(raw.chat_width, 25, 100, 100))
-    out.chat_height = math.floor(clamp_num(raw.chat_height, 40, 100, 100))
     out.bubble_radius = clamp01_enum(raw.bubble_radius, RADII, "normal")
     out.density = clamp01_enum(raw.density, DENSITIES, "normal")
     out.font_file = (type(raw.font_file) == "string" and raw.font_file) or ""
@@ -198,10 +193,6 @@ function ChatTheme.normalize(raw)
     out.show_msg_ids = raw.show_msg_ids == true
     out.show_gen_timer = raw.show_gen_timer == true
     out.show_inline_images = raw.show_inline_images ~= false
-    local bm = raw.backdrop_mode
-    out.backdrop_mode = (bm == "card" or bm == "image") and bm or "off"
-    out.backdrop_image = (type(raw.backdrop_image) == "string" and raw.backdrop_image) or ""
-    out.backdrop_dim = math.floor(clamp_num(raw.backdrop_dim, 0, 100, 60))
     out.custom_css = (type(raw.custom_css) == "string" and raw.custom_css) or ""
     return out
 end
@@ -219,7 +210,6 @@ function ChatTheme.sig(theme)
     end
     put("style", t.style)
     put("w", t.chat_width)
-    put("h", t.chat_height)
     put("rad", t.bubble_radius)
     put("den", t.density)
     put("font", t.font_file)
@@ -238,9 +228,6 @@ function ChatTheme.sig(theme)
     put("mid", t.show_msg_ids)
     put("gen", t.show_gen_timer)
     put("img", t.show_inline_images)
-    put("bg", t.backdrop_mode)
-    put("bgimg", t.backdrop_image)
-    put("dim", t.backdrop_dim)
     -- custom_css can be long; the render sig only needs to distinguish
     -- content, so a cheap fingerprint (len + head + tail) is enough.
     local cc = t.custom_css
@@ -250,9 +237,12 @@ end
 
 -- ====================================================== ST conversion ===
 
--- ST chat_display -> our style. ST: 0 DEFAULT(flat), 1 BUBBLES, 2 DOCUMENT.
-local ST_DISPLAY = { [0] = "flat", [1] = "bubbles", [2] = "document" }
-local KT_DISPLAY = { flat = 0, bubbles = 1, document = 2 }
+-- ST chat_display -> our style. ST: 0 DEFAULT(flat), 1 BUBBLES, 2 DOCUMENT
+-- (document retired: ST document imports as flat - the same geometry,
+-- chrome on; a "book mode" without the chat affordances did not read well
+-- on e-ink per the author).
+local ST_DISPLAY = { [0] = "flat", [1] = "bubbles", [2] = "flat" }
+local KT_DISPLAY = { flat = 0, bubbles = 1 }
 -- ST avatar_styles: 0 ROUND, 1 RECTANGULAR, 2 SQUARE, 3 ROUNDED.
 local ST_AVATAR = { [0] = "round", [1] = "rect", [2] = "square", [3] = "rounded" }
 local KT_AVATAR = { round = 0, rect = 1, square = 2, rounded = 3 }
@@ -289,8 +279,11 @@ function ChatTheme.from_st(st)
     local raw = {
         name = name,
         style = ST_DISPLAY[math.floor(tonumber(st.chat_display) or 0)] or "flat",
-        chat_width = tonumber(st.chat_width) or 50,
-        chat_height = (st.waifuMode == true) and 40 or 100,
+        -- e-ink legibility floor: ST defaults to 50vw chat windows, which
+        -- reads as wasteful razor-thin bubbles on a reader (print report);
+        -- imports land at >= 70 (the theme still carries the real value for
+        -- the export round-trip below).
+        chat_width = math.max(70, tonumber(st.chat_width) or 50),
         colors = {
             text = flat("main_text_color"),
             surface = surface_hex,
@@ -315,8 +308,7 @@ end
 
 -- Export to the ST theme shape: only the keys ST understands (ST applies
 -- present keys and skips absent ones, so a minimal export is fully valid
--- there). Our chat_height fraction cannot be expressed: waifuMode carries
--- the closest thing (its hardcoded 40vh) when chat_height < 100.
+-- there). waifuMode was retired with chat_height and is simply omitted.
 function ChatTheme.to_st(theme)
     local t = ChatTheme.normalize(theme)
     local function rgba(hex)
@@ -336,7 +328,6 @@ function ChatTheme.to_st(theme)
         chat_display = KT_DISPLAY[t.style] or 0,
         avatar_style = KT_AVATAR[t.avatar_shape] or 0,
         chat_width = t.chat_width,
-        waifuMode = t.chat_height < 100,
         font_scale = t.font_scale,
         timestamps_enabled = t.show_timestamps,
         message_token_count_enabled = t.show_tokens,
@@ -398,6 +389,11 @@ function ChatTheme.resolved(app)
         or { r = 128, g = 128, b = 128, a = 1 }
     colors.mask = ChatTheme.composite(
         { r = bcol.r, g = bcol.g, b = bcol.b, a = 0.55 }, toward)
+    -- Fence/code text sits ON the mask band: hard luminance contrast
+    -- either way (the authored text color could match the band - the
+    -- "rosa claro sobre lilás" print report).
+    colors.mask_text = (ChatTheme.luminance(colors.mask) or 1) < 0.5
+        and "#f2f2f2" or "#161616"
     -- One signature for the whole render config: layout caches and HTML
     -- doc keys embed this so any knob change rebuilds.
     local sig = ChatTheme.sig(t)

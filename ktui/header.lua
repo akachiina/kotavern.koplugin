@@ -156,14 +156,14 @@ end
 
 -- Three ink dots, ZenPM-style: no glyph, no asset - plain circles on a 42px
 -- invisible hit square (dot 6, first row vertically centered in a 24 band).
-local function draw_kebab(view, bb, x, y, s)
+local function draw_kebab(view, bb, x, y, s, ink_color)
     local dot = Theme.scale(6)
     local cx = x + math.floor((s - dot) / 2)
     local first_y = y + math.floor((s - Theme.scale(24)) / 2)
     for i = 0, 2 do
         P.box(bb, cx, first_y + i * Theme.scale(9), dot, dot, {
             border = false,
-            background = Theme.ink,
+            background = ink_color or Theme.ink,
             radius = math.floor(dot / 2),
         })
     end
@@ -373,9 +373,16 @@ function Header.draw(view, bb, x, y, w)
     local state = view.app.state
     local page = state.page
 
-    -- Background
-    P.box(bb, x, y, w, h, { border = false, background = Theme.panel })
-    P.rect(bb, x, y + h - Theme.scale(1), w, Theme.scale(1), Theme.soft)
+    -- Background. Chat theme chrome: on the chat page a theme that owns
+    -- the ink repaints the header band in its own colors (white chrome
+    -- around a dark chat read as broken); every other page stays on the
+    -- app palette.
+    local chrome = (page == "chat") and Theme.chat_chrome or nil
+    local h_bg = (chrome and chrome.bg) or Theme.panel
+    local h_ink = (chrome and chrome.ink) or Theme.ink
+    local h_soft = (chrome and chrome.muted) or Theme.soft
+    P.box(bb, x, y, w, h, { border = false, background = h_bg })
+    P.rect(bb, x, y + h - Theme.scale(1), w, Theme.scale(1), h_soft)
 
     -- Right side: kebab dots only (the X/close button was removed; exiting
     -- is via kebab -> Quit). Registered after the title swallow below so it
@@ -393,19 +400,19 @@ function Header.draw(view, bb, x, y, w)
             P.center_text_box(bb, "K", x + pad, ly, logo_s, logo_s, "title", { bold = true })
         end
         title_x = x + pad + logo_s + Theme.scale(14)
-        P.vcenter_text(bb, page_title(view), title_x, y, math.max(0, kebab_x - Theme.scale(6) - title_x), h, "title", { bold = true })
+        P.vcenter_text(bb, page_title(view), title_x, y, math.max(0, kebab_x - Theme.scale(6) - title_x), h, "title", { bold = true, color = h_ink })
     else
         -- ZenPM back: dedicated 46px square, CENTERED in the titlebar band
         -- (not full-height), with a chevron SVG. No background box: the
         -- titlebar is already uniform, and a box here bleeds past edges.
         local back_s = Theme.scale(46)
         local by = y + math.floor((h - back_s) / 2)
-        Icons.center(bb, "chev-left", x + pad, by, back_s, back_s, Theme.scale(16), { color = Theme.ink })
+        Icons.center(bb, "chev-left", x + pad, by, back_s, back_s, Theme.scale(16), { color = h_ink })
         P.hit(view, x + pad, by, back_s, back_s, function() view.app:go_back() end, "back")
         title_x = x + pad + back_s + Theme.scale(6)
         local title_text = Widgets.sanitize(page_title(view))
         if title_text == "" then title_text = _("Untitled") end
-        P.vcenter_text(bb, title_text, title_x, y, math.max(0, kebab_x - Theme.scale(6) - title_x), h, "heading", { bold = true })
+        P.vcenter_text(bb, title_text, title_x, y, math.max(0, kebab_x - Theme.scale(6) - title_x), h, "heading", { bold = true, color = h_ink })
     end
 
     -- Title-zone swallow (see comment above).
@@ -416,7 +423,7 @@ function Header.draw(view, bb, x, y, w)
     -- Kebab (3 drawn dots). No background box: it sits directly on the
     -- uniform titlebar (a full-height box here ERASED the hairline - the
     -- white notch the user reported).
-    draw_kebab(view, bb, kebab_x, y + math.floor((h - kebab_s) / 2), kebab_s)
+    draw_kebab(view, bb, kebab_x, y + math.floor((h - kebab_s) / 2), kebab_s, h_ink)
 
     -- KOReader menu passthrough zone: the whole title bar.
     view.koreader_menu_zone = { x = x, y = y, w = w, h = h }

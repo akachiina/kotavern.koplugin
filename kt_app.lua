@@ -38,7 +38,6 @@ local SETTINGS_DEFAULTS = {
     chat_font_file = "",       -- custom chat text font: installed font FILE path (empty = system)
     chat_font_size = 0,        -- custom chat text size (0 = follow base_font_size)
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
-    chat_wallpaper = false,    -- character card art behind the chat messages (ST wallpaper)
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
@@ -4080,6 +4079,7 @@ function App:apply_bubble_theme(theme)
         surface = theme.colors.surface,
         ai_panel = theme.colors.ai_panel,
         user_panel = theme.colors.user_panel,
+        text = theme.colors.text,
     })
     -- Canvas chat font: theme keys win when set, settings otherwise.
     Theme.set_chat_font(
@@ -4106,7 +4106,7 @@ function App:choose_chat_bubble_theme()
     local self_ref = self
     local current = self.state.current_chat_bubble_theme_id
     local actions = {
-        { label = _("Default (settings)"), checked = current == nil or current == "",
+        { label = _("Follow the default"), checked = current == nil or current == "",
           on_tap = function()
               self_ref:set_chat_bubble_theme("")
           end },
@@ -4129,7 +4129,7 @@ function App:choose_chat_bubble_theme()
         label = _("Manage themes…"), icon = "sliders",
         on_tap = function() self_ref:navigate("settings_appearance_chat") end,
     })
-    Sheets.show(self, { title = _("Bubble theme"), actions = actions })
+    Sheets.show(self, { title = _("Chat theme") .. " · " .. _("This chat"), actions = actions })
 end
 
 function App:set_chat_bubble_theme(theme_id)
@@ -4197,7 +4197,7 @@ function App:duplicate_bubble_theme(id)
     local theme = self:find_chat_theme(id)
     if not theme then return end
     local _ = require("gettext")
-    local copy_label = _("copy")
+    local copy_label = _("(copy)")
     local themes = Storage.list_chat_themes() or {}
     local copy = ChatTheme.normalize(theme)
     copy.name = (theme.name or "?") .. " " .. copy_label
@@ -4307,7 +4307,7 @@ function App:choose_default_bubble_theme()
     local self_ref = self
     local current = self.state.settings.bubble_theme_id or ""
     local actions = {
-        { label = _("None (settings)"), checked = current == "",
+        { label = _("Default look"), checked = current == "",
           on_tap = function()
               self_ref:save_setting("bubble_theme_id", "")
               self_ref:refresh_bubble_theme()
@@ -4333,7 +4333,7 @@ function App:choose_default_bubble_theme()
             end,
         })
     end
-    Sheets.show(self, { title = _("Default bubble theme"), actions = actions })
+    Sheets.show(self, { title = _("Chat theme"), actions = actions })
 end
 
 -- === Theme editor (Appearance > Chat) ==================================

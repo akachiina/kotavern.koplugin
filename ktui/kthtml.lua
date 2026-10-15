@@ -176,17 +176,18 @@ function KtHTML.chat_css(resolved)
     -- text (same inline-block box, so masked/revealed geometry is identical).
     -- PROBE-VERIFIED additions:
     -- * @font-face src accepts an ABSOLUTE file path - the user's custom
-    --   chat font rides in as family 'KTUser' BEFORE 'KTSans' so
-    --   it shadows every KTSans face (KTSans stays listed for fallback).
+    --   chat font rides in as family 'KTUser' BEFORE 'KTMain' so
+    --   it shadows every merged face (KTMain stays listed for fallback).
     -- * body{font-size: Npx} IS honored and layers on top of the
     --   default_font_size layout parameter - chat_font_size support.
     -- * body{line-height: N} IS honored (probe: 1.2 vs 2.0 spreads rows);
     --   chat line_spacing maps to 1.2 * N/100 (100 = MuPDF's default).
-    -- * Emoji: the default chain renders NOTHING for emoji codepoints
-    --   (missing glyph, no tofu: ink 0, probe-verified). A bundled
-    --   MONOCHROME scalable emoji font (assets/emoji-noto.ttf, Noto Emoji)
-    --   as family 'KTEmoji' LAST in the chain fixes it. Color emoji fonts
-    --   (CBDT) CANNOT work: MuPDF/FreeType rejects bitmap-only strikes.
+    -- * Emoji: MuPDF does NO per-glyph fallback across the font-family
+    --   list (the KTEmoji-chain era was ALL tofu - "emoji ink" probe read
+    --   the tofu box outline; the U+E000 control exposed it). The fix is
+    --   assets/sans-x-*.ttf: NotoSans + NotoEmoji MERGED into one file
+    --   (tools/merge_emoji_font.py), so every glyph lives in the face
+    --   MuPDF picks. Probe: U+2705 ink 240 vs tofu-control 41.
     -- * rgba() is IGNORED (probe) - the theme engine composites alpha in
     --   Lua and only hex colors reach this stylesheet.
     -- custom CSS (ST custom_css parity) is appended LAST so author rules
@@ -205,6 +206,7 @@ function KtHTML.chat_css(resolved)
                 italics = KtHTML.css_hex(Theme.ink, "#000000"),
                 quote = KtHTML.css_hex(Theme.muted, "#999999"),
                 mask = KtHTML.css_hex(Theme.muted, "#999999"),
+                mask_text = "#161616",
             },
         }
     end
@@ -221,18 +223,17 @@ function KtHTML.chat_css(resolved)
     local lh_css = string.format("line-height: %.2f;", lh)
     local user_css = tostring(r.custom_css or "")
     return string.format([[
-%s@font-face { font-family: 'KTSans'; src: url('sans-regular.ttf'); }
-@font-face { font-family: 'KTSans'; font-weight: bold; src: url('sans-bold.ttf'); }
-@font-face { font-family: 'KTSans'; font-style: italic; src: url('sans-italic.ttf'); }
-@font-face { font-family: 'KTEmoji'; src: url('emoji-noto.ttf'); }
+%s@font-face { font-family: 'KTMain'; src: url('sans-x-regular.ttf'); }
+@font-face { font-family: 'KTMain'; font-weight: bold; src: url('sans-x-bold.ttf'); }
+@font-face { font-family: 'KTMain'; font-style: italic; src: url('sans-x-italic.ttf'); }
 @page { margin: 0; }
-body { margin: 0; padding: 0; %s %s background: %s; color: %s; font-family: 'KTUser', 'KTSans', 'KTEmoji', sans-serif; }
+body { margin: 0; padding: 0; %s %s background: %s; color: %s; font-family: 'KTUser', 'KTMain', sans-serif; }
 p { margin: 0; }
 b { font-weight: bold; }
 s { text-decoration: line-through; }
 i { font-style: italic; }
 .ktcode { font-family: monospace; }
-p.ktfence { background: %s; font-family: monospace; }
+p.ktfence { background: %s; color: %s; font-family: monospace; }
 .ktspl { display: inline-block; background: %s; color: %s !important; text-decoration: none !important; }
 .ktsplopen { background: %s; color: %s !important; }
 .ktq { color: %s; }
@@ -245,6 +246,7 @@ a { color: %s !important; text-decoration: underline; }
         c.surface,
         c.text,
         c.mask,
+        c.mask_text or "#161616",
         c.mask,
         c.mask,
         c.surface,

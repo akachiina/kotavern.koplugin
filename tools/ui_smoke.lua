@@ -3128,6 +3128,55 @@ do
     end
 end
 
+-- Chat HTML emoji, with the TOFU CONTROL the old probes lacked: MuPDF
+-- does NO per-glyph fallback across font-family lists, so the merged
+-- faces (sans-x-*.ttf = NotoSans + NotoEmoji in ONE cmap) are the only
+-- way emoji renders. A missing-glyph box (U+E000) and a real emoji must
+-- differ MASSIVELY in ink - the old "emoji ink appears" probe read the
+-- tofu outline as success for weeks.
+do
+    local Geom_e = require("ui/geometry")
+    local HtmlBoxWidget_e = require("ui/widget/htmlboxwidget")
+    local KtHTML_e = require("ktui/kthtml")
+    local ChatTheme_e = require("ktui/chat_theme")
+    local function emoji_ink(text)
+        local w = HtmlBoxWidget_e:new{ dimen = Geom_e:new{ w = 460, h = 120 } }
+        local okp = pcall(function()
+            w:setContent("<p>" .. text .. "</p>",
+                KtHTML_e.chat_css(ChatTheme_e.resolved({ state = { settings = {} } })),
+                Theme.scale(Theme.get_base_font_size()), false, nil, PLUGIN .. "/assets")
+        end)
+        if not okp then return nil end
+        w:_render()
+        local n = 0
+        for yy = 0, 119, 1 do
+            for xx = 0, 459, 2 do
+                local okp2, px = pcall(function() return w.bb:getPixel(xx, yy) end)
+                if okp2 and px and px:getR() < 200 then n = n + 1 end
+            end
+        end
+        pcall(function() w:free() end)
+        return n
+    end
+    local tofu = emoji_ink("\u{E000}")
+    local letter = emoji_ink("A")
+    ok(tofu ~= nil and letter ~= nil and math.abs(tofu - letter) < 60,
+        "emoji control: a missing glyph boxes at the letter scale (tofu="
+        .. tostring(tofu) .. " letter=" .. tostring(letter) .. ")")
+    local check = emoji_ink("\u{2705}")
+    ok(check ~= nil and check >= tofu * 3,
+        "emoji: U+2705 renders a REAL glyph (ink=" .. tostring(check)
+        .. " vs tofu " .. tostring(tofu) .. ")")
+    local joy = emoji_ink("\u{1F602}")
+    ok(joy ~= nil and joy >= tofu * 2,
+        "emoji: U+1F602 renders a REAL glyph (ink=" .. tostring(joy)
+        .. " vs tofu " .. tostring(tofu) .. ")")
+    -- Both emoji in one run with text: everything must draw (no blank line).
+    local both = emoji_ink("yes \u{2705} and \u{1F602}!")
+    ok(both ~= nil and both >= (check or 0) + (joy or 0) + 30,
+        "emoji: mixed run draws text + both glyphs (ink=" .. tostring(both) .. ")")
+end
+
 -- Chat HTML real italic: MuPDF must use the slanted face, not faux-bold -
 -- same word plain/<b>/<i> must all paint differently (like the uidsl
 -- island-italic probe, but through the chat pipeline).
@@ -3255,13 +3304,19 @@ do
     local ChatTheme = require("ktui/chat_theme")
     -- normalize: junk in, schema out (ST import parity: unknown dropped).
     local n = ChatTheme.normalize({
-        name = "  X  ", style = "weird", chat_width = 500, chat_height = 1,
+        name = "  X  ", style = "weird", chat_width = 500,
         line_spacing = 900, colors = { surface = "#ABC", text = "zzz" },
         avatar_shape = "hexagon", show_avatars = false,
     })
-    ok(n.style == "bubbles" and n.chat_width == 100 and n.chat_height == 40
+    ok(n.style == "bubbles" and n.chat_width == 100
         and n.line_spacing == 130 and n.avatar_shape == "round",
         "theme: normalize clamps enums and ranges")
+    -- Retired styles migrate, not default: a saved document theme lands on
+    -- flat (the geometry it painted); ST chat_display 2 imports as flat.
+    ok(ChatTheme.normalize({ style = "document" }).style == "flat",
+        "theme: saved document themes migrate to flat")
+    ok(ChatTheme.from_st({ name = "DocTest", chat_display = 2 }).style == "flat",
+        "theme: ST chat_display 2 (document) imports as flat")
     ok(n.colors.surface == "#aabbcc" and n.colors.text == "",
         "theme: short hex expands, invalid color drops to inherit")
     ok(n.name == "  X  " and n.show_avatars == false,
@@ -3290,21 +3345,15 @@ do
         [[{"name":"Azure","blur_tint_color":"rgba(23, 30, 33, 0.61)","chat_tint_color":"rgba(23, 23, 23, 0)","user_mes_blur_tint_color":"rgba(0, 28, 174, 0.2)","bot_mes_blur_tint_color":"rgba(0, 13, 57, 0.22)","chat_display":1,"avatar_style":1,"chat_width":50,"waifuMode":false,"timestamps_enabled":true,"mesIDDisplay_enabled":true,"timer_enabled":true}]]))
     ok(azure ~= nil and azure.style == "bubbles" and azure.avatar_shape == "rect",
         "theme: ST chat_display/avatar_style map")
-    ok(azure.chat_width == 50 and azure.show_timestamps
+    ok(azure.chat_width == 70 and azure.show_timestamps
         and azure.show_msg_ids and azure.show_gen_timer,
-        "theme: ST knobs map (width/timestamps/mesID/timer)")
+        "theme: ST knobs map (width floor 70/timestamps/mesID/timer)")
     ok(azure.colors.surface ~= "" and azure.colors.user_panel ~= "",
         "theme: ST rgba tints composite to hex")
     local st_out = ChatTheme.to_st(azure)
     ok(st_out.chat_display == 1 and st_out.avatar_style == 1
-        and st_out.name == "Azure" and st_out.waifuMode == false,
-        "theme: export maps back to the ST shape")
-    local vn = ChatTheme.from_st(require("json").decode(
-        [[{"name":"VN test","chat_display":1,"waifuMode":true}]]))
-    ok(vn and vn.chat_height == 40,
-        "theme: ST waifuMode imports as the chat_height 40 fraction")
-    ok(ChatTheme.to_st(ChatTheme.normalize({ chat_height = 40 })).waifuMode == true,
-        "theme: chat_height < 100 exports as waifuMode")
+        and st_out.name == "Azure" and st_out.waifuMode == nil,
+        "theme: export maps back to the ST shape (waifuMode omitted)")
     ok(ChatTheme.from_st({ no_name = true }) == nil,
         "theme: ST import requires a name (ST parity)")
     -- Dark theme import: surface must be dark, panels composited over it.
@@ -3319,10 +3368,45 @@ do
     ok(type(themes) == "table", "theme: chat theme store loads/migrates")
 end
 
--- Theme editor page (B1): the Appearance>Chat page paints a LIVE preview
--- (real chat pipeline, sample messages) above the editor rows; a dark
--- theme must show in the preview band, and the page must not leak the
--- preview's hitboxes into the page view.
+-- Theme color overrides: the EXACT boot path that shipped a crash (the
+-- first cut used a Blitbuffer.ColorRGB8 constructor that does not exist
+-- in the runtime - apply_bubble_theme -> set_chat_color_overrides died on
+-- every launch with a theme carrying colors). Guards the whole frame.
+do
+    local Theme_c = require("ktui/theme")
+    local surface_before = Theme_c.chat_bg
+    local okp_c = pcall(function()
+        Theme_c.set_chat_color_overrides({
+            surface = "#101010", ai_panel = "#181818", user_panel = "#202020",
+        })
+    end)
+    ok(okp_c, "theme overrides: set_chat_color_overrides does not crash "
+        .. "(the ColorRGB8 boot-loop regression)")
+    local s_ok, s_r = pcall(function() return Theme_c.chat_bg:getR() end)
+    ok(okp_c and s_ok and s_r < 60,
+        "theme overrides: surface override applies (r=" .. tostring(s_r) .. ")")
+    local p_ok, p_r = pcall(function() return Theme_c.chat_panel:getR() end)
+    ok(p_ok and p_r < 60, "theme overrides: panel override applies (r="
+        .. tostring(p_r) .. ")")
+    -- Clearing restores the palette values.
+    pcall(function() Theme_c.set_chat_color_overrides(nil) end)
+    local r_ok, r_r = pcall(function() return Theme_c.chat_bg:getR() end)
+    ok(r_ok and math.abs(r_r - (surface_before and surface_before:getR() or r_r)) <= 2,
+        "theme overrides: clearing restores the palette surface (r="
+        .. tostring(r_r) .. ")")
+    -- An INVALID hex must fall back to the palette (never crash).
+    local okp_bad = pcall(function()
+        Theme_c.set_chat_color_overrides({ surface = "not-a-color" })
+    end)
+    local bad_ok, bad_r = pcall(function() return Theme_c.chat_bg:getR() end)
+    ok(okp_bad and bad_ok and math.abs(bad_r - r_r) <= 2,
+        "theme overrides: invalid hex keeps the palette (r=" .. tostring(bad_r) .. ")")
+    Theme_c.set_chat_color_overrides(nil)
+end
+
+-- Theme editor page: rows only (the live preview band was removed at the
+-- author's request); the page must paint, expose the editor rows, and
+-- carry no chat hitboxes.
 do
     local app_e = fake_app({ page = "settings_appearance_chat",
         settings = { chat_html_render = true } })
@@ -3332,25 +3416,19 @@ do
         Pages.settings_appearance_chat(view_e, bb_e, 0, 0, VW, VH, 0)
     end)
     ok(okp_e, "editor: page paints without crashing")
-    -- Preview band (top ~30%): must hold message ink from the sample chat.
-    local function band_ink(b, y0, y1, dark)
-        local n = 0
-        for yy = y0, y1, 4 do
-            for xx = 20, VW - 20, 8 do
-                local okp, px = pcall(function() return b:getPixel(xx, yy) end)
-                if okp and px then
-                    if dark and px:getR() < 80 then n = n + 1
-                    elseif not dark and px:getR() < 128 then n = n + 1 end
-                end
-            end
+    -- Rows start at the TOP now (no preview band): the first rows must
+    -- hold ink well inside the first 120px.
+    local top_ink = 0
+    for yy = 6, 120, 3 do
+        for xx = 20, VW - 20, 6 do
+            local okp, px = pcall(function() return bb_e:getPixel(xx, yy) end)
+            if okp and px and px:getR() < 128 then top_ink = top_ink + 1 end
         end
-        return n
     end
-    ok(band_ink(bb_e, 10, 200) > 30,
-        "editor: live preview band holds message ink")
+    ok(top_ink > 40, "editor: rows start at the top (ink=" .. top_ink .. ")")
     dump(bb_e, "editor_page")
-    -- Dark theme applied: the preview band must flip dark (the "room"
-    -- semantic is visible while editing).
+    -- Dark theme applied: the page still paints (the editor chrome stays
+    -- on the app palette; only the values change).
     app_e.state.chat_theme_applied = require("ktui/chat_theme").normalize({
         name = "Dark editor", style = "bubbles",
         colors = { surface = "#101010", text = "#f0f0f0",
@@ -3361,18 +3439,7 @@ do
         Pages.settings_appearance_chat(view_e, bb_e2, 0, 0, VW, VH, 0)
     end)
     ok(okp_e2, "editor: dark theme page paints without crashing")
-    local dark_n = 0
-    for yy = 4, 196, 4 do
-        for xx = 20, VW - 20, 8 do
-            local okp, px = pcall(function() return bb_e2:getPixel(xx, yy) end)
-            if okp and px and px:getR() < 60 then dark_n = dark_n + 1 end
-        end
-    end
-    ok(dark_n > 200,
-        "editor: dark theme shows in the preview band (" .. dark_n .. " dark px)")
-    dump(bb_e2, "editor_page_dark")
-    -- The preview runs on a throwaway view: the page view must not carry
-    -- chat hitboxes (rows only).
+    -- No chat hitboxes ever (no preview = no msghold/chathtml on the page).
     local chat_boxes = 0
     for hb_i = 1, #view_e.hitboxes do
         local lab = view_e.hitboxes[hb_i].label
@@ -3381,60 +3448,15 @@ do
             chat_boxes = chat_boxes + 1
         end
     end
-    ok(chat_boxes == 0, "editor: preview hitboxes never reach the page view")
+    ok(chat_boxes == 0, "editor: no chat hitboxes on the settings page")
 end
 
--- B2 ports: Document style (name row + kebab vanish, hold stays), message
--- IDs + gen timer, the chat footer band, and line_spacing actually changing
--- the rendered doc height.
+-- B2 ports: message IDs + gen timer, the chat footer band, and
+-- line_spacing actually changing the rendered doc height.
 do
     local ChatTheme = require("ktui/chat_theme")
     local now_b2 = os.time()
-    -- Document style: a book, not a chat.
-    local app_doc = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
-        messages = {
-            { role = "user", name = "You", content = "hi", send_date = now_b2 },
-            { role = "assistant", name = "Aria",
-              content = "The reply flows like a book paragraph.", send_date = now_b2 + 1 },
-        } })
-    app_doc.state.chat_theme_applied = ChatTheme.normalize({ style = "document" })
-    -- The style lives in the Theme module (the real app applies it through
-    -- apply_bubble_theme; the fake does not, so the test sets it directly).
-    local style_before = Theme.get_bubble_style()
-    Theme.set_bubble_style("document")
-    local view_doc = { app = app_doc, hitboxes = {}, refresh = function() end }
-    local bb_doc = new_bb()
-    local okp_doc = pcall(function() Pages.chat(view_doc, bb_doc, 0, 0, VW, VH, 0) end)
-    Theme.set_bubble_style(style_before)
-    ok(okp_doc, "b2 document: style paints without crashing")
-    local lay_doc, kebab_n = nil, 0
-    for _dk, l in pairs(view_doc._chat_layout_cache or {}) do
-        if type(l) == "table" and not l.is_user and not l.is_system then lay_doc = l end
-    end
-    for hb_i = 1, #view_doc.hitboxes do
-        local lab = view_doc.hitboxes[hb_i].label
-        if type(lab) == "string" and lab:sub(1, 6) == "kebab_" then
-            kebab_n = kebab_n + 1
-        end
-    end
-    ok(kebab_n == 0, "b2 document: no kebab hitboxes (chrome hidden)")
-    if lay_doc then
-        -- flat: bubble_y = y + name_row_h (+ reasoning 0) - document has
-        -- NO name row, so the content starts at the row top itself.
-        ok((lay_doc.bubble_y - lay_doc.y) <= 1,
-            "b2 document: no name row (content starts at row top, d="
-            .. tostring(lay_doc.bubble_y - lay_doc.y) .. ")")
-    end
-    local hold_n = 0
-    for hb_i = 1, #view_doc.hitboxes do
-        local lab = view_doc.hitboxes[hb_i].label
-        if type(lab) == "string" and lab:sub(1, 8) == "msghold_" then
-            hold_n = hold_n + 1
-        end
-    end
-    ok(hold_n > 0, "b2 document: long-press actions survive (hold zone)")
-    dump(bb_doc, "b2_document_style")
+
 
     -- Message IDs + gen timer in the name row (bubbles mode).
     local app_ids = fake_app({ page = "chat",
@@ -3503,117 +3525,136 @@ do
         .. " 130=" .. tostring(h130) .. ")")
 end
 
--- B3 backdrop: the generator itself (full-res source, dim mixing, cache
--- keys) plus the page integration. The fixture card is the plugin's own
--- screenshot PNG. History: the mix loop crashed on a nil Blitbuffer global
--- inside its pcall from day one - the backdrop silently NEVER generated.
+-- P0 round: swipe sig fix (twin-swipe layout staleness), doc bg per
+-- style, dark footer band, mask_text contrast.
 do
-    local ChatTheme = require("ktui/chat_theme")
-    local Thumbs = require("ktui/thumbs")
-    local KtHTML = require("ktui/kthtml")
-    local card_fake = PLUGIN .. "/assets/screenshot-home.png"
-    local surf = KtHTML.css_hex(Theme.chat_bg, "#ffffff")
-
-    -- Generator: produces a file with visible art at dim 40...
-    local wp1 = Thumbs.wallpaper(card_fake, 300, 200, 40, surf)
-    ok(wp1 ~= nil, "b3 backdrop: generation returns a file (nil = the old "
-        .. "Blitbuffer crash)")
-    if wp1 then
-        local png_ok, png_bb = pcall(function()
-            local RenderImage = require("ui/renderimage")
-            return RenderImage:renderImageFile(wp1)
-        end)
-        local dark_n = 0
-        if png_ok and png_bb then
-            for yy = 0, png_bb:getHeight() - 1, 2 do
-                for xx = 0, png_bb:getWidth() - 1, 2 do
-                    local okp, px = pcall(function() return png_bb:getPixel(xx, yy) end)
-                    if okp and px and px:getR() < 200 then dark_n = dark_n + 1 end
-                end
-            end
-            pcall(function() png_bb:free() end)
+    local ChatTheme_p = require("ktui/chat_theme")
+    -- 1. TWIN SWIPES: two swipes sharing head+tail samples (and length)
+    -- used to reuse the cached layout - the tap looked dead or "jumped".
+    -- After the sig fix, the cycle must re-measure: the counter AND the
+    -- rendered middle text follow the active swipe.
+    local twin_head = string.rep("h", 60)
+    local twin_tail = string.rep("t", 60)
+    local twinA = twin_head .. "ALPHA-MARK" .. twin_tail
+    local twinB = twin_head .. "BRAVO-MARK" .. twin_tail
+    local msg_sw = {
+        role = "assistant", name = "Aria", send_date = os.time(),
+        content = twinA, swipes = { twinA, twinB }, swipe_id = 1,
+    }
+    local app_sw = fake_app({ page = "chat",
+        settings = { chat_html_render = false },
+        messages = { msg_sw } })
+    local view_sw = { app = app_sw, hitboxes = {}, refresh = function() end }
+    local bb_sw = new_bb()
+    pcall(function() Pages.chat(view_sw, bb_sw, 0, 0, VW, VH, 0) end)
+    local function sw_layout()
+        for _sk, l in pairs(view_sw._chat_layout_cache or {}) do
+            if type(l) == "table" and l.swipes_id then return l end
         end
-        ok(png_ok and dark_n > 50,
-            "b3 backdrop: dim-40 art is visible in the file (dark="
-            .. dark_n .. ")")
-        -- ...and dim 80 washes lighter than dim 40 (mean luminance rises:
-        -- more mixing toward the near-white surface).
-        local wp3 = Thumbs.wallpaper(card_fake, 300, 200, 80, surf)
-        ok(wp3 ~= nil and wp3 ~= wp1, "b3 backdrop: dim rides in the cache key")
-        if wp3 then
-            local function mean_lum(path)
-                local okm, pb = pcall(function()
-                    local RenderImage = require("ui/renderimage")
-                    return RenderImage:renderImageFile(path)
-                end)
-                if not okm or not pb then return nil end
-                local sum, n = 0, 0
-                for yy = 0, pb:getHeight() - 1, 2 do
-                    for xx = 0, pb:getWidth() - 1, 2 do
-                        local okp, px = pcall(function() return pb:getPixel(xx, yy) end)
-                        if okp and px then sum = sum + px:getR(); n = n + 1 end
-                    end
-                end
-                pcall(function() pb:free() end)
-                return (n > 0) and (sum / n) or nil
-            end
-            local m40 = mean_lum(wp1)
-            local m80 = mean_lum(wp3)
-            ok(m40 ~= nil and m80 ~= nil and m80 > m40,
-                "b3 backdrop: dim 80 washes lighter than dim 40 (mean "
-                .. string.format("%.1f vs %.1f", m80 or -1, m40 or -1) .. ")")
-        end
-        -- Cache hit: same args return the same file.
-        local wp2 = Thumbs.wallpaper(card_fake, 300, 200, 40, surf)
-        ok(wp2 == wp1, "b3 backdrop: cache returns the same file")
     end
+    local lay1 = sw_layout()
+    ok(lay1 ~= nil and lay1.swipes_id == 1, "swipe sig: first swipe measured")
+    -- Cycle like App:cycle_swipe does (msg fields only).
+    msg_sw.swipe_id = 2
+    msg_sw.content = twinB
+    pcall(function() Pages.chat(view_sw, bb_sw, 0, 0, VW, VH, 0) end)
+    local lay2 = sw_layout()
+    ok(lay2 ~= nil and lay2.swipes_id == 2,
+        "swipe sig: twin swipe RE-MEASURES (counter follows, was stale)")
+    local body_txt = ""
+    if lay2 and lay2.entries then
+        for _se, e in ipairs(lay2.entries) do
+            if type(e.text) == "string" then body_txt = body_txt .. e.text end
+        end
+    end
+    ok(body_txt:find("BRAVO", 1, true) ~= nil,
+        "swipe sig: twin swipe renders the ACTIVE text (BRAVO, not ALPHA)")
 
-    -- Page integration: card mode paints the backdrop under the messages
-    -- (the old code silently painted NOTHING - the crash was swallowed).
-    local now_b3 = os.time()
-    local app_b = fake_app({ page = "chat",
-        settings = { chat_html_render = true, chat_wallpaper = false },
+    -- 2. Doc bg per style: flat paints surface behind assistant docs.
+    local app_fl = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
         messages = {
-            { role = "assistant", name = "Aria",
-              content = "body over the backdrop", send_date = now_b3 },
+            { role = "assistant", name = "Aria", send_date = os.time(),
+              content = "flat body text" },
         } })
-    app_b.state.current_character_file = card_fake
-    app_b.state.chat_theme_applied = ChatTheme.normalize({
-        backdrop_mode = "card", backdrop_dim = 40 })
-    local view_b = { app = app_b, hitboxes = {}, refresh = function() end }
-    local b_bd = new_bb()
-    local okp_b = pcall(function() Pages.chat(view_b, b_bd, 0, 0, VW, VH, 0) end)
-    ok(okp_b, "b3 backdrop: card mode paints without crashing")
-    -- The backdrop painted: a lateral strip with no message text must hold
-    -- art ink (the pure surface would be ~243 everywhere).
-    local art_ink = 0
-    for yy = 8, 100, 2 do
-        for xx = 4, 26, 2 do
-            local okp, px = pcall(function() return b_bd:getPixel(xx, yy) end)
-            if okp and px and px:getR() < 210 then art_ink = art_ink + 1 end
+    app_fl.state.chat_theme_applied = ChatTheme_p.normalize({
+        name = "Flat dark", style = "flat",
+        colors = { surface = "#101010", text = "#f0f0f0",
+            ai_panel = "#303030", user_panel = "#404040" },
+    })
+    require("ktui/theme").set_chat_color_overrides({
+        surface = "#101010", ai_panel = "#303030",
+        user_panel = "#404040", text = "#f0f0f0",
+    })
+    local style_before_p = Theme.get_bubble_style()
+    Theme.set_bubble_style("flat")
+    local view_fl = { app = app_fl, hitboxes = {}, refresh = function() end }
+    local bb_fl = new_bb()
+    local okp_fl = pcall(function() Pages.chat(view_fl, bb_fl, 0, 0, VW, VH, 0) end)
+    Theme.set_bubble_style(style_before_p)
+    ok(okp_fl, "flat doc bg: flat dark theme paints without crashing")
+    local doc_fl = nil
+    for _fk, l in pairs(view_fl._chat_layout_cache or {}) do
+        if type(l) == "table" and l.entries then
+            for _fe, e in ipairs(l.entries) do
+                if e.kind == "html" and e.widget and e.widget.bb then
+                    doc_fl = e.widget
+                end
+            end
         end
     end
-    ok(art_ink > 5,
-        "b3 backdrop: page carries art behind the messages (ink="
-        .. art_ink .. ")")
-    dump(b_bd, "b3_backdrop_card")
-    -- And the legacy toggle alone (no theme) still means card mode.
-    app_b.state.chat_theme_applied = nil
-    app_b.state.settings.chat_wallpaper = true
-    local b_bd2 = new_bb()
-    view_b.hitboxes = {}
-    local okp_b2 = pcall(function() Pages.chat(view_b, b_bd2, 0, 0, VW, VH, 0) end)
-    ok(okp_b2, "b3 backdrop: legacy toggle paints without crashing")
-    local art_ink2 = 0
-    for yy = 8, 100, 2 do
-        for xx = 4, 26, 2 do
-            local okp, px = pcall(function() return b_bd2:getPixel(xx, yy) end)
-            if okp and px and px:getR() < 210 then art_ink2 = art_ink2 + 1 end
+    if doc_fl then
+        local okp_pad, px_pad = pcall(function()
+            return doc_fl.bb:getPixel(3, 3):getR()
+        end)
+        -- Flat assistant: the doc must paint the SURFACE (#101010 = 16),
+        -- NOT the ai panel (#303030 = 48) - the opaque "text stripe".
+        -- Tolerance: the corner sample can catch row anti-aliasing, so the
+        -- assertion is "far below the panel", not "exactly the surface".
+        ok(okp_pad and px_pad < 32,
+            "flat doc bg: assistant doc paints the surface, not the panel (r="
+            .. tostring(okp_pad and px_pad or -1) .. ")")
+    else
+        ok(false, "flat doc bg: no html doc found")
+    end
+
+    -- 3. Dark footer band: the status bar above the composer follows the
+    -- theme (the nil-locals order bug painted it palette white).
+    local app_ft = fake_app({ page = "chat",
+        settings = { chat_html_render = true, chat_footer = true },
+        messages = {
+            { role = "assistant", name = "Aria", send_date = os.time(),
+              content = "footer band probe" },
+        } })
+    app_ft.state.chat_theme_applied = ChatTheme_p.normalize({
+        name = "Footer dark", style = "bubbles",
+        colors = { surface = "#101010", text = "#f0f0f0",
+            ai_panel = "#181818", user_panel = "#202020" },
+    })
+    local view_ft = { app = app_ft, hitboxes = {}, refresh = function() end }
+    local bb_ft = new_bb()
+    local okp_ft = pcall(function() Pages.chat(view_ft, bb_ft, 0, 0, VW, VH, 0) end)
+    ok(okp_ft, "footer dark: page paints without crashing")
+    local band_dark = 0
+    for yy = VH - 54 - 26, VH - 54 - 2, 2 do
+        for xx = 30, VW - 30, 6 do
+            local okp, px = pcall(function() return bb_ft:getPixel(xx, yy) end)
+            if okp and px and px:getR() < 40 then band_dark = band_dark + 1 end
         end
     end
-    ok(art_ink2 > 5,
-        "b3 backdrop: legacy chat_wallpaper toggle still paints the card art (ink="
-        .. art_ink2 .. ")")
+    ok(band_dark > 40,
+        "footer dark: status band follows the theme, not palette white (dark="
+        .. band_dark .. ")")
+    require("ktui/theme").set_chat_color_overrides(nil)
+
+    -- 4. mask_text: hard contrast against the fence band, any palette.
+    local resolved_p = ChatTheme_p.resolved(fake_app({}))
+    local lum_mask = ChatTheme_p.luminance(resolved_p.colors.mask) or 0
+    local lum_text = ChatTheme_p.luminance(resolved_p.colors.mask_text) or 0
+    ok(math.abs(lum_mask - lum_text) > 0.35,
+        "mask_text: fence text contrasts the band (mask="
+        .. string.format("%.2f", lum_mask) .. " text="
+        .. string.format("%.2f", lum_text) .. ")")
 end
 
 -- Chat Theme render: a dark theme must flip the doc colors (the "room"
@@ -3626,10 +3667,20 @@ do
             { role = "assistant", name = "Aria", send_date = os.time(),
               content = "Dark room body text with *emphasis* in it." },
         } })
-    app_d.state.chat_theme_applied = ChatTheme.normalize({
+    local dark_theme = ChatTheme.normalize({
         name = "Dark test",
         colors = { surface = "#111111", text = "#eeeeee",
             ai_panel = "#222222", user_panel = "#333333" },
+    })
+    app_d.state.chat_theme_applied = dark_theme
+    -- Apply through the REAL path (like App:apply_bubble_theme does), so
+    -- the R1 guards test the live Theme fields the canvas actually reads -
+    -- not just the doc pipeline.
+    require("ktui/theme").set_chat_color_overrides({
+        surface = dark_theme.colors.surface,
+        ai_panel = dark_theme.colors.ai_panel,
+        user_panel = dark_theme.colors.user_panel,
+        text = dark_theme.colors.text,
     })
     local view_d = { app = app_d, hitboxes = {}, refresh = function() end }
     local bb_d = new_bb()
@@ -3663,38 +3714,54 @@ do
         ok(dark_px > light_px,
             "theme render: doc background is dark (" .. dark_px .. " dark vs "
             .. light_px .. " light samples)")
-        -- scan_bottom with the theme bg must find the text bottom (not the
-        -- whole bitmap): height < bitmap height.
+        -- scan_bottom with the doc's PANEL bg (role-aware: assistant docs
+        -- paint on ai_panel) must find the text bottom, not the whole
+        -- bitmap: height < bitmap height.
         local h = require("ktui/kthtml").scan_bottom(found_d.bb,
-            found_d.bb:getWidth(), "#111111")
+            found_d.bb:getWidth(), "#222222")
         ok(h ~= nil and h < found_d.bb:getHeight(),
-            "theme render: scan_bottom trims against the theme bg (h="
+            "theme render: scan_bottom trims against the panel bg (h="
             .. tostring(h) .. "/" .. found_d.bb:getHeight() .. ")")
     end
-    dump(bb_d, "theme_dark_chat")
-    -- chat_height: a 50% theme pins the band to the bottom; the composer
-    -- stays pinned and the top band shows the surface.
-    local app_v2 = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
-        messages = {
-            { role = "assistant", name = "Aria", send_date = os.time(),
-              content = "body" },
-        } })
-    app_v2.state.chat_theme_applied = ChatTheme.normalize({ chat_height = 50 })
-    local view_v2 = { app = app_v2, hitboxes = {}, refresh = function() end }
-    local bb_v2 = new_bb()
-    local okp_v2 = pcall(function() Pages.chat(view_v2, bb_v2, 0, 0, VW, VH, 0) end)
-    ok(okp_v2, "theme height: 50% band paints without crashing")
-    -- The band is pinned to the BOTTOM: the first (and only) message must
-    -- start well below the page top (full-height would sit near y ~= gap).
-    local lay_y = nil
-    for _hk, l in pairs(view_v2._chat_layout_cache or {}) do
-        if type(l) == "table" and l.y and not l.is_system then lay_y = l.y end
+    -- R1 regression guards (the print-report round):
+    -- 1. Canvas ink vs panel: the name/hour text must contrast the themed
+    --    panel (the old hardcoded palette ink was black-on-dark).
+    local ink_ok, ink_r = pcall(function() return Theme.chat_ink:getR() end)
+    local pan_ok, pan_r = pcall(function() return Theme.chat_panel:getR() end)
+    ok(ink_ok and pan_ok and math.abs(ink_r - pan_r) > 100,
+        "r1 contrast: chat ink differs from the themed panel (ink="
+        .. tostring(ink_r) .. " panel=" .. tostring(pan_r) .. ")")
+    local mu_ok, mu_r = pcall(function() return Theme.chat_muted:getR() end)
+    ok(mu_ok and mu_r > pan_r + 40,
+        "r1 contrast: muted text sits above the panel (muted="
+        .. tostring(mu_r) .. " panel=" .. tostring(pan_r) .. ")")
+    -- 2. The doc bitmap paints the message PANEL as its background (the
+    --    "text stripe" report): a padding pixel must match ai_panel.
+    if found_d then
+        local okp_pad, px_pad = pcall(function()
+            return found_d.bb:getPixel(3, 3)
+        end)
+        ok(okp_pad and math.abs(px_pad:getR() - 34) <= 6,
+            "r1 doc bg: doc background is the AI panel (#222222), got r="
+            .. tostring(okp_pad and px_pad:getR() or -1))
     end
-    ok(lay_y ~= nil and lay_y > 150,
-        "theme height: 50% band pushes the first message down (y="
-        .. tostring(lay_y) .. ")")
-    dump(bb_v2, "theme_height_50")
+    -- 3. Chat page chrome follows the theme: the header band paints the
+    --    themed surface (white chrome around a dark chat read as broken).
+    --    The page itself does not paint the header (AppView does), so the
+    --    probe paints it through the same Header.draw the shell uses.
+    local okp_h, err_h = pcall(function()
+        require("ktui/header").draw(view_d, bb_d, 0, 0, VW)
+    end)
+    ok(okp_h, "r1 chrome: themed header paints (" .. tostring(err_h) .. ")")
+    local chrome_ok, chrome_r = pcall(function()
+        return bb_d:getPixel(VW - 30, 4):getR()
+    end)
+    ok(chrome_ok and chrome_r < 60,
+        "r1 chrome: chat header band follows the dark theme (r="
+        .. tostring(chrome_ok and chrome_r or -1) .. ")")
+    dump(bb_d, "theme_dark_chat")
+    -- Restore the palette for the checks below (global Theme state).
+    require("ktui/theme").set_chat_color_overrides(nil)
 end
 
 -- Chat HTML external link end to end: tapping an http(s) link opens the
@@ -6371,6 +6438,59 @@ do
     AppView.onTapKotavern(view, nil, { pos = { x = 20, y = 20 } })
     ok(page_hit_fired == false and app.state.sheet == nil,
         "sheets: tap on dimmed page content closes the sheet without firing page hits")
+end
+
+-- REAL App boot chain (the regression the device caught): a legacy
+-- bubble_themes.json plus a selected id must boot through load_settings ->
+-- apply_settings -> refresh_bubble_theme -> find_chat_theme (migration!)
+-- -> apply_bubble_theme -> set_chat_color_overrides - the frame that
+-- shipped the ColorRGB8 constructor crash on a real device boot. Runs
+-- LAST so the app-global state cannot disturb the canvas fixtures above.
+do
+    local Storage_b = require("kt_storage")
+    local json_b = require("json")
+    -- Plant a legacy bubble theme and select it globally; wipe any chat
+    -- theme store so the one-time migration runs in this boot.
+    local bt_path = Storage_b.data_dir() .. "/bubble_themes.json"
+    local fb = io.open(bt_path, "w")
+    if fb then
+        fb:write(json_b.encode({
+            { id = "boot-test-1", name = "Boot test", style = "bubbles",
+              chat_bg = "paper", radius = "normal", density = "normal",
+              show_avatars = true, show_timestamps = true, show_tokens = true },
+        }))
+        fb:close()
+    end
+    os.remove(Storage_b.data_dir() .. "/chat_themes.json")
+    local st_path = Storage_b.data_dir() .. "/settings.json"
+    local fs = io.open(st_path, "w")
+    if fs then
+        fs:write(json_b.encode({ bubble_theme_id = "boot-test-1" }))
+        fs:close()
+    end
+    local ok_boot, app_boot = pcall(function()
+        local App = require("kt_app")
+        return App:new({})
+    end)
+    ok(ok_boot and app_boot ~= nil,
+        "app boot: App:new boots with a migrated theme selected ("
+        .. (ok_boot and "ok" or tostring(app_boot)) .. ")")
+    if ok_boot and app_boot then
+        ok(app_boot.state.chat_theme_applied ~= nil,
+            "app boot: the migrated theme applied at startup")
+        ok(app_boot.state.chat_theme_applied.colors.surface ~= "",
+            "app boot: bubble theme migrated with a surface color")
+        ok(app_boot.state.chat_theme_applied.show_timestamps == true,
+            "app boot: migrated toggles carried")
+        local Theme_b = require("ktui/theme")
+        local cb_ok, cb_r = pcall(function() return Theme_b.chat_bg:getR() end)
+        ok(cb_ok and type(cb_r) == "number",
+            "app boot: chat surface color is live (r=" .. tostring(cb_r) .. ")")
+        -- Cleanup: the boot mutated the shared data dir (settings gained
+        -- migration flags, chat_themes.json was written); leave the dir
+        -- as the boot found the files (tests re-plant their own fixtures).
+        pcall(function() app_boot:close() end)
+    end
 end
 
 print(string.format("\n%d checks, %d failures", checks, fails))

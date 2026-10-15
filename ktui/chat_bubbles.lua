@@ -44,11 +44,6 @@ local function effective_style(style)
     if style == "bubbles" then
         return "bubbles"
     end
-    if style == "document" then
-        -- Document (ST documentstyle): a book, not a chat - rendered as
-        -- flat with the whole chrome hidden (B2 paints the real thing).
-        return "flat"
-    end
     return "st" -- st / rounded / square / unknown
 end
 
@@ -840,7 +835,7 @@ local function chat_html_body(content, revealed, det_revealed)
     return table.concat(body)
 end
 
-local function html_doc_for(app, view, content, width, revealed, det_revealed, css_extra)
+local function html_doc_for(app, view, content, width, revealed, det_revealed, css_extra, role)
     if not app or not app.state then return nil end
     local docs = app.state.chat_html_docs
     if not docs then
@@ -857,6 +852,36 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
     -- One resolved theme (colors/text knobs merged with the settings) feeds
     -- the stylesheet AND the cache key: any knob change rebuilds the doc.
     local resolved = ChatTheme.resolved(app)
+    -- The doc is blitted ONTO whatever the canvas painted behind it, so
+    -- its background must MATCH that surface - by style and role:
+    -- bubbles/boxed paint panels per role; flat paints a themed band on
+    -- user messages and bare surface on assistant ones. One flat rule
+    -- ("always the panel") painted the opaque blue "text stripe" inside
+    -- gray bubbles the print reports caught.
+    local eff_style = effective_style(Theme.get_bubble_style())
+    local panel_bg
+    if eff_style == "bubbles" or eff_style == "st" then
+        panel_bg = (role == "user")
+            and resolved.colors.user_panel
+            or resolved.colors.ai_panel
+    elseif (role == "user") and eff_style == "flat" then
+        panel_bg = resolved.colors.user_panel
+    else
+        panel_bg = resolved.colors.surface
+    end
+    local doc_colors = {}
+    for ck, cv in pairs(resolved.colors) do doc_colors[ck] = cv end
+    doc_colors.surface = panel_bg
+    local doc_resolved = {
+        font_file = resolved.font_file,
+        font_size = resolved.font_size,
+        font_scale = resolved.font_scale,
+        line_spacing = resolved.line_spacing,
+        custom_css = resolved.custom_css,
+        colors = doc_colors,
+        sig = resolved.sig,
+    }
+    resolved = doc_resolved
     -- Revealed-spoiler / details indices participate in the key: a toggle
     -- re-runs the measure with a new set, which lands on a fresh doc without
     -- touching the masked render still cached for other messages.
@@ -868,7 +893,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         return table.concat(ks, ",")
     end
     local key = table.concat({ tostring(content), "\0", tostring(width), "\0",
-        resolved.sig,
+        resolved.sig, "\0", panel_bg,
         "\0", set_sig_local(revealed),
         "\0", set_sig_local(det_revealed), "\0", tostring(css_extra or "") }, "")
     local cached = docs[key]
@@ -1208,7 +1233,7 @@ local function block_entries(blocks, width, app, show_inline, view, body_face)
             -- bubble. doc.key rides along so the spoiler tap can invalidate
             -- exactly this doc.
             local doc = html_doc_for(app, view, block.text, width,
-                block.revealed, block.det_revealed)
+                block.revealed, block.det_revealed, nil, block.role)
             if doc and doc.height then
                 table.insert(entries, {
                     kind = "html", widget = doc.widget,
@@ -1324,7 +1349,7 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                     local label = _("Image") .. ((entry.alt and entry.alt ~= "") and (": " .. entry.alt) or "")
                     P.text(bb, Widgets.truncate(label, 30), cx + Theme.scale(8),
                         entry_y + math.floor((ph - Theme.line_h("tiny")) / 2),
-                        box_w - Theme.scale(16), "tiny", { color = Theme.muted })
+                        box_w - Theme.scale(16), "tiny", { color = Theme.chat_muted })
                 end
             elseif entry.kind == "html" then
                 -- Experimental HTML render: blit the VISIBLE slice of the
@@ -1361,7 +1386,7 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                 end
             elseif entry.kind == "code" then
                 P.box(bb, cx, top, width, band_h, { border = false, background = Theme.soft, radius = false })
-                P.rect(bb, cx, top, Theme.scale(3), band_h, Theme.muted)
+                P.rect(bb, cx, top, Theme.scale(3), band_h, Theme.chat_muted)
                 local text_top = entry_y + entry.pad
                 local text_bottom = entry_y + entry.h - entry.pad
                 local text_y = math.max(top, text_top)
@@ -1425,18 +1450,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local show_gen_timer = (theme_live and theme_live.show_gen_timer == true) or false
     -- Experimental: whole-message HTML render (Debug toggle, false default).
     local html_render = settings.chat_html_render == true
-    local raw_style = Theme.get_bubble_style()
-    local style = effective_style(raw_style)
-    -- Document (ST documentstyle): a book, not a chat - avatars, name rows
-    -- and panels all hide; messages flow as plain paragraphs on the
-    -- surface (kebab/actions stay on long-press, swipes keep their row).
-    local doc_mode = (raw_style == "document")
-    if doc_mode then
-        style = "flat"
-        show_avatars = false
-        show_timestamps = false
-        show_tokens = false
-    end
+    local style = effective_style(Theme.get_bubble_style())
     local boxed = (style == "st")
     local panel_mode = (style == "bubbles")
     local radius = boxed and Theme.scale(STYLE_RADIUS[Theme.get_bubble_style()] or 12) or 0
@@ -1560,9 +1574,8 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         end
     end
 
-    local name_row_h = doc_mode and 0
-        or ((flat and show_avatars) and math.max(name_h, avatar_size)
-        or (show_avatars and math.max(name_h, avatar_size) or name_h))
+    local name_row_h = (flat and show_avatars) and math.max(name_h, avatar_size)
+        or (show_avatars and math.max(name_h, avatar_size) or name_h)
     local av_dy = math.max(0, math.floor((name_row_h - avatar_size) / 2))
     local reasoning_open = (view.app and view.app.state and view.app.state.reasoning_open) or {}
     -- "Show more" state for clamped reasoning blocks (see the measure pass).
@@ -1617,9 +1630,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 local doc = html_doc_for(view.app, view, reasoning, rtw,
                     ChatBubbles.spoiler_state(view.app, ns),
                     ChatBubbles.details_state(view.app, ns),
-                    "body { color: " .. require("ktui/kthtml").css_hex(Theme.muted, "#666666")
+                    "body { color: " .. require("ktui/kthtml").css_hex(Theme.chat_muted, "#666666")
                         .. " !important; } p { color: "
-                        .. require("ktui/kthtml").css_hex(Theme.muted, "#666666")
+                        .. require("ktui/kthtml").css_hex(Theme.chat_muted, "#666666")
                         .. " !important; }")
                 if doc and doc.height then
                     hit = { entries = { { kind = "html", widget = doc.widget,
@@ -1657,6 +1670,13 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             -- The swipe row only exists on the last message while idle, so
             -- generation start/end must invalidate exactly that one.
             (is_last and (tostring(is_generating == true) .. ":") or "") ..
+            -- Active swipe + count: cycle_swipe can swap two swipes that
+            -- share head+tail samples (regenerations often do) and even
+            -- the same LENGTH - without these the fast path reused the
+            -- stale layout and the tap looked like a no-op / a "jump"
+            -- (the 1/3 -> 3/3 report).
+            tostring(tonumber(msg.swipe_id) or 1) .. "/" ..
+            tostring(#(msg.swipes or {})) .. ":" ..
             tostring(reasoning_open[msg_key] == true) .. ":" ..
             tostring(reasoning_full[msg_key] == true) .. ":" ..
             tostring(settings.chat_html_render == true)
@@ -1795,6 +1815,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- per reveal state, and the tap layer keys reveals by msg_key.
                 if html_render then
                     blocks = { { kind = "html", text = content_text,
+                        role = is_user and "user" or "ai",
                         msg_key = msg_key,
                         revealed = ChatBubbles.spoiler_state(view.app, msg_key),
                         det_revealed = ChatBubbles.details_state(view.app, msg_key) } }
@@ -1913,6 +1934,12 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     -- Bottom breathing room: the fully-scrolled view must always show a
     -- strip of paper under the last panel (the "balão cortado" report).
     total_h = total_h + Theme.scale(6)
+    -- Footer on: extra breathing under the last message so the bottom line
+    -- never reads as "cut behind the status band" (the print reports).
+    if (settings.chat_footer == true) and view.app and view.app.state
+        and view.app.state.page == "chat" then
+        total_h = total_h + Theme.line_h("default")
+    end
 
     -- Clamp scroll before drawing (auto-scroll 999999 on first paint)
     local max_scroll = math.max(0, total_h - h)
@@ -1941,7 +1968,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             if l.kind == "system" then
                 -- Centered muted line
                 draw_blocks(view, bb, l.entries, x + pad, top, area,
-                    Theme.muted, Theme.chat_bg, math.max(top, y), math.min(bottom, y + h))
+                    Theme.chat_muted, Theme.chat_bg, math.max(top, y), math.min(bottom, y + h))
             else
                 local srow_y = top
                 local name_off = panel_mode and pn_pad or 0
@@ -1952,7 +1979,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- ST bubbles: rounded panel behind the WHOLE message (avatar
                 -- + name + text). Square edges when clipped by the viewport.
                 if panel_mode and not l.is_thinking then
-                    local pb_color = (l.is_streaming and Theme.ink) or Theme.soft
+                    local pb_color = (l.is_streaming and Theme.chat_ink) or Theme.soft
                     local pb_size = l.is_streaming and 2 or 1
                     -- The FULL rounded box paints through a viewport clamped
                     -- to the messages band: a bubble grown past the viewport
@@ -1977,8 +2004,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- the initial fallback stays untappable). Emitted after the
                 -- hold zone + kebab so the disc wins taps.
                 local av_hit = nil
-                if not doc_mode
-                    and srow_y >= y - name_row_h - name_off and srow_y < y + h then
+                if srow_y >= y - name_row_h - name_off and srow_y < y + h then
                     local sender_str = l.display_name or ""
                     local timestamp = show_timestamps and format_time(l.send_date) or nil
                     if flat and show_avatars and not l.is_thinking then
@@ -2003,7 +2029,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                             local id_str = "#" .. tostring(l.idx or "?")
                             local idw = P.text_size(id_str, nil, "tiny").w
                             P.text(bb, id_str, nx, ny + math.floor((name_h - Theme.line_h("tiny")) / 2),
-                                idw + 2, "tiny", { color = Theme.muted })
+                                idw + 2, "tiny", { color = Theme.chat_muted })
                             nx = nx + idw + Theme.scale(6)
                         end
                         -- Generation timer (ST timer_enabled): duration of
@@ -2018,21 +2044,21 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local nw = math.max(1, inner_right - kebab_w - Theme.scale(8) - nx)
                         if sender_str ~= "" then
                             P.text(bb, sender_str, nx, ny, nw,
-                                "small", { bold = true, color = Theme.ink })
+                                "small", { bold = true, color = Theme.chat_ink })
                             local after_w = P.text_size(sender_str, nw, "small", { bold = true })
                             local tx = nx + math.min(after_w.w, nw) + Theme.scale(6)
                             if timestamp then
                                 local tsize = P.text_size(timestamp, math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny")
                                 local ty = ny + math.max(0, after_w.h - tsize.h)
                                 P.text(bb, timestamp, tx, ty,
-                                    math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny", { color = Theme.muted })
+                                    math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny", { color = Theme.chat_muted })
                                 tx = tx + math.min(tsize.w, inner_right - kebab_w - Theme.scale(8) - tx) + Theme.scale(6)
                             end
                             -- Gen timer trails the timestamp (ST shows the
                             -- duration in the timestamp row).
                             if l.gen_timer_str then
                                 P.text(bb, l.gen_timer_str, tx, ny + math.max(0, after_w.h - Theme.line_h("tiny")),
-                                    math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny", { color = Theme.muted })
+                                    math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny", { color = Theme.chat_muted })
                             end
                         end
                         name_drawn = true
@@ -2050,7 +2076,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local size = P.text_size(boxed_str, name_w, "tiny")
                         P.text(bb, boxed_str, name_right - math.min(size.w, name_w),
                             srow_y + math.floor((name_row_h - name_h) / 2), math.min(size.w, name_w),
-                            "tiny", { color = Theme.muted })
+                            "tiny", { color = Theme.chat_muted })
                         name_drawn = true
                     else
                         local boxed_str = sender_str .. (timestamp and ((sender_str ~= "" and "  " or "") .. timestamp) or "")
@@ -2066,7 +2092,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         if boxed_str ~= "" then
                             P.text(bb, boxed_str, name_x,
                                 srow_y + math.floor((name_row_h - name_h) / 2), name_w,
-                                "tiny", { bold = true, color = Theme.ink })
+                                "tiny", { bold = true, color = Theme.chat_ink })
                         end
                         name_drawn = true
                     end
@@ -2077,7 +2103,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local tw = P.text_size(tok, nil, "tiny").w
                         P.text(bb, tok, inner_right - tw,
                             srow_y + math.floor((name_row_h - name_h) / 2),
-                            math.min(tw, col_text_w), "tiny", { color = Theme.muted })
+                            math.min(tw, col_text_w), "tiny", { color = Theme.chat_muted })
                     end
                 end
 
@@ -2111,11 +2137,11 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local tw = P.text_size(tok, nil, "tiny").w
                         P.text(bb, tok, kebab_x - Theme.scale(8) - tw,
                             row_y0 + math.floor((name_row_h - Theme.line_h("tiny")) / 2),
-                            tw + 2, "tiny", { color = Theme.muted })
+                            tw + 2, "tiny", { color = Theme.chat_muted })
                     end
                     local dot_cy = row_y0 + math.floor(name_row_h / 2)
                     for k = 0, 2 do
-                        P.circle(bb, kebab_x + kebab_r + k * (kebab_r * 2 + kebab_gap), dot_cy, kebab_r, Theme.muted)
+                        P.circle(bb, kebab_x + kebab_r + k * (kebab_r * 2 + kebab_gap), dot_cy, kebab_r, Theme.chat_muted)
                     end
                     P.hit(view, kebab_x - Theme.scale(8), row_y0, kebab_w + Theme.scale(16), name_row_h, function()
                         if view.app.show_message_actions then
@@ -2149,13 +2175,13 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     if reasoning_open[l.msg_key] then
                         -- Left rule spanning the section (muted, 2px).
                         if rul_y1 > rul_y0 then
-                            P.rect(bb, rul_x, rul_y0, Theme.scale(2), rul_y1 - rul_y0, Theme.muted)
+                            P.rect(bb, rul_x, rul_y0, Theme.scale(2), rul_y1 - rul_y0, Theme.chat_muted)
                         end
                         -- Header row: chevron rotated down + label, then the
                         -- reasoning text indented past the rule.
-                        Icons.draw(bb, "chev-down", rul_x + Theme.scale(8), head_y + math.floor((head_h - isz.h) / 2), icon_size, { color = Theme.muted })
+                        Icons.draw(bb, "chev-down", rul_x + Theme.scale(8), head_y + math.floor((head_h - isz.h) / 2), icon_size, { color = Theme.chat_muted })
                         P.text(bb, label, rul_x + Theme.scale(8) + isz.w + Theme.scale(6), head_y,
-                            l.text_w - Theme.scale(8) - isz.w - Theme.scale(6), "tiny", { bold = true, color = Theme.muted })
+                            l.text_w - Theme.scale(8) - isz.w - Theme.scale(6), "tiny", { bold = true, color = Theme.chat_muted })
                         local ry = head_y + head_h + Theme.scale(4)
                         local rtw = l.reasoning_tw or math.max(8, l.text_w - Theme.scale(8))
                         -- Clamped section: the body is clipped ABOVE a pinned
@@ -2168,11 +2194,11 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                             body_bottom = math.min(body_bottom, hint_y - Theme.scale(2))
                             if hint_y + hint_h > y and hint_y < y + h then
                                 P.text(bb, _("Show more") .. " ▾", rul_x + Theme.scale(8), hint_y,
-                                    l.text_w - Theme.scale(8), "tiny", { bold = true, color = Theme.muted })
+                                    l.text_w - Theme.scale(8), "tiny", { bold = true, color = Theme.chat_muted })
                             end
                         end
                         draw_blocks(view, bb, l.reasoning_entries, rul_x + Theme.scale(8), ry,
-                            rtw, Theme.muted, panel_mode and panel_color or Theme.chat_bg,
+                            rtw, Theme.chat_muted, panel_mode and panel_color or Theme.chat_bg,
                             math.max(ry, y), body_bottom,
                             -- hit_ctx: reasoning taps resolve under the "|r"
                             -- namespace (own spoiler/details numbering).
@@ -2194,9 +2220,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     else
                         -- Collapsed: single muted line (chevron right + label).
                         local line_y = reasoning_y + math.floor((l.reasoning_h - head_h) / 2)
-                        Icons.draw(bb, "chev-right", rul_x + Theme.scale(8), line_y + math.floor((head_h - isz.h) / 2), icon_size, { color = Theme.muted })
+                        Icons.draw(bb, "chev-right", rul_x + Theme.scale(8), line_y + math.floor((head_h - isz.h) / 2), icon_size, { color = Theme.chat_muted })
                         P.text(bb, label, rul_x + Theme.scale(8) + isz.w + Theme.scale(6), line_y,
-                            l.text_w - Theme.scale(8) - isz.w - Theme.scale(6), "tiny", { color = Theme.muted })
+                            l.text_w - Theme.scale(8) - isz.w - Theme.scale(6), "tiny", { color = Theme.chat_muted })
                         P.hit(view, rul_x, reasoning_y, l.bubble_w - Theme.scale(8), l.reasoning_h, function()
                             reasoning_open[l.msg_key] = true
                             view:refresh()
@@ -2206,8 +2232,8 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
 
                 -- Bubble box (boxed style) / subtle user band (flat ST-DEFAULT)
                 local bg = l.is_user and (outline_user and Theme.panel or Theme.soft) or Theme.panel
-                local text_color = Theme.ink
-                local border_color = (l.is_streaming and Theme.ink) or Theme.soft
+                local text_color = Theme.chat_ink
+                local border_color = (l.is_streaming and Theme.chat_ink) or Theme.chat_muted
                 local border_size = (l.is_streaming or (l.is_user and outline_user)) and 2 or 1
 
                 local vis_top = math.max(bubble_y, y)
@@ -2226,7 +2252,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     if l.is_streaming then
                         local ind_h = vis_bottom - vis_top
                         if ind_h > 0 then
-                            P.rect(bb, l.bx, vis_top, Theme.scale(3), ind_h, Theme.ink)
+                            P.rect(bb, l.bx, vis_top, Theme.scale(3), ind_h, Theme.chat_ink)
                         end
                     end
                 elseif style == "flat" and not l.is_thinking then
@@ -2238,9 +2264,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         if vis_h > 0 then
                             if bubble_y >= y and vis_bottom >= bubble_y + l.bubble_h then
                                 P.box(bb, l.bx, bubble_y, l.bubble_w, l.bubble_h,
-                                    { border = false, background = Theme.soft, radius = Theme.scale(6) })
+                                    { border = false, background = Theme.chat_panel_user, radius = Theme.scale(6) })
                             else
-                                P.rect(bb, l.bx, vis_top, l.bubble_w, vis_h, Theme.soft)
+                                P.rect(bb, l.bx, vis_top, l.bubble_w, vis_h, Theme.chat_panel_user)
                             end
                         end
                     elseif l.is_streaming then
@@ -2259,14 +2285,14 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- Thinking has no panel behind it - its text bg must be the
                 -- chat surface, not the panel color (white box on paper).
                 local content_bg = (panel_mode and not l.is_thinking) and panel_color
-                    or (l.is_user and Theme.soft or Theme.chat_bg)
+                    or (l.is_user and Theme.chat_panel_user or Theme.chat_bg)
                 if boxed then
                     draw_blocks(view, bb, l.entries, l.cx, content_y,
                         l.text_w, text_color, bg, vis_top, vis_bottom,
                         { msg_key = l.msg_key })
                 else
                     draw_blocks(view, bb, l.entries, l.cx, content_y,
-                        l.text_w, Theme.ink, content_bg,
+                        l.text_w, Theme.chat_ink, content_bg,
                         math.max(content_y, y), math.min(content_y + l.content_h + pad, y + h),
                         { msg_key = l.msg_key })
                 end
@@ -2279,7 +2305,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         and (bubble_y + l.bubble_h - pn_pad - l.swipes_h)
                         or (bubble_y + l.bubble_h)
                     if sy + l.swipes_h <= y + h and sy >= y - Theme.scale(20) then
-                        local icon_size = Theme.scale(11)
+                        local icon_size = Theme.scale(14)
                         local isz = Icons.text_size("chev-left", icon_size)
                         local row_cy = sy + math.floor((l.swipes_h - isz.h) / 2)
                         local sx = l.cx
@@ -2287,25 +2313,27 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         if l.swipes_n > 1 then
                             counter = tostring(l.swipes_id) .. "/" .. tostring(l.swipes_n)
                             -- ‹ previous
-                            Icons.draw(bb, "chev-left", sx, row_cy, icon_size, { color = Theme.muted })
-                            P.hit(view, sx - Theme.scale(6), sy, isz.w + Theme.scale(12), l.swipes_h, function()
+                            Icons.draw(bb, "chev-left", sx, row_cy, icon_size, { color = Theme.chat_muted })
+                            P.hit(view, sx - Theme.scale(10), sy, isz.w + Theme.scale(20), l.swipes_h, function()
                                 view.app:cycle_swipe(l.idx, -1)
                             end, "swipe_prev_" .. l.idx)
                             sx = sx + isz.w + Theme.scale(10)
                             local csize = P.text_size(counter, nil, "tiny")
                             P.text(bb, counter, sx, sy + math.floor((l.swipes_h - csize.h) / 2),
-                                csize.w + 2, "tiny", { color = Theme.muted })
+                                csize.w + 2, "tiny", { color = Theme.chat_muted })
                             sx = sx + csize.w + Theme.scale(10)
                             -- › next
-                            Icons.draw(bb, "chev-right", sx, row_cy, icon_size, { color = Theme.muted })
-                            P.hit(view, sx - Theme.scale(6), sy, isz.w + Theme.scale(12), l.swipes_h, function()
+                            Icons.draw(bb, "chev-right", sx, row_cy, icon_size, { color = Theme.chat_muted })
+                            P.hit(view, sx - Theme.scale(10), sy, isz.w + Theme.scale(20), l.swipes_h, function()
                                 view.app:cycle_swipe(l.idx, 1)
                             end, "swipe_next_" .. l.idx)
                             sx = sx + isz.w + Theme.scale(14)
                         end
-                        -- + new swipe
-                        Icons.draw(bb, "plus", sx, row_cy, icon_size, { color = Theme.muted })
-                        P.hit(view, sx - Theme.scale(6), sy, isz.w + Theme.scale(12), l.swipes_h, function()
+                        -- + new swipe. Hit cushions stay INSIDE the row's
+                        -- own span: the widened boxes used to overlap the
+                        -- › chevron by 6px and taps there fired regenerate.
+                        Icons.draw(bb, "plus", sx, row_cy, icon_size, { color = Theme.chat_muted })
+                        P.hit(view, sx - Theme.scale(2), sy, isz.w + Theme.scale(8), l.swipes_h, function()
                             view.app:regenerate_last()
                         end, "swipe_new_" .. l.idx)
                     end

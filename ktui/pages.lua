@@ -248,6 +248,13 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
             })
         end
     end
+    -- Tail breathing: a scrolling list ends with a spacer so the last row
+    -- never sits flush against the viewport edge (the "item cortado" prints).
+    local declared_pre = 0
+    for _pi, _it in ipairs(items) do declared_pre = declared_pre + _it.h end
+    if declared_pre + (#items - 1) * gap > h - Theme.scale(8) then
+        items[#items + 1] = { h = Theme.scale(16), spacer = true }
+    end
     local list_y = y + Theme.scale(4)
     local list_h = h - Theme.scale(8)
     -- Deck grow (round 4, item 1) WITH A CEILING: rows may grow to at most
@@ -277,6 +284,9 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 
         if item.section then
             Widgets.section_header(view, bb, row_x, item_y, row_w, item.text)
+            return
+        end
+        if item.spacer then
             return
         end
 
@@ -428,7 +438,7 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
         spacious = _("Spacious"),
     }
     local bubble_labels = {
-        bubbles = _("Bubbles (ST)"),
+        bubbles = _("Bubbles"),
         st = _("SillyTavern"),
         flat = _("Flat"),
         rounded = _("Rounded"),
@@ -479,39 +489,24 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     local app = view.app
     local ChatTheme = require("ktui/chat_theme")
 
-    -- Live preview: a pinned band above the editor rows, painted through
-    -- the REAL chat pipeline (ChatBubbles.draw with sample messages on a
-    -- throwaway view - its hitboxes/layout cache never reach the page).
-    -- Every theme knob shows exactly as it will in the chat: style,
-    -- panels, colors, font, spacing, avatars, markdown, spoilers.
-    local band_h = math.min(math.floor(h * 0.30), Theme.scale(230))
-    P.rect(bb, x, y, w, band_h, Theme.chat_bg)
-    local now = os.time()
-    local sample = {
-        { role = "user", name = "You", send_date = now - 2,
-          content = "Hi! **bold**, *italic* and ||secret||." },
-        { role = "assistant", name = "Aria", send_date = now - 1,
-          content = "Hello! *This* is the look:\n> a quote\n- a list item" },
-    }
-    local okp_prev = pcall(function()
-        local ChatBubbles = require("ktui/chat_bubbles")
-        local pview = { app = app, hitboxes = {}, refresh = function() end }
-        ChatBubbles.draw(pview, bb, x, y, w, band_h, 0, sample,
-            app.state.current_character or "Aria", false, "You", nil, nil)
-    end)
-    P.rect(bb, x, y + band_h, w, Theme.scale(1), Theme.soft)
+    -- No preview band: the author found it never reflected edits live
+    -- and cost a third of the page; the editor rows start at the top.
 
     -- The editor reads ONE thing: the current look (theme or settings).
     local look = app:chat_look()
-    local active_id = app:active_bubble_theme_id()
-    local active_name = nil
-    if active_id then
-        local _, nm = app:find_chat_theme(active_id)
-        active_name = nm
+    -- The editor's "Chat theme" card edits the GLOBAL default (the dialog
+    -- it opens picks the default): show the global name, not the
+    -- chat-resolved one - the print reports caught the two states reading
+    -- as one inconsistent value.
+    local global_id = app.state.settings.bubble_theme_id
+    local global_name = nil
+    if type(global_id) == "string" and global_id ~= "" then
+        local _, nm = app:find_chat_theme(global_id)
+        global_name = nm
     end
 
     local style_labels = {
-        bubbles = _("Bubbles (ST)"), flat = _("Flat"), document = _("Document"),
+        bubbles = _("Bubbles"), flat = _("Flat"),
     }
     local shape_labels = {
         round = _("Round"), rounded = _("Rounded"),
@@ -520,10 +515,6 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     local width_labels = {
         ["100"] = _("Full"), ["85"] = _("Wide"),
         ["70"] = _("Medium"), ["50"] = _("Narrow"),
-    }
-    local height_labels = {
-        ["100"] = _("Full page"), ["70"] = _("70%"),
-        ["55"] = _("55%"), ["40"] = _("VN (40%)"),
     }
     local spacing_labels = {
         ["85"] = _("Compact"), ["100"] = _("Normal"),
@@ -575,9 +566,20 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
         { section = true, text = _("Chat theme") },
         {
             text = _("Chat theme"),
-            subtext = _("Tap: global default · in a chat, Manage to apply per chat"),
-            value = function() return active_name or _("Default (settings)") end,
+            subtext = _("Default for every chat"),
+            value = function() return global_name or _("Default look") end,
             callback = function() app:choose_default_bubble_theme() end,
+        },
+        {
+            text = _("This chat"),
+            subtext = _("Overrides the default for this conversation only"),
+            value = function()
+                local cur = app.state.current_chat_bubble_theme_id
+                if cur == nil or cur == "" then return _("Follows the default") end
+                local _, nm = app:find_chat_theme(cur)
+                return (nm or "?") .. " ●"
+            end,
+            callback = function() app:choose_chat_bubble_theme() end,
         },
         {
             text = _("Manage themes…"),
@@ -597,9 +599,8 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
         },
         { section = true, text = _("Chat") },
         pick_row(_("Chat style"), style_labels[look.style] or look.style, {
-            { label = _("Bubbles (ST)"), value = "bubbles" },
+            { label = _("Bubbles"), value = "bubbles" },
             { label = _("Flat"), value = "flat" },
-            { label = _("Document"), value = "document" },
         }, function(v)
             app:edit_chat_theme_key("style", v)
             app:refresh(true)
@@ -614,16 +615,7 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             app:edit_chat_theme_key("chat_width", tonumber(v))
             app:refresh(true)
         end),
-        pick_row(_("Chat height"),
-            height_labels[tostring(look.chat_height)] or tostring(look.chat_height), {
-            { label = _("Full page"), value = "100" },
-            { label = _("70%"), value = "70" },
-            { label = _("55%"), value = "55" },
-            { label = _("VN (40%)"), value = "40" },
-        }, function(v)
-            app:edit_chat_theme_key("chat_height", tonumber(v))
-            app:refresh(true)
-        end),
+
         pick_row(_("Bubble radius"),
             radius_labels[look.bubble_radius] or look.bubble_radius, {
             { label = _("Small"), value = "small" },
@@ -747,42 +739,6 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             end,
             callback = function() app:prompt_custom_css() end,
         },
-        pick_row(_("Backdrop"),
-            (look.backdrop_mode == "card" and _("Card art"))
-            or (look.backdrop_mode == "image" and _("Image file"))
-            or _("Off"), {
-            { label = _("Off"), value = "off" },
-            { label = _("Card art"), value = "card" },
-            { label = _("Image file"), value = "image" },
-        }, function(v)
-            app:edit_chat_theme_key("backdrop_mode", v)
-            app:refresh(true)
-        end),
-        pick_row(_("Backdrop dimming"),
-            tostring(look.backdrop_dim) .. "%", {
-            { label = _("Subtle (20%)"), value = "20" },
-            { label = _("Light (40%)"), value = "40" },
-            { label = _("Medium (60%)"), value = "60" },
-            { label = _("Strong (80%)"), value = "80" },
-        }, function(v)
-            app:edit_chat_theme_key("backdrop_dim", tonumber(v))
-            app:refresh(true)
-        end),
-        {
-            text = _("Backdrop image…"),
-            subtext = _("Pick the image file used when Backdrop is Image file"),
-            value = function()
-                local f = look.backdrop_image or ""
-                return (f ~= "") and (f:match("[^/]+$") or f) or _("None")
-            end,
-            callback = function()
-                app:choose_file_path(function(file_path)
-                    app:edit_chat_theme_key("backdrop_image", tostring(file_path))
-                    app:edit_chat_theme_key("backdrop_mode", "image")
-                    app:refresh(true)
-                end)
-            end,
-        },
         {
             text = _("Chat footer"),
             subtext = _("Clock, battery and message count above the composer"),
@@ -792,9 +748,7 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
         },
     }
 
-    local gap = Theme.scale(6)
-    return Pages.settings_section(view, bb, x, y + band_h + gap, w,
-        h - band_h - gap, scroll, rows)
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
 
@@ -811,7 +765,7 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
     local default_id = app.state.settings.bubble_theme_id or ""
 
     local style_labels = {
-        bubbles = _("Bubbles (ST)"), flat = _("Flat"), document = _("Document"),
+        bubbles = _("Bubbles"), flat = _("Flat"),
     }
     local shape_labels = {
         round = _("Round"), rounded = _("Rounded"),
@@ -830,7 +784,7 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
           end },
         { text = _("Import theme"), icon = "download",
           callback = function() app:import_bubble_theme() end },
-        { text = _("Default bubble theme"), icon = "star",
+        { text = _("Chat theme"), icon = "star",
           value = function()
               for _, t in ipairs(themes) do
                   if t.id == default_id then return t.name end
@@ -838,7 +792,7 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
               for _, b in ipairs(ChatTheme.BUILTINS()) do
                   if b.id == default_id then return b.name end
               end
-              return _("None (settings)")
+              return _("Default look")
           end,
           callback = function() app:choose_default_bubble_theme() end },
     }
@@ -3183,42 +3137,6 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     -- Chat surface tint (ST SmartThemeChatTintColor analog): paper/gray/
     -- none - set in Appearance.
     P.rect(bb, x, y, w, h, Theme.chat_bg)
-    -- Backdrop (ST backgrounds parity): the theme's backdrop_mode picks
-    -- the source - card art (auto, the character's own PNG) or an image
-    -- file - cover-scaled across the WHOLE page (with chat_height < 100
-    -- the upper band shows the art) and pre-mixed toward the surface by
-    -- backdrop_dim. The legacy settings.chat_wallpaper toggle maps to
-    -- card mode. Theme-off = off.
-    local theme_bd = view.app.state.chat_theme_applied
-    local bd_mode = (theme_bd and theme_bd.backdrop_mode) or "off"
-    local bd_image = (theme_bd and theme_bd.backdrop_image) or ""
-    local bd_dim = (theme_bd and theme_bd.backdrop_dim) or 60
-    local state_wp = view.app.state.settings.chat_wallpaper
-    if bd_mode == "off" and (state_wp == true or state_wp == "on") then
-        bd_mode = "card"
-    end
-    if bd_mode ~= "off" then
-        local src_px = nil
-        if bd_mode == "image" and bd_image ~= "" then
-            src_px = bd_image
-        else
-            src_px = view.app.state.current_character_data
-                and view.app.state.current_character_data.png_path
-                or view.app.state.current_character_file
-        end
-        if src_px and src_px ~= "" then
-            pcall(function()
-                local Thumbs = require("ktui/thumbs")
-                local Pima = require("ktui/primitives")
-                local wp = Thumbs.wallpaper(src_px, w, h, bd_dim,
-                    require("ktui/kthtml").css_hex(Theme.chat_bg, "#ffffff"))
-                if wp then
-                    Pima.image(bb, wp, x, y, w, h, {})
-                end
-            end)
-        end
-    end
-
     local state = view.app.state
     local messages = state.messages or {}
     local char_name = state.current_character or "?"
@@ -3244,25 +3162,19 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     local action_bar_h = rects.composer.h
     local content_h = rects.messages.h
     local action_y = rects.composer.y
-    -- ST waifuMode parity, the configurable fraction ST never exposed:
-    -- chat_height (40..100) pins the message band to the BOTTOM of the
-    -- page; above it the backdrop/surface shows through. 100 = full page.
-    local theme_h = view.app.state.chat_theme_applied
-        and view.app.state.chat_theme_applied.chat_height or nil
-    local height_pct = tonumber(theme_h) or 100
-    if height_pct < 100 then
-        local full_band = content_h
-        content_h = math.max(math.floor(full_band * height_pct / 100), Theme.scale(80))
-        rects.messages.y = rects.messages.y + (full_band - content_h)
-        rects.messages.h = content_h
-    end
     local pad = Theme.scale(10)
+    -- Chat theme chrome: the composer follows the applied theme (the chat
+    -- page is one coherent room); no theme = app palette as before.
+    local chrome = Theme.chat_chrome
+    local bar_bg = (chrome and chrome.bg) or Theme.panel
+    local bar_ink = (chrome and chrome.ink) or Theme.ink
+    local bar_muted = (chrome and chrome.muted) or Theme.muted
     -- Footer band paint (after the messages, before the composer wins the
     -- z-order anyway by painting later).
     if footer_on and rects.footer then
         local fy = rects.footer.y
-        P.rect(bb, x, fy, w, footer_h, Theme.chat_bg)
-        P.rect(bb, x, fy, w, Theme.scale(1), Theme.soft)
+        P.rect(bb, x, fy, w, footer_h, bar_bg)
+        P.rect(bb, x, fy, w, Theme.scale(1), bar_muted)
         local items = {}
         local okb, cap = pcall(function()
             local Device = require("device")
@@ -3273,17 +3185,17 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
         items[#items + 1] = "#" .. tostring(#(state.messages or {}))
         local model = (state.current_connection and state.current_connection.model_id) or ""
         if model ~= "" then
-            items[#items + 1] = Widgets.truncate(model, 28)
+            items[#items + 1] = Widgets.truncate(model, 34)
         end
         local right = os.date("%H:%M")
         local left_str = table.concat(items, " · ")
         P.text(bb, left_str, x + pad, fy + math.floor((footer_h - Theme.line_h("tiny")) / 2) + 1,
             w - pad * 2 - P.text_size(right, nil, "tiny").w - Theme.scale(6),
-            "tiny", { color = Theme.muted })
+            "tiny", { color = bar_muted })
         local rsize = P.text_size(right, nil, "tiny")
         P.text(bb, right, x + w - pad - rsize.w,
             fy + math.floor((footer_h - rsize.h) / 2) + 1,
-            rsize.w + 2, "tiny", { color = Theme.muted })
+            rsize.w + 2, "tiny", { color = bar_muted })
     end
     -- Swipe step (a few text lines - zenpm row parity).
     local ChatBubblesHead = require("ktui/chat_bubbles")
@@ -3321,8 +3233,7 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
         local user_name = view.app._active_persona_name and view.app:_active_persona_name() or "You"
         local char_image = (state.current_character_data and state.current_character_data.png_path)
             or state.current_character_file
-        -- The band bounds (chat_height may have pinned the band to the
-        -- bottom): draw paints INSIDE them, scroll included.
+        -- draw paints inside the message band; scroll included.
         local total_h = ChatBubbles.draw(view, bb, x, rects.messages.y, w,
             content_h, scroll, messages, char_name, is_generating, user_name,
             char_image, state.thinking_frame)
@@ -3342,12 +3253,12 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     local btn_w = math.floor(w / 4)
     local btn_h = action_bar_h
 
-    P.box(bb, x, action_y, w, btn_h, { border = false, background = Theme.panel })
-    P.rect(bb, x, action_y, w, Theme.scale(1), Theme.soft)
+    P.box(bb, x, action_y, w, btn_h, { border = false, background = bar_bg })
+    P.rect(bb, x, action_y, w, Theme.scale(1), bar_muted)
 
     -- Cell helper: icon + label centered, muted when disabled.
     local function bar_cell(cell_x, icon, label, enabled, on_tap, hit_id)
-        local color = enabled and Theme.ink or Theme.muted
+        local color = enabled and bar_ink or bar_muted
         local icon_size = Theme.scale(13)
         local isz = Icons.text_size(icon, icon_size)
         local lsz = P.text_size(label, nil, "tiny", { bold = true })
@@ -3366,7 +3277,7 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     bar_cell(x, "bars", _("Options"), true, function()
         view.app:show_chat_options()
     end, "chat_options")
-    P.rect(bb, x + btn_w, action_y, Theme.scale(1), btn_h, Theme.soft)
+    P.rect(bb, x + btn_w, action_y, Theme.scale(1), btn_h, bar_muted)
 
     -- 2. Write / ⃠ Stop while generating - uniform cell, same metrics as
     --    the other three (the old primary pill + STOP box swap was the

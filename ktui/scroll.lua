@@ -47,9 +47,10 @@ function Scroll.draw_scrollbar(view, bb, max_scroll, scroll)
         thumb_y = track_y + math.floor(travel * scroll / max_scroll)
     end
 
-    -- Draw track and thumb
-    P.rounded_rect(bb, track_x, track_y, track_w, track_h, Theme.ink, math.floor(track_w / 2))
-    P.rounded_rect(bb, thumb_x, thumb_y, thumb_w, thumb_h, Theme.ink, math.floor(thumb_w / 2))
+    -- Draw thumb only (the thick black track fought themed surfaces - the
+    -- print reports); chat themes mute the thumb via chat_muted.
+    P.rounded_rect(bb, thumb_x, thumb_y, thumb_w, thumb_h,
+        Theme.chat_muted or Theme.muted, math.floor(thumb_w / 2))
 
     view.scrollbar = {
         zone = { x = thumb_x - touch_w + thumb_w, y = b.y, w = touch_w, h = b.h },
@@ -132,8 +133,8 @@ function Scroll.paint_drag_thumb(view, pos_y)
         local rect = rects[_i]
         P.rect(Screen.bb, rect.x, rect.y, rect.w, rect.h, Theme.bg)
     end
-    P.rounded_rect(Screen.bb, sb.track_x, sb.track_y, sb.track_w, sb.track_h, Theme.ink, math.floor(sb.track_w / 2))
-    P.rounded_rect(Screen.bb, sb.thumb_x, thumb_y, sb.thumb_w, sb.thumb_h, Theme.ink, math.floor(sb.thumb_w / 2))
+    P.rounded_rect(Screen.bb, sb.thumb_x, thumb_y, sb.thumb_w, sb.thumb_h,
+        Theme.chat_muted or Theme.muted, math.floor(sb.thumb_w / 2))
     sb._thumb_y = thumb_y
 
     return rects
