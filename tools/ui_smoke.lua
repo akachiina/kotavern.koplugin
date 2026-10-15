@@ -3503,6 +3503,119 @@ do
         .. " 130=" .. tostring(h130) .. ")")
 end
 
+-- B3 backdrop: the generator itself (full-res source, dim mixing, cache
+-- keys) plus the page integration. The fixture card is the plugin's own
+-- screenshot PNG. History: the mix loop crashed on a nil Blitbuffer global
+-- inside its pcall from day one - the backdrop silently NEVER generated.
+do
+    local ChatTheme = require("ktui/chat_theme")
+    local Thumbs = require("ktui/thumbs")
+    local KtHTML = require("ktui/kthtml")
+    local card_fake = PLUGIN .. "/assets/screenshot-home.png"
+    local surf = KtHTML.css_hex(Theme.chat_bg, "#ffffff")
+
+    -- Generator: produces a file with visible art at dim 40...
+    local wp1 = Thumbs.wallpaper(card_fake, 300, 200, 40, surf)
+    ok(wp1 ~= nil, "b3 backdrop: generation returns a file (nil = the old "
+        .. "Blitbuffer crash)")
+    if wp1 then
+        local png_ok, png_bb = pcall(function()
+            local RenderImage = require("ui/renderimage")
+            return RenderImage:renderImageFile(wp1)
+        end)
+        local dark_n = 0
+        if png_ok and png_bb then
+            for yy = 0, png_bb:getHeight() - 1, 2 do
+                for xx = 0, png_bb:getWidth() - 1, 2 do
+                    local okp, px = pcall(function() return png_bb:getPixel(xx, yy) end)
+                    if okp and px and px:getR() < 200 then dark_n = dark_n + 1 end
+                end
+            end
+            pcall(function() png_bb:free() end)
+        end
+        ok(png_ok and dark_n > 50,
+            "b3 backdrop: dim-40 art is visible in the file (dark="
+            .. dark_n .. ")")
+        -- ...and dim 80 washes lighter than dim 40 (mean luminance rises:
+        -- more mixing toward the near-white surface).
+        local wp3 = Thumbs.wallpaper(card_fake, 300, 200, 80, surf)
+        ok(wp3 ~= nil and wp3 ~= wp1, "b3 backdrop: dim rides in the cache key")
+        if wp3 then
+            local function mean_lum(path)
+                local okm, pb = pcall(function()
+                    local RenderImage = require("ui/renderimage")
+                    return RenderImage:renderImageFile(path)
+                end)
+                if not okm or not pb then return nil end
+                local sum, n = 0, 0
+                for yy = 0, pb:getHeight() - 1, 2 do
+                    for xx = 0, pb:getWidth() - 1, 2 do
+                        local okp, px = pcall(function() return pb:getPixel(xx, yy) end)
+                        if okp and px then sum = sum + px:getR(); n = n + 1 end
+                    end
+                end
+                pcall(function() pb:free() end)
+                return (n > 0) and (sum / n) or nil
+            end
+            local m40 = mean_lum(wp1)
+            local m80 = mean_lum(wp3)
+            ok(m40 ~= nil and m80 ~= nil and m80 > m40,
+                "b3 backdrop: dim 80 washes lighter than dim 40 (mean "
+                .. string.format("%.1f vs %.1f", m80 or -1, m40 or -1) .. ")")
+        end
+        -- Cache hit: same args return the same file.
+        local wp2 = Thumbs.wallpaper(card_fake, 300, 200, 40, surf)
+        ok(wp2 == wp1, "b3 backdrop: cache returns the same file")
+    end
+
+    -- Page integration: card mode paints the backdrop under the messages
+    -- (the old code silently painted NOTHING - the crash was swallowed).
+    local now_b3 = os.time()
+    local app_b = fake_app({ page = "chat",
+        settings = { chat_html_render = true, chat_wallpaper = false },
+        messages = {
+            { role = "assistant", name = "Aria",
+              content = "body over the backdrop", send_date = now_b3 },
+        } })
+    app_b.state.current_character_file = card_fake
+    app_b.state.chat_theme_applied = ChatTheme.normalize({
+        backdrop_mode = "card", backdrop_dim = 40 })
+    local view_b = { app = app_b, hitboxes = {}, refresh = function() end }
+    local b_bd = new_bb()
+    local okp_b = pcall(function() Pages.chat(view_b, b_bd, 0, 0, VW, VH, 0) end)
+    ok(okp_b, "b3 backdrop: card mode paints without crashing")
+    -- The backdrop painted: a lateral strip with no message text must hold
+    -- art ink (the pure surface would be ~243 everywhere).
+    local art_ink = 0
+    for yy = 8, 100, 2 do
+        for xx = 4, 26, 2 do
+            local okp, px = pcall(function() return b_bd:getPixel(xx, yy) end)
+            if okp and px and px:getR() < 210 then art_ink = art_ink + 1 end
+        end
+    end
+    ok(art_ink > 5,
+        "b3 backdrop: page carries art behind the messages (ink="
+        .. art_ink .. ")")
+    dump(b_bd, "b3_backdrop_card")
+    -- And the legacy toggle alone (no theme) still means card mode.
+    app_b.state.chat_theme_applied = nil
+    app_b.state.settings.chat_wallpaper = true
+    local b_bd2 = new_bb()
+    view_b.hitboxes = {}
+    local okp_b2 = pcall(function() Pages.chat(view_b, b_bd2, 0, 0, VW, VH, 0) end)
+    ok(okp_b2, "b3 backdrop: legacy toggle paints without crashing")
+    local art_ink2 = 0
+    for yy = 8, 100, 2 do
+        for xx = 4, 26, 2 do
+            local okp, px = pcall(function() return b_bd2:getPixel(xx, yy) end)
+            if okp and px and px:getR() < 210 then art_ink2 = art_ink2 + 1 end
+        end
+    end
+    ok(art_ink2 > 5,
+        "b3 backdrop: legacy chat_wallpaper toggle still paints the card art (ink="
+        .. art_ink2 .. ")")
+end
+
 -- Chat Theme render: a dark theme must flip the doc colors (the "room"
 -- semantic - dark chat inside a light app) and scan_bottom must handle it.
 do

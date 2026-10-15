@@ -1957,3 +1957,33 @@ msgstr "No se pudo copiar el archivo de fuente."
 
 msgid "Font installed"
 msgstr "Fuente instalada"
+
+msgid "Backdrop"
+msgstr "Fondo"
+
+msgid "Card art"
+msgstr "Arte de la tarjeta"
+
+msgid "Image file"
+msgstr "Archivo de imagen"
+
+msgid "Backdrop dimming"
+msgstr "Aclarado del fondo"
+
+msgid "Subtle (20%)"
+msgstr "Sutil (20%)"
+
+msgid "Light (40%)"
+msgstr "Suave (40%)"
+
+msgid "Medium (60%)"
+msgstr "Medio (60%)"
+
+msgid "Strong (80%)"
+msgstr "Fuerte (80%)"
+
+msgid "Backdrop image…"
+msgstr "Imagen de fondo…"
+
+msgid "Pick the image file used when Backdrop is Image file"
+msgstr "Elige la imagen usada cuando el fondo sea Archivo de imagen"

@@ -23,6 +23,12 @@ if not ok_lfs or not lfs then
     lfs = nil
 end
 
+-- NOTE: required HERE, not at first use inside the wallpaper pcall: the
+-- original code called Blitbuffer.gray() on a nil global, the pcall ate
+-- the crash and the backdrop silently NEVER generated (the "wallpaper não
+-- funciona" report - shipped broken since the feature landed).
+local Blitbuffer = require("ffi/blitbuffer")
+
 local function thumbs_dir()
     local Storage = require("kt_storage")
     local dir = Storage.data_dir() .. "/chat_thumbs"
@@ -150,24 +156,32 @@ end
 -- bg, so a full-blast art would fight it). Cached per card+size on disk.
 -- Returns the wallpaper PNG path or nil. Never throws.
 local wp_cache = {}
-function Thumbs.wallpaper(path, w, h)
+-- Chat backdrop: the card art (or any image) cover-scaled into the chat
+-- area and mixed toward the surface color by `dim` (0..100 % - e-ink keeps
+-- text contrast; ST backgrounds parity). Source = the ORIGINAL file (the
+-- old thumb-based path fed a 480px upscale - the "wallpaper não funciona"
+-- report), cover-cropped once and disk-cached per card+size+theme+dim.
+-- Returns the backdrop PNG path or nil. Never throws.
+function Thumbs.wallpaper(path, w, h, dim, surface_hex)
     w = math.max(1, math.floor(w or 240))
     h = math.max(1, math.floor(h or 320))
-    -- The art is pre-mixed toward the current theme's bg at generation time,
-    -- so the THEME rides in the cache key: a light<->dark switch must not
-    -- reuse the stale-mixed PNG.
+    dim = math.min(100, math.max(0, math.floor(tonumber(dim) or 60)))
+    -- The art is pre-mixed toward the surface at generation time, so the
+    -- surface color AND dim ride in the cache key.
     local theme_tag = tostring(require("ktui/theme").get_theme() or "x"):gsub("[^%w]", "_")
-    local key = tostring(Thumbs.key_for(path)) .. ":" .. theme_tag .. ":" .. w .. "x" .. h
+    local surf_tag = tostring(surface_hex or ""):gsub("[^%w]", "")
+    -- v2: the first mix formula had the Blitbuffer.gray ink/luminance
+    -- inverted (never visible in the wild - the nil-Blitbuffer crash below
+    -- meant nothing ever generated); the tag still flushes any stale file.
+    local key = tostring(Thumbs.key_for(path)) .. ":" .. theme_tag .. ":"
+        .. surf_tag .. ":v2:" .. dim .. ":" .. w .. "x" .. h
     if wp_cache[key] and lfs.attributes(wp_cache[key], "mode") == "file" then
         return wp_cache[key]
     end
-    local tp = Thumbs.cached(path)
-    if not tp then
-        tp = Thumbs.generate(path)
-    end
-    if not tp then return nil end
-    local out = thumbs_dir() .. "/wp_" .. Thumbs.key_for(path) .. "_" .. theme_tag
-        .. "_" .. w .. "x" .. h .. ".png"
+    local ksig = Thumbs.key_for(path)
+    if not ksig then return nil end
+    local out = thumbs_dir() .. "/wp_" .. ksig .. "_" .. theme_tag
+        .. "_" .. surf_tag .. "_v2_" .. dim .. "_" .. w .. "x" .. h .. ".png"
     if lfs.attributes(out, "mode") == "file" and (lfs.attributes(out, "size") or 0) > 0 then
         wp_cache[key] = out
         return out
@@ -176,10 +190,14 @@ function Thumbs.wallpaper(path, w, h)
     pcall(function()
         local P = require("ktui/primitives")
         local RenderImage = require("ui/renderimage")
-        local iw, ih = P.image_dims(tp)
-        if not iw or not ih or iw <= 0 or ih <= 0 then return end
-        local bb = RenderImage:renderImageFile(tp)
+        -- Decode the ORIGINAL: the 480px thumb was the blurry-mush source.
+        local bb = RenderImage:renderImageFile(path)
         if not bb then return end
+        local iw, ih = bb:getWidth(), bb:getHeight()
+        if not iw or not ih or iw <= 0 or ih <= 0 then
+            if bb.free then pcall(function() bb:free() end) end
+            return
+        end
         -- Aspect-center-crop to the target ratio, then downscale.
         local src_ar, dst_ar = iw / ih, w / h
         local sx, sy, sw, sh
@@ -192,18 +210,23 @@ function Thumbs.wallpaper(path, w, h)
         end
         local scaled = RenderImage:scaleBlitBuffer(bb:viewport(sx, sy, sw, sh), w, h)
         if scaled then
-            -- Mix toward the themed bg (light: white) at half strength: the
-            -- art stays recognizable but recessed behind any text on top.
-            -- getR() is 0..255; Blitbuffer.gray() takes 0..1. Mix EVERY
-            -- pixel: skipped cells would keep raw art and read as a
-            -- checkerboard under the bubbles (one-time cost, disk-cached).
-            local bg = require("ktui/theme").bg
-            local br01 = bg:getR() / 255
+            -- Mix toward the surface by dim%: the art stays recognizable
+            -- but recessed behind any text on top. PROBE-VERIFIED quirk:
+            -- this build's Blitbuffer.gray(v) is INK, not luminance
+            -- (0 = white, 1 = black: gray(0.953) paints pixel 12), so the
+            -- luminance we compute is inverted on the way in. Mix EVERY
+            -- pixel: skipped cells would read as a checkerboard (one-time
+            -- cost, disk-cached).
+            local ChatTheme = require("ktui/chat_theme")
+            local scol = ChatTheme.parse_color(surface_hex or "")
+                or { r = 255, g = 255, b = 255, a = 1 }
+            local m = dim / 100
+            local sr = scol.r / 255
             for y = 0, h - 1 do
                 for x = 0, w - 1 do
                     local r01 = scaled:getPixel(x, y):getR() / 255
-                    scaled:setPixel(x, y,
-                        Blitbuffer.gray(0.5 * (r01 + br01)))
+                    local lum = r01 * (1 - m) + sr * m
+                    scaled:setPixel(x, y, Blitbuffer.gray(1 - lum))
                 end
             end
             local wok = pcall(function() scaled:writePNG(out) end)

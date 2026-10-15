@@ -747,12 +747,41 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             end,
             callback = function() app:prompt_custom_css() end,
         },
+        pick_row(_("Backdrop"),
+            (look.backdrop_mode == "card" and _("Card art"))
+            or (look.backdrop_mode == "image" and _("Image file"))
+            or _("Off"), {
+            { label = _("Off"), value = "off" },
+            { label = _("Card art"), value = "card" },
+            { label = _("Image file"), value = "image" },
+        }, function(v)
+            app:edit_chat_theme_key("backdrop_mode", v)
+            app:refresh(true)
+        end),
+        pick_row(_("Backdrop dimming"),
+            tostring(look.backdrop_dim) .. "%", {
+            { label = _("Subtle (20%)"), value = "20" },
+            { label = _("Light (40%)"), value = "40" },
+            { label = _("Medium (60%)"), value = "60" },
+            { label = _("Strong (80%)"), value = "80" },
+        }, function(v)
+            app:edit_chat_theme_key("backdrop_dim", tonumber(v))
+            app:refresh(true)
+        end),
         {
-            text = _("Chat wallpaper"),
-            subtext = _("Character card art behind the messages (ST wallpaper)"),
-            toggle = true,
-            value = function() return app.state.settings.chat_wallpaper == true end,
-            callback = function() app:toggle_setting("chat_wallpaper") end,
+            text = _("Backdrop image…"),
+            subtext = _("Pick the image file used when Backdrop is Image file"),
+            value = function()
+                local f = look.backdrop_image or ""
+                return (f ~= "") and (f:match("[^/]+$") or f) or _("None")
+            end,
+            callback = function()
+                app:choose_file_path(function(file_path)
+                    app:edit_chat_theme_key("backdrop_image", tostring(file_path))
+                    app:edit_chat_theme_key("backdrop_mode", "image")
+                    app:refresh(true)
+                end)
+            end,
         },
         {
             text = _("Chat footer"),
@@ -3154,22 +3183,35 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     -- Chat surface tint (ST SmartThemeChatTintColor analog): paper/gray/
     -- none - set in Appearance.
     P.rect(bb, x, y, w, h, Theme.chat_bg)
-    -- Wallpaper (ST background parity): the character card's art (its
-    -- thumbnail, cached) stretched across the chat area, then dimmed so
-    -- bubbles/text keep contrast on e-ink. Off by default (settings.
-    -- chat_wallpaper = "on" | "off", default off for a clean flat look
-    -- until the user asks for the card art like ST does).
+    -- Backdrop (ST backgrounds parity): the theme's backdrop_mode picks
+    -- the source - card art (auto, the character's own PNG) or an image
+    -- file - cover-scaled across the WHOLE page (with chat_height < 100
+    -- the upper band shows the art) and pre-mixed toward the surface by
+    -- backdrop_dim. The legacy settings.chat_wallpaper toggle maps to
+    -- card mode. Theme-off = off.
+    local theme_bd = view.app.state.chat_theme_applied
+    local bd_mode = (theme_bd and theme_bd.backdrop_mode) or "off"
+    local bd_image = (theme_bd and theme_bd.backdrop_image) or ""
+    local bd_dim = (theme_bd and theme_bd.backdrop_dim) or 60
     local state_wp = view.app.state.settings.chat_wallpaper
-    if state_wp ~= false and state_wp ~= "off" then
-        local card_px = view.app.state.current_character_data and view.app.state.current_character_data.png_path
-            or view.app.state.current_character_file
-        if card_px and card_px ~= "" then
-            -- Pre-mixed toward the surface (cached on disk): no solid wash
-            -- over the art, e-ink contrast kept (see Thumbs.wallpaper).
+    if bd_mode == "off" and (state_wp == true or state_wp == "on") then
+        bd_mode = "card"
+    end
+    if bd_mode ~= "off" then
+        local src_px = nil
+        if bd_mode == "image" and bd_image ~= "" then
+            src_px = bd_image
+        else
+            src_px = view.app.state.current_character_data
+                and view.app.state.current_character_data.png_path
+                or view.app.state.current_character_file
+        end
+        if src_px and src_px ~= "" then
             pcall(function()
                 local Thumbs = require("ktui/thumbs")
                 local Pima = require("ktui/primitives")
-                local wp = Thumbs.wallpaper(card_px, w, h)
+                local wp = Thumbs.wallpaper(src_px, w, h, bd_dim,
+                    require("ktui/kthtml").css_hex(Theme.chat_bg, "#ffffff"))
                 if wp then
                     Pima.image(bb, wp, x, y, w, h, {})
                 end
