@@ -231,7 +231,8 @@ body { margin: 0; padding: 0; %s %s background: %s; color: %s; font-family: 'KTU
 p { margin: 0; }
 b { font-weight: bold; }
 s { text-decoration: line-through; }
-i { font-style: italic; }
+i { font-style: italic; color: %s; }
+q { color: %s; }
 .ktcode { font-family: monospace; }
 p.ktfence { background: %s; color: %s; font-family: monospace; }
 .ktspl { display: inline-block; background: %s; color: %s !important; text-decoration: none !important; }
@@ -245,6 +246,8 @@ a { color: %s !important; text-decoration: underline; }
         lh_css,
         c.surface,
         c.text,
+        c.italics,
+        c.quote,
         c.mask,
         c.mask_text or "#161616",
         c.mask,

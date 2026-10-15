@@ -308,6 +308,10 @@ function W.row(view, bb, o)
     -- Right side: compose slots right-to-left in ONE place (geom): the xs
     -- double as paint positions and hit rects, so they cannot drift apart
     -- (the old code painted at tw_x but hit at a stale `right`).
+    -- swatch: a color chip in the value slot (the editor's color rows -
+    -- the dry "#aabbcc" hex read as noise); hairline border so light
+    -- colors survive on the panel.
+    local swatch_w = o.swatch and Theme.scale(18) or 0
     local kebab_w = o.kebab and Theme.scale(34) or 0
     local toggle_w = o.toggle and Theme.scale(52) or 0
     local chev_w = o.chevron and Theme.scale(26) or 0
@@ -315,6 +319,15 @@ function W.row(view, bb, o)
     local slot_xs, right = Geom.row_slots(x + w, pad,
         { kebab_w, toggle_w, chev_w, check_w })
     local kx, tw_x, cvx, chx = slot_xs[1], slot_xs[2], slot_xs[3], slot_xs[4]
+    if o.swatch then
+        local sw = Theme.scale(18)
+        local sy = y + Geom.center_offset(h, sw)
+        P.box(bb, right - sw - Theme.scale(6), sy, sw, sw, {
+            border = true, border_size = 1, border_color = Theme.soft,
+            background = o.swatch, radius = Theme.scale(4),
+        })
+        right = right - sw - Theme.scale(14)
+    end
     if o.kebab then
         local icon_size = Theme.scale(12)
         local isz = Icons.text_size("ellipsis-v", icon_size)

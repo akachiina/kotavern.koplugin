@@ -242,6 +242,7 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
                 title = row.text,
                 subtitle = row.subtext,
                 value_fn = row.value,
+                swatch_fn = row.swatch,
                 toggle = row.toggle,
                 callback = row.callback,
                 enabled = row.enabled,
@@ -297,12 +298,24 @@ function Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
         -- (W.row also guards with a type check as a second line of defense).
         local value = (type(raw) == "boolean") and nil or raw
         local toggled = raw == true
+        -- Swatch rows (the color editor): a hex chip replaces the value
+        -- text when a color is set; unset keeps the "Default" label.
+        local swatch = nil
+        if item.swatch_fn and type(raw) == "string" and raw:match("^#%x%x%x%x%x%x$") then
+            local okc, sc = pcall(function()
+                return require("ffi/blitbuffer").colorFromString(raw)
+            end)
+            if okc and sc then swatch = sc end
+        end
         Widgets.row(view, bb, {
             x = row_x, y = item_y, w = row_w, h = item.h,
             icon = item.icon,
             title = item.title,
             subtitle = item.subtitle,
-            value = value,
+            -- NOTE: truthiness, never ~= nil: a cdata color would route
+            -- through ColorRGB32 __eq and crash (the AGENTS.md gotcha).
+            value = swatch and nil or value,
+            swatch = swatch,
             chevron = not item.toggle and value == nil,
             toggle = item.toggle,
             toggle_value = item.toggle and toggled,
@@ -432,11 +445,6 @@ end
 -- Settings > Appearance: theme/font/density/chat-style/appearance toggles.
 function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
     local app = view.app
-    local density_labels = {
-        compact = _("Compact"),
-        normal = _("Normal"),
-        spacious = _("Spacious"),
-    }
     local bubble_labels = {
         bubbles = _("Bubbles"),
         st = _("SillyTavern"),
@@ -462,17 +470,6 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             text = _("Font size"),
             value = function() return tostring(app.state.settings.base_font_size) end,
             callback = function() app:prompt_base_font_size() end,
-        },
-        {
-            text = _("Density"),
-            value = function() return density_labels[app.state.settings.density] or app.state.settings.density end,
-            callback = function()
-                app:choose_setting("density", _("Density"), {
-                    { label = _("Compact"), value = "compact" },
-                    { label = _("Normal"), value = "normal" },
-                    { label = _("Spacious"), value = "spacious" },
-                })
-            end,
         },
         {
             text = _("Chat"),
@@ -523,9 +520,6 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     local radius_labels = {
         small = _("Small"), normal = _("Normal"), large = _("Large"),
     }
-    local density_labels = {
-        compact = _("Compact"), normal = _("Normal"), spacious = _("Spacious"),
-    }
     local function pct_value(map, v)
         return map[tostring(v)] or tostring(v)
     end
@@ -565,37 +559,15 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     local rows = {
         { section = true, text = _("Chat theme") },
         {
-            text = _("Chat theme"),
-            subtext = _("Default for every chat"),
+            text = _("Default theme"),
+            icon = "star",
+            subtext = _("For every chat"),
             value = function() return global_name or _("Default look") end,
             callback = function() app:choose_default_bubble_theme() end,
         },
         {
-            text = _("This chat"),
-            subtext = _("Overrides the default for this conversation only"),
-            value = function()
-                local cur = app.state.current_chat_bubble_theme_id
-                if cur == nil or cur == "" then return _("Follows the default") end
-                local _, nm = app:find_chat_theme(cur)
-                return (nm or "?") .. " ●"
-            end,
-            callback = function() app:choose_chat_bubble_theme() end,
-        },
-        {
             text = _("Manage themes…"),
             callback = function() app:navigate("settings_bubble_themes") end,
-        },
-        {
-            text = _("Save current look as theme"), icon = "plus",
-            callback = function()
-                local Modals = require("ktui/modals")
-                local _ = require("gettext")
-                Modals.input(_("Theme name"), "", _("e.g. Warm paper"), _("Save"),
-                    function(name)
-                        app:save_bubble_theme_from_current(name)
-                        app:refresh(true)
-                    end)
-            end,
         },
         { section = true, text = _("Chat") },
         pick_row(_("Chat style"), style_labels[look.style] or look.style, {
@@ -625,14 +597,7 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             app:edit_chat_theme_key("bubble_radius", v)
             app:refresh(true)
         end),
-        pick_row(_("Density"), density_labels[look.density] or look.density, {
-            { label = _("Compact"), value = "compact" },
-            { label = _("Normal"), value = "normal" },
-            { label = _("Spacious"), value = "spacious" },
-        }, function(v)
-            app:edit_chat_theme_key("density", v)
-            app:refresh(true)
-        end),
+
         { section = true, text = _("Text") },
         {
             text = _("Chat font"),
@@ -663,36 +628,43 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
         { section = true, text = _("Colors") },
         {
             text = _("Text"),
+            swatch = true,
             value = function() return (look.colors.text ~= "") and look.colors.text or _("Default") end,
             callback = function() app:prompt_theme_color("text", _("Text")) end,
         },
         {
             text = _("Chat surface"),
+            swatch = true,
             value = function() return (look.colors.surface ~= "") and look.colors.surface or _("Default") end,
             callback = function() app:prompt_theme_color("surface", _("Chat surface")) end,
         },
         {
             text = _("AI messages"),
+            swatch = true,
             value = function() return (look.colors.ai_panel ~= "") and look.colors.ai_panel or _("Default") end,
             callback = function() app:prompt_theme_color("ai_panel", _("AI messages")) end,
         },
         {
             text = _("User messages"),
+            swatch = true,
             value = function() return (look.colors.user_panel ~= "") and look.colors.user_panel or _("Default") end,
             callback = function() app:prompt_theme_color("user_panel", _("User messages")) end,
         },
         {
             text = _("Border"),
+            swatch = true,
             value = function() return (look.colors.border ~= "") and look.colors.border or _("Default") end,
             callback = function() app:prompt_theme_color("border", _("Border")) end,
         },
         {
             text = _("Italics"),
+            swatch = true,
             value = function() return (look.colors.italics ~= "") and look.colors.italics or _("Default") end,
             callback = function() app:prompt_theme_color("italics", _("Italics")) end,
         },
         {
             text = _("Quote"),
+            swatch = true,
             value = function() return (look.colors.quote ~= "") and look.colors.quote or _("Default") end,
             callback = function() app:prompt_theme_color("quote", _("Quote")) end,
         },
@@ -3214,7 +3186,7 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
             local preview_y = band_y + Theme.scale(12)
             local bubble_w = math.min(math.floor(w * 0.85), w - pad * 4)
             P.box(bb, x + pad, preview_y, bubble_w, Theme.scale(60), {
-                border_color = Theme.soft, radius = Theme.scale(6), background = Theme.panel,
+                border_color = bar_muted, radius = Theme.scale(6), background = bar_bg,
             })
             P.text(bb, char_name, x + pad + Theme.scale(10), preview_y + Theme.scale(4), bubble_w - Theme.scale(20), "tiny", { bold = true })
             local preview = Widgets.truncate(state.chat_first_mes, 200)
@@ -3291,7 +3263,7 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
             view.app:send_message()
         end, "chat_write")
     end
-    P.rect(bb, x + btn_w * 2, action_y, Theme.scale(1), btn_h, Theme.soft)
+    P.rect(bb, x + btn_w * 2, action_y, Theme.scale(1), btn_h, bar_muted)
 
     -- 3. Continue: nudge the last assistant reply, or - when the last
     -- message is the user's (interrupted before the reply came) - simply
@@ -3305,7 +3277,7 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
             view.app:generate_reply()
         end
     end, "chat_continue")
-    P.rect(bb, x + btn_w * 3, action_y, Theme.scale(1), btn_h, Theme.soft)
+    P.rect(bb, x + btn_w * 3, action_y, Theme.scale(1), btn_h, bar_muted)
 
     -- 4. Impersonate
     bar_cell(x + btn_w * 3, "user", _("Impersonate"), not is_generating, function()

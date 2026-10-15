@@ -171,6 +171,10 @@ function Theme._apply_chat_colors()
     -- black palette ink on a dark theme was unreadable, the print reports).
     Theme.chat_ink = Theme.ink
     Theme.chat_muted = Theme.muted
+    -- Panel/band border ink: the theme's border color when it sets one
+    -- (the knob used to feed ONLY the doc stylesheet - canvas borders kept
+    -- the light palette soft and glowed on dark themes).
+    Theme.chat_border = Theme.soft
     -- Chat page chrome (header band + composer + footer): nil = the app
     -- palette paints it; a theme that owns the ink repaints the whole chat
     -- page in its own colors (the "chat is a room" semantic - white chrome
@@ -223,6 +227,8 @@ function Theme._apply_chat_colors()
                 ink = Theme.chat_ink,
                 muted = Theme.chat_muted,
             }
+            local border_bb = hex_to_bb(o.border)
+            if border_bb then Theme.chat_border = border_bb end
         end
     end
 end

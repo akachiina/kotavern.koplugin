@@ -8,13 +8,68 @@ local TextBoxWidget = require("ui/widget/textboxwidget")
 
 local Theme = require("ktui/theme")
 
+local ok_ffi, ffi = pcall(require, "ffi")
+if not ok_ffi then ffi = nil end
+
 local P = {}
+
+-- ============================================================ color fill ====
+--
+-- KOReader v2026.07's paintRect takes the C blitbuffer shortcut
+-- (`canUseCbb()`) and paints `value:getColor8().a` - the LUMINANCE BYTE.
+-- On a color (TYPE_BBRGB32) buffer every themed fill comes out GRAY while
+-- the MuPDF docs/images/text keep their true colors: the gray-balloon vs
+-- navy-text-stripe mismatch reported on the color emulator (invisible on
+-- grayscale e-ink, where BB8 flattening is a no-op). We replicate
+-- KOReader's own non-CBB RGB32 scanline fill (same code path its `else`
+-- branch uses - v:getColorRGB32() copied per scanline) for RGB32 targets;
+-- every other target keeps bb:paintRect exactly as before.
+local TYPE_RGB32 = ok_ffi and (require("ffi/blitbuffer")).TYPE_BBRGB32 or nil
+
+local function rgb32_fast_fill(bb, x, y, w, h, color)
+    local v = color or Theme.bg
+    local bounded = { bb:getBoundedRect(x, y, w, h) }
+    x, y, w, h = bounded[1], bounded[2], bounded[3], bounded[4]
+    if w <= 0 or h <= 0 then return end
+    local rect = { bb:getPhysicalRect(x, y, w, h) }
+    x, y, w, h = rect[1], rect[2], rect[3], rect[4]
+    if w <= 0 or h <= 0 then return end
+    local src = v:getColorRGB32()
+    local BB = require("ffi/blitbuffer")
+    local px_t = ffi.typeof("ColorRGB32*")
+    local data = ffi.cast("uint8_t*", bb.data)
+    for j = y, y + h - 1 do
+        local p = ffi.cast(px_t, data + bb.stride * j) + x
+        for i = 0, w - 1 do
+            p[0] = src
+            p = p + 1
+        end
+    end
+end
+
+-- True-color fill: routes RGB32 buffers through our scanline fill (the
+-- CBB shortcut would flatten to gray); everything else via paintRect.
+local function paint_fill(bb, x, y, w, h, color)
+    local target = color or Theme.bg
+    local is_rgb32 = false
+    if TYPE_RGB32 then
+        local ok_t = pcall(function()
+            is_rgb32 = bb:getType() == TYPE_RGB32
+        end)
+        if not ok_t then is_rgb32 = false end
+    end
+    if is_rgb32 and type(target) == "cdata" and target.getColorRGB32 then
+        local ok_f = pcall(rgb32_fast_fill, bb, x, y, w, h, target)
+        if ok_f then return end
+    end
+    bb:paintRect(x, y, w, h, target)
+end
 
 function P.rect(bb, x, y, w, h, color)
     if w <= 0 or h <= 0 then
         return
     end
-    bb:paintRect(x, y, w, h, color or Theme.bg)
+    paint_fill(bb, x, y, w, h, color or Theme.bg)
 end
 
 function P.rounded_rect(bb, x, y, w, h, color, radius)
@@ -22,6 +77,46 @@ function P.rounded_rect(bb, x, y, w, h, color, radius)
         return
     end
     radius = radius or Theme.metrics().radius
+    -- Color targets must NOT use paintRoundedRect: its center fill runs the
+    -- CBB shortcut and flattens to the luminance byte (the gray-balloon
+    -- bug). Compose: true-color RING via bb:paintBorder (its C path keeps
+    -- the color - verified: panel edge rings paint true) + our scanline
+    -- fill for the center.
+    local target = color or Theme.bg
+    local is_rgb32 = false
+    if TYPE_RGB32 then
+        local ok_t = pcall(function()
+            is_rgb32 = bb:getType() == TYPE_RGB32
+        end)
+        if not ok_t then is_rgb32 = false end
+    end
+    if is_rgb32 and type(target) == "cdata" and target.getColorRGB32 then
+        local r = math.min(radius, math.floor(w / 2), math.floor(h / 2))
+        if r <= 0 then
+            paint_fill(bb, x, y, w, h, target)
+            return
+        end
+        -- Row-scan rounded rect (paintBorder strips would flatten through
+        -- the same CBB shortcut; the arcs keep color but the strips do
+        -- not). Circle-math insets per row, each strip via paint_fill.
+        local ok_scan = pcall(function()
+            for row = 0, h - 1 do
+                local from_edge = row
+                if row >= h - r then from_edge = h - 1 - row end
+                local inset = 0
+                if from_edge < r then
+                    local dy = (from_edge + 0.5) - r
+                    inset = math.max(0, r - math.floor(math.sqrt(math.max(0, r * r - dy * dy)) + 0.5))
+                end
+                if inset * 2 < w then
+                    paint_fill(bb, x + inset, y + row, w - inset * 2, 1, target)
+                end
+            end
+        end)
+        if ok_scan then
+            return
+        end
+    end
     if bb.paintRoundedRect then
         local ok = pcall(function()
             bb:paintRoundedRect(x, y, w, h, color or Theme.bg, radius)
@@ -73,7 +168,27 @@ function P.stroke(bb, x, y, w, h, size, color)
     if w <= 0 or h <= 0 then
         return
     end
-    bb:paintBorder(x, y, w, h, size or 2, color or Theme.border, nil, true)
+    -- paintBorder's strips flatten through the CBB shortcut on color
+    -- targets (same gray-fill bug); four true-color fills instead.
+    local target = color or Theme.border
+    local is_rgb32 = false
+    if TYPE_RGB32 then
+        local ok_t = pcall(function()
+            is_rgb32 = bb:getType() == TYPE_RGB32
+        end)
+        if not ok_t then is_rgb32 = false end
+    end
+    if is_rgb32 and type(target) == "cdata" and target.getColorRGB32 then
+        local s = size or 2
+        local ok_f = pcall(function()
+            paint_fill(bb, x, y, w, s, target)
+            paint_fill(bb, x, y + h - s, w, s, target)
+            paint_fill(bb, x, y + s, s, h - s * 2, target)
+            paint_fill(bb, x + w - s, y + s, s, h - s * 2, target)
+        end)
+        if ok_f then return end
+    end
+    bb:paintBorder(x, y, w, h, size or 2, target, nil, true)
 end
 
 -- Zen-style pill toggle (copied from ZenPM)
@@ -87,7 +202,7 @@ local function paint_zen_pill(bb, x, y, w, h, color)
         end
         local row_w = w - inset * 2
         if row_w > 0 then
-            bb:paintRect(x + inset, y + row, row_w, 1, color)
+            paint_fill(bb, x + inset, y + row, row_w, 1, color)
         end
     end
 end
@@ -96,7 +211,7 @@ local function paint_zen_circle(bb, x, y, radius, color)
     for row = -radius, radius do
         local half = math.floor(math.sqrt(radius * radius - row * row) + 0.5)
         if half > 0 then
-            bb:paintRect(x - half, y + row, half * 2, 1, color)
+            paint_fill(bb, x - half, y + row, half * 2, 1, color)
         end
     end
 end
@@ -114,8 +229,8 @@ function P.circle_carve(bb, x, y, size, color)
         local half = math.sqrt(math.max(0, r * r - dy * dy))
         local inset = math.floor(r - half + 0.5)
         if inset > 0 then
-            bb:paintRect(x, y + row, inset, 1, color)
-            bb:paintRect(x + size - inset, y + row, inset, 1, color)
+            paint_fill(bb, x, y + row, inset, 1, color)
+            paint_fill(bb, x + size - inset, y + row, inset, 1, color)
         end
     end
 end
@@ -132,8 +247,8 @@ function P.corner_carve(bb, x, y, size, radius, color)
         if inset > 0 then
             local y_top = y + row
             local y_bot = y + size - 1 - row
-            bb:paintRect(x, y_top, inset, 1, color)
-            bb:paintRect(x + size - inset, y_top, inset, 1, color)
+            paint_fill(bb, x, y_top, inset, 1, color)
+            paint_fill(bb, x + size - inset, y_top, inset, 1, color)
             bb:paintRect(x, y_bot, inset, 1, color)
             bb:paintRect(x + size - inset, y_bot, inset, 1, color)
         end

@@ -3180,7 +3180,10 @@ function App:show_chat_options()
                 self:choose_chat_preset()
             end,
         },
-        { label = _("Bubble theme"), icon = "magic", on_tap = function()
+        -- The per-chat theme override lives HERE (in the conversation),
+        -- not in the settings editor - the settings row never made sense
+        -- outside a chat.
+        { label = _("Theme for this chat"), icon = "magic", on_tap = function()
                 self:choose_chat_bubble_theme()
             end,
         },
@@ -4080,6 +4083,7 @@ function App:apply_bubble_theme(theme)
         ai_panel = theme.colors.ai_panel,
         user_panel = theme.colors.user_panel,
         text = theme.colors.text,
+        border = theme.colors.border,
     })
     -- Canvas chat font: theme keys win when set, settings otherwise.
     Theme.set_chat_font(

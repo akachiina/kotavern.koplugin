@@ -291,6 +291,16 @@ end
 -- document order across the whole body; a revealed index re-renders as an
 -- open span, otherwise as an <a href="kt:spl:N"> the tap layer flips.
 local function chat_html_markdown(line, state, stash_html)
+    -- Quoted runs -> <q> (ST parity: its quote_text_color paints "..." via
+    -- the same wrapper; the "set Quote red and the quoted text stayed
+    -- plain" report). Stashed: the <q> tags never feed the emphasis gsubs.
+    -- Straight "..." first (the common chat case), then curly “...”.
+    line = line:gsub('"([^"]+)"', function(quoted)
+        return stash_html('<q>"' .. quoted .. '"</q>')
+    end)
+    line = line:gsub('\u{201C}([^\u{201D}]+)\u{201D}', function(quoted)
+        return stash_html("<q>\u{201C}" .. quoted .. "\u{201D}</q>")
+    end)
     -- ![alt](url) -> image link (keeps the tap-to-open-URL utility; the
     -- stray "!" prefix would otherwise survive as literal noise).
     line = line:gsub("!%[([^%]]*)%]%(([^)%s]+)%)", function(alt, url)
@@ -1308,15 +1318,18 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
         local band_h = bottom - top
         if band_h > 0 then
             if entry.kind == "rule" then
-                P.rect(bb, cx, top, width, band_h, Theme.soft)
+                P.rect(bb, cx, top, width, band_h, Theme.chat_border)
             elseif entry.kind == "table" then
                 -- Whole-row culling: a row cut by the band edge is skipped
-                -- (partial mono cells read as garbage on e-ink).
+                -- (partial mono cells read as garbage on e-ink). Shading
+                -- derives from the THEME border color: palette soft painted
+                -- a light band under the themed light header text (an
+                -- invisible header on dark themes).
                 for r, row in ipairs(entry.rows) do
                     local row_y = entry_y + row.offset
                     if row_y >= vis_top and row_y + row.h <= vis_bottom then
                         if r == 1 then
-                            P.rect(bb, cx, row_y, width, row.h, Theme.soft)
+                            P.rect(bb, cx, row_y, width, row.h, Theme.chat_border)
                         end
                         for ci, cell_text in ipairs(row.cells) do
                             local cell_x = cx + (ci - 1) * (entry.column_width + entry.column_gap)
@@ -1324,7 +1337,7 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                                 { bold = row.bold, line_height = 0.1, color = color, bgcolor = bg })
                         end
                         if r < #entry.rows then
-                            P.rect(bb, cx, row_y + row.h, width, entry.rule_h, Theme.soft)
+                            P.rect(bb, cx, row_y + row.h, width, entry.rule_h, Theme.chat_border)
                         end
                     end
                 end
@@ -1500,8 +1513,14 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         or settings.chat_width) or 100
     if cw_pct < 100 then
         cw_pct = math.max(25, math.min(100, cw_pct))
+        -- Gutter-aware centering: the scrollbar track lives OUTSIDE the
+        -- centered column, so shrink against the pre-gutter right edge
+        -- (panel_right already excludes the gutter; also exclude the LEFT
+        -- pad mirror so the column is optically centered between the
+        -- screen edges, not the scroll area - the "150 vs 172 margins").
         local full_w = panel_right - panel_x
-        local inset = math.floor((full_w - math.floor(full_w * (cw_pct / 100))) / 2)
+        local col_w = math.floor(full_w * (cw_pct / 100))
+        local inset = math.floor((full_w - col_w) / 2)
         panel_x = panel_x + inset
         panel_right = panel_right - inset
     end
@@ -1979,7 +1998,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- ST bubbles: rounded panel behind the WHOLE message (avatar
                 -- + name + text). Square edges when clipped by the viewport.
                 if panel_mode and not l.is_thinking then
-                    local pb_color = (l.is_streaming and Theme.chat_ink) or Theme.soft
+                    local pb_color = (l.is_streaming and Theme.chat_ink) or Theme.chat_border
                     local pb_size = l.is_streaming and 2 or 1
                     -- The FULL rounded box paints through a viewport clamped
                     -- to the messages band: a bubble grown past the viewport
@@ -2028,7 +2047,10 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         if show_msg_ids then
                             local id_str = "#" .. tostring(l.idx or "?")
                             local idw = P.text_size(id_str, nil, "tiny").w
-                            P.text(bb, id_str, nx, ny + math.floor((name_h - Theme.line_h("tiny")) / 2),
+                            -- +2px nudge: the tiny face centers on the
+                            -- small-face box but reads a touch high next to
+                            -- the bold name (the "#3 sobe" print note).
+                            P.text(bb, id_str, nx, ny + math.floor((name_h - Theme.line_h("tiny")) / 2) + 2,
                                 idw + 2, "tiny", { color = Theme.chat_muted })
                             nx = nx + idw + Theme.scale(6)
                         end
@@ -2066,7 +2088,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local boxed_str = sender_str .. (timestamp and ((sender_str ~= "" and "  " or "") .. timestamp) or "")
                         local av_x = content_right - pad - avatar_size
                         if show_avatars then
-                            draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, user_image, user, Theme.bg)
+                            draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, user_image, user, Theme.chat_panel)
                             if user_image and user_image ~= "" then
                                 av_hit = { x = av_x, y = srow_y + av_dy, img = user_image }
                             end
@@ -2082,7 +2104,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         local boxed_str = sender_str .. (timestamp and ((sender_str ~= "" and "  " or "") .. timestamp) or "")
                         local av_x = x + pad
                         if show_avatars and not l.is_thinking then
-                            draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, char_image, char_name, Theme.bg)
+                            draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, char_image, char_name, Theme.chat_panel)
                             if char_image and char_image ~= "" then
                                 av_hit = { x = av_x, y = srow_y + av_dy, img = char_image }
                             end
@@ -2169,7 +2191,10 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     local head_y = reasoning_y + Theme.scale(2)
                     local head_h = Theme.line_h("tiny")
                     -- Shared header geometry (drawn in both states).
-                    local rul_x = l.cx
+                    -- Rule at cx-8: the reasoning TEXT (cx+8) aligns with
+                    -- the reply text (cx) - the old cx/cx+8 stagger read as
+                    -- a misaligned block in the print reports.
+                    local rul_x = l.cx - Theme.scale(8)
                     local rul_y0 = head_y
                     local rul_y1 = reasoning_y + l.reasoning_h - Theme.scale(2)
                     if reasoning_open[l.msg_key] then

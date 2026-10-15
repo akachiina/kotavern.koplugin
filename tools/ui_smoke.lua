@@ -2541,6 +2541,22 @@ do
             "chat html md: lone <b> converts, entities still escaped")
         ok(body:find("~~", 1, true) == nil and body:find("||", 1, true) == nil,
             "chat html md: no raw ~~ or || markers survive")
+        -- Quote color parity (ST): "..." and curly "..." wrap in <q>
+        -- (the "set Quote red, quoted text stayed plain" report); the
+        -- stylesheet carries the italics + q color rules.
+        local qs = DbgChat._test_chat_html_body('she said "hello there" ok')
+        ok(qs:find('<q>"hello there"</q>', 1, true) ~= nil,
+            "chat html md: straight-quoted run wraps in <q> (chars kept)")
+        local qc = DbgChat._test_chat_html_body("curly \u{201C}nice\u{201D} tail")
+        ok(qc:find("<q>", 1, true) ~= nil,
+            "chat html md: curly-quoted run wraps in <q>")
+        local KtHTML_q = require("ktui/kthtml")
+        local ChatTheme_q = require("ktui/chat_theme")
+        local css_q = KtHTML_q.chat_css(ChatTheme_q.resolved(fake_app({})))
+        ok(css_q:find("i { font%-style: italic; color: ", 1, false) ~= nil,
+            "chat html md: italics color rule present in the stylesheet")
+        ok(css_q:find("q { color: ", 1, false) ~= nil,
+            "chat html md: q color rule present in the stylesheet")
     end
 end
 
@@ -3404,6 +3420,27 @@ do
     Theme_c.set_chat_color_overrides(nil)
 end
 
+-- GLOBAL Appearance page paint (the B5 regression): the Density row's
+-- value_fn reads a page-local labels table - a B5 cleanup deleted the
+-- wrong copy and the page CRASHED ON DEVICE at boot (value_fn runs during
+-- paint). This check paints the real page so a dangling-local class of
+-- bug can never slip again.
+do
+    local app_g = fake_app({ page = "settings_appearance",
+        settings = { theme = "light", base_font_size = 22, density = "normal",
+            bubble_style = "bubbles", bubble_radius = "normal", chat_width = 100 } })
+    local view_g = { app = app_g, hitboxes = {}, refresh = function() end }
+    local bb_g = new_bb()
+    local okp_g, err_g = pcall(function()
+        Pages.settings_appearance(view_g, bb_g, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_g, "global appearance: page paints without crashing ("
+        .. tostring(err_g) .. ")")
+    ok(app_g.state.settings.density == "normal",
+        "global appearance: fixture paints with density settings present")
+    dump(bb_g, "settings_appearance")
+end
+
 -- Theme editor page: rows only (the live preview band was removed at the
 -- author's request); the page must paint, expose the editor rows, and
 -- carry no chat hitboxes.
@@ -3655,6 +3692,106 @@ do
         "mask_text: fence text contrasts the band (mask="
         .. string.format("%.2f", lum_mask) .. " text="
         .. string.format("%.2f", lum_text) .. ")")
+end
+
+-- B5 color pipeline (the "balão cinza, fundo do texto azul" root cause):
+-- KOReader v2026.07's paintRect CBB shortcut paints ColorRGB32 as its
+-- LUMINANCE byte - every themed canvas fill came out gray on color
+-- screens while MuPDF docs kept the true hex. Our P.rect/rounded_rect/
+-- stroke now scanline-fill RGB32 buffers with the true color. The repro
+-- paints a Celestial chat on an RGB32 buffer (like the color emulator)
+-- and asserts: canvas panel == doc bitmap bg == the theme's ai_panel.
+do
+    local ChatTheme_r = require("ktui/chat_theme")
+    local Theme_r = require("ktui/theme")
+    local celestial = nil
+    for _, b in ipairs(ChatTheme_r.BUILTINS()) do
+        if b.id == "builtin:celestial" then celestial = b.theme end
+    end
+    local app_r = { state = { page = "chat",
+        settings = { chat_html_render = true }, scroll = {},
+        messages = {
+            { role = "user", name = "You", content = "hello!", send_date = os.time() - 1 },
+            { role = "assistant", name = "Aria",
+              content = "Some reply text line one.\nSecond line of the reply.",
+              send_date = os.time() },
+        }, reasoning_open = {}, reasoning_full = {} } }
+    function app_r:scroll_key() return self.state.page end
+    function app_r:chat_look() return ChatTheme_r.normalize(celestial) end
+    function app_r:active_bubble_theme_id() return "builtin:celestial" end
+    function app_r:find_chat_theme(id)
+        for _, b in ipairs(ChatTheme_r.BUILTINS()) do
+            if b.id == id then return b.theme, b.name end
+        end
+    end
+    app_r.state.chat_theme_applied = celestial
+    -- The real apply chain (like App:apply_bubble_theme).
+    Theme_r.set_bubble_style(celestial.style or "bubbles")
+    Theme_r.set_chat_color_overrides({
+        surface = celestial.colors.surface, ai_panel = celestial.colors.ai_panel,
+        user_panel = celestial.colors.user_panel, text = celestial.colors.text,
+        border = celestial.colors.border })
+    local view_r = { app = app_r, hitboxes = {}, refresh = function() end }
+    local bb_r = Blitbuffer.new(VW, VH, Blitbuffer.TYPE_BBRGB32)
+    bb_r:fill(Blitbuffer.COLOR_WHITE)
+    local okp_r = pcall(function() Pages.chat(view_r, bb_r, 0, 0, VW, VH, 0) end)
+    ok(okp_r, "b5 colors: RGB32 chat paints without crashing")
+    local lay_r = nil
+    for _k, l in pairs(view_r._chat_layout_cache or {}) do
+        if type(l) == "table" and not l.is_user and l.entries then lay_r = l end
+    end
+    local function rgb_at(bb, x, y)
+        local okp, px = pcall(function() return bb:getPixel(x, y) end)
+        if not okp then return nil end
+        return px:getR() * 65536 + px:getG() * 256 + px:getB()
+    end
+    local ai_val = 0x1c2739
+    local ai_r, ai_g, ai_b = celestial.colors.ai_panel:match("^#(%x%x)(%x%x)(%x%x)$")
+    ai_val = tonumber(ai_r, 16) * 65536 + tonumber(ai_g, 16) * 256 + tonumber(ai_b, 16)
+    if lay_r then
+        -- Panel-only zone (avatar column, mid height) == ai_panel TRUE COLOR.
+        local py = lay_r.bubble_y + math.floor((lay_r.bubble_h or 100) / 2)
+        local pv = rgb_at(bb_r, lay_r.bx + 8, py)
+        ok(pv == ai_val,
+            "b5 colors: canvas panel paints TRUE color (got " .. string.format("#%06x", pv or 0)
+            .. " want " .. celestial.colors.ai_panel .. ")")
+        -- The doc bitmap's own background == ai_panel (not the surface).
+        local doc_r = nil
+        for _e, e in ipairs(lay_r.entries) do
+            if e.kind == "html" and e.widget and e.widget.bb then doc_r = e.widget end
+        end
+        if doc_r then
+            local n_ai, n_surf = 0, 0
+            local sr, sg, sb = celestial.colors.surface:match("^#(%x%x)(%x%x)(%x%x)$")
+            local surf_val = tonumber(sr, 16) * 65536 + tonumber(sg, 16) * 256 + tonumber(sb, 16)
+            local dbb = doc_r.bb
+            for yy = 0, dbb:getHeight() - 1, 4 do
+                for xx = 0, dbb:getWidth() - 1, 8 do
+                    local v = rgb_at(dbb, xx, yy)
+                    if v == ai_val then n_ai = n_ai + 1
+                    elseif v == surf_val then n_surf = n_surf + 1 end
+                end
+            end
+            ok(n_ai > 0 and n_surf == 0,
+                "b5 colors: doc bg == ai_panel (ai=" .. n_ai .. " surface=" .. n_surf .. ")")
+        else
+            ok(false, "b5 colors: no html doc found for the bg probe")
+        end
+        -- Table shading derives from the theme border, not palette soft.
+        local bc_ok, b_r, b_g, b_b = pcall(function()
+            return Theme_r.chat_border:getR(), Theme_r.chat_border:getG(), Theme_r.chat_border:getB()
+        end)
+        local soft_ok, s_r2, s_g2, s_b2 = pcall(function()
+            return Theme_r.soft:getR(), Theme_r.soft:getG(), Theme_r.soft:getB()
+        end)
+        ok(bc_ok and soft_ok and math.abs(b_r - s_r2) > 40,
+            "b5 colors: chat_border follows the theme, not palette soft ("
+            .. string.format("#%02x%02x%02x", b_r, b_g, b_b) .. " vs "
+            .. string.format("#%02x%02x%02x", s_r2, s_g2, s_b2) .. ")")
+    else
+        ok(false, "b5 colors: assistant layout missing")
+    end
+    Theme_r.set_chat_color_overrides(nil)
 end
 
 -- Chat Theme render: a dark theme must flip the doc colors (the "room"
@@ -6486,6 +6623,32 @@ do
         local cb_ok, cb_r = pcall(function() return Theme_b.chat_bg:getR() end)
         ok(cb_ok and type(cb_r) == "number",
             "app boot: chat surface color is live (r=" .. tostring(cb_r) .. ")")
+        -- Editor staleness e2e (the "troquei o tema e nada mudou" report):
+        -- the REAL chain (save_setting -> apply_settings ->
+        -- refresh_bubble_theme) must flip the applied theme AND the editor
+        -- rows must re-derive from it on the next paint.
+        local view_ed = { app = app_boot, hitboxes = {}, refresh = function() end }
+        app_boot:save_setting("bubble_theme_id", "builtin:azure")
+        ok(app_boot.state.chat_theme_applied ~= nil
+            and app_boot.state.chat_theme_applied.name == "Azure",
+            "editor e2e: switching to Azure applies it for real")
+        local bb_ed = new_bb()
+        local okp_ed = pcall(function()
+            Pages.settings_appearance_chat(view_ed, bb_ed, 0, 0, VW, VH, 0)
+        end)
+        -- Row values are computed at paint; assert via chat_look (what the
+        -- rows read) - the Default-theme row and the color values follow.
+        ok(okp_ed, "editor e2e: page paints with the real app state")
+        local look_a = app_boot:chat_look()
+        ok(look_a.style == "bubbles" and look_a.colors.text ~= "",
+            "editor e2e: editor look follows Azure (style=bubbles, themed text)")
+        app_boot:save_setting("bubble_theme_id", "builtin:dark_v")
+        local look_b = app_boot:chat_look()
+        ok(look_b.style == "flat",
+            "editor e2e: switching to Dark V flips the editor look (flat)")
+        ok(look_b.colors.text ~= look_a.colors.text,
+            "editor e2e: color rows re-derive after the switch ("
+            .. tostring(look_a.colors.text) .. " -> " .. tostring(look_b.colors.text) .. ")")
         -- Cleanup: the boot mutated the shared data dir (settings gained
         -- migration flags, chat_themes.json was written); leave the dir
         -- as the boot found the files (tests re-plant their own fixtures).

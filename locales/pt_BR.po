@@ -1957,3 +1957,15 @@ msgstr "(cópia)"
 
 msgid "Follow the default"
 msgstr "Seguir o padrão"
+
+msgid "Default theme"
+msgstr "Tema padrão"
+
+msgid "For every chat"
+msgstr "Para todos os chats"
+
+msgid "Theme for this chat"
+msgstr "Tema para este chat"
+
+msgid "Overrides the default in this conversation only"
+msgstr "Sobrepõe o padrão só nesta conversa"
