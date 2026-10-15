@@ -1012,6 +1012,13 @@ function App:navigate(page, extra)
     require("ktui/gifanim").stop_all(self)
     require("ktui/kthtml").free_all(self)
     self.state.previous_page = self.state.page
+    -- The honest per-chat gate: "did we LEAVE the chat screen to get
+    -- here?" - the old current_chat_path check never cleared and showed
+    -- "Apply to this chat" in settings forever.
+    self.state.in_chat_context = (self.state.page == "chat")
+    if page ~= "theme_edit" then
+        self.state.editing_theme_id = nil
+    end
     self.state.page = page
     if extra then
         for k, v in pairs(extra) do
@@ -1026,6 +1033,7 @@ function App:go_back()
     local prev = self.state.previous_page or "dashboard"
     self.state.page = prev
     self.state.previous_page = nil
+    self.state.editing_theme_id = nil
     self:refresh(true)
 end
 
@@ -3180,11 +3188,11 @@ function App:show_chat_options()
                 self:choose_chat_preset()
             end,
         },
-        -- The per-chat theme override lives HERE (in the conversation),
-        -- not in the settings editor - the settings row never made sense
-        -- outside a chat.
+        -- The per-chat theme override lives HERE (in the conversation):
+        -- opens the SAME Themes list with the in-chat context (Follow the
+        -- default + tap-to-apply), not a separate sheet.
         { label = _("Theme for this chat"), icon = "magic", on_tap = function()
-                self:choose_chat_bubble_theme()
+                self:navigate("settings_bubble_themes")
             end,
         },
         { label = _("Author's Note"), icon = "edit", on_tap = function()
@@ -4355,6 +4363,12 @@ end
 
 function App:chat_look()
     local ChatTheme = require("ktui/chat_theme")
+    -- The theme EDIT screen reads the theme it is editing, not the live
+    -- look (B6: editing is always a specific theme).
+    if self.state.page == "theme_edit" and self.state.editing_theme_id then
+        local t = self:find_chat_theme(self.state.editing_theme_id)
+        if t then return ChatTheme.normalize(t) end
+    end
     local live = self.state.chat_theme_applied
     if live then return ChatTheme.normalize(live) end
     local s = self.state.settings
@@ -4371,6 +4385,26 @@ end
 
 function App:edit_chat_theme_key(key, value)
     local ChatTheme = require("ktui/chat_theme")
+    -- Editing screen: explicit target, no implicit resolution (B6).
+    if self.state.page == "theme_edit" and self.state.editing_theme_id then
+        local themes = Storage.list_chat_themes()
+        for ti = 1, #themes do
+            local t = themes[ti]
+            if t.id == self.state.editing_theme_id then
+                local th = ChatTheme.normalize(t.theme)
+                local ckey = key:match("^colors%.(%w+)$")
+                if ckey then
+                    th.colors[ckey] = value
+                else
+                    th[key] = value
+                end
+                t.theme = th
+                Storage.save_chat_themes(themes)
+                return
+            end
+        end
+        return
+    end
     local id = self:active_bubble_theme_id()
     if not id then
         local settings_keys = {
@@ -4437,6 +4471,29 @@ function App:edit_chat_theme_key(key, value)
             return
         end
     end
+end
+
+-- Create a theme from scratch (B6 launcher): seeded with the current
+-- plain settings/look (so it starts as "what you see now"), saved as a
+-- user theme, opened straight in the editor.
+function App:create_theme()
+    local ChatTheme = require("ktui/chat_theme")
+    local _ = require("gettext")
+    local look = self:chat_look()
+    look.name = _("My theme")
+    look.format = ChatTheme.DEFAULTS.format
+    look.version = ChatTheme.DEFAULTS.version
+    local themes = Storage.list_chat_themes() or {}
+    local base = tostring(#themes + 1)
+    local name = look.name
+    local exists = {}
+    for ti = 1, #themes do exists[themes[ti].name] = true end
+    if exists[name] then name = name .. " " .. base end
+    look.name = name
+    local id = Util.uuid()
+    themes[#themes + 1] = { id = id, name = name, theme = ChatTheme.normalize(look) }
+    Storage.save_chat_themes(themes)
+    self:navigate("theme_edit", { editing_theme_id = id })
 end
 
 -- One theme color row: hex input ("#rrggbb", validated), Clear = inherit

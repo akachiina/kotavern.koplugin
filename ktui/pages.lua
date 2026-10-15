@@ -483,24 +483,65 @@ end
 -- Settings > Appearance > Chat: everything the message stream renders
 -- (style, background, avatars, metadata toggles, custom chat font).
 function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
+    -- B6 LAUNCHER: the knobs moved into the per-theme editor
+    -- (Pages.theme_edit); this page only routes - create, manage, and
+    -- the global default picker.
     local app = view.app
-    local ChatTheme = require("ktui/chat_theme")
 
-    -- No preview band: the author found it never reflected edits live
-    -- and cost a third of the page; the editor rows start at the top.
-
-    -- The editor reads ONE thing: the current look (theme or settings).
-    local look = app:chat_look()
-    -- The editor's "Chat theme" card edits the GLOBAL default (the dialog
-    -- it opens picks the default): show the global name, not the
-    -- chat-resolved one - the print reports caught the two states reading
-    -- as one inconsistent value.
+    -- Global default (the dialog picks it): show the global name, not the
+    -- chat-resolved one (the two states reading as one value was its own
+    -- print report).
     local global_id = app.state.settings.bubble_theme_id
     local global_name = nil
     if type(global_id) == "string" and global_id ~= "" then
         local _, nm = app:find_chat_theme(global_id)
         global_name = nm
     end
+
+    local rows = {
+        { section = true, text = _("Themes") },
+        {
+            text = _("New theme"),
+            icon = "plus",
+            subtext = _("Start a theme from your current look"),
+            callback = function() app:create_theme() end,
+        },
+        {
+            text = _("Themes…"),
+            icon = "sliders",
+            subtext = _("Manage, duplicate, import"),
+            callback = function() app:navigate("settings_bubble_themes") end,
+        },
+        {
+            text = _("Default theme"),
+            icon = "star",
+            subtext = _("For every chat"),
+            value = function() return global_name or _("Default look") end,
+            callback = function() app:choose_default_bubble_theme() end,
+        },
+    }
+
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+
+-- Appearance > Chat > Bubble themes: manage the saved chat-look themes and
+-- pick the global default. Per-theme actions live in a sheet (apply to THIS
+-- chat, set default, rename, duplicate, delete); creating snapshots the
+-- current look (live theme or plain settings), importing reads one JSON.
+function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
+    -- B6 Themes manager: ONE list for every context.
+    --  * From the chat (in_chat_context): "Follow the default" on top;
+    --    tapping ANY theme applies it to THIS chat and goes back.
+    --  * From settings: user themes first (tap = the editor), CREATE
+    --    (new/import), built-ins LAST (tap = sheet: default/duplicate/
+    --    export). The old lying current_chat_path gate is gone.
+    local app = view.app
+    local Storage = require("kt_storage")
+    local ChatTheme = require("ktui/chat_theme")
+    local themes = Storage.list_chat_themes() or {}
+    local in_chat_ctx = app.state.in_chat_context == true
+    local default_id = app.state.settings.bubble_theme_id or ""
 
     local style_labels = {
         bubbles = _("Bubbles"), flat = _("Flat"),
@@ -509,16 +550,176 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
         round = _("Round"), rounded = _("Rounded"),
         square = _("Square"), rect = _("Rectangular"),
     }
+    local rows = {}
+    if in_chat_ctx then
+        -- Per-chat mode (arrived from the chat's kebab): tap = apply
+        -- override, back to the conversation.
+        table.insert(rows, {
+            text = _("Follow the default"),
+            icon = "chev-left",
+            callback = function()
+                app:set_chat_bubble_theme("")
+                app:navigate("chat")
+            end,
+        })
+        for _, entry in ipairs(themes) do
+            local theme = entry
+            local th = ChatTheme.normalize(theme.theme)
+            local summary = (style_labels[th.style] or th.style)
+                .. " · " .. (shape_labels[th.avatar_shape] or th.avatar_shape)
+            local is_active = (app.state.current_chat_bubble_theme_id == theme.id)
+            table.insert(rows, {
+                text = theme.name or "?",
+                subtext = summary,
+                value = is_active and (function() return "●" end) or nil,
+                callback = function()
+                    app:set_chat_bubble_theme(theme.id)
+                    app:navigate("chat")
+                end,
+            })
+        end
+        for _, b in ipairs(ChatTheme.BUILTINS()) do
+            local builtin = b
+            local th = builtin.theme
+            local is_active = (app.state.current_chat_bubble_theme_id == builtin.id)
+            table.insert(rows, {
+                text = builtin.name,
+                subtext = style_labels[th.style] or th.style,
+                value = is_active and (function() return "●" end) or nil,
+                callback = function()
+                    app:set_chat_bubble_theme(builtin.id)
+                    app:navigate("chat")
+                end,
+            })
+        end
+        return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+    end
+
+    -- Settings mode.
+    local saved_label = _("Your themes")
+    local default_tag = _("Default")
+    local rename_label = _("Rename")
+    local duplicate_label = _("Duplicate")
+    local delete_label = _("Delete")
+    local export_label = _("Export theme")
+    local set_default_label = _("Set as default")
+    local unset_default_label = _("Unset default")
+    local theme_name_label = _("Theme name")
+    local save_label = _("Save")
+
+    if #themes > 0 then
+        table.insert(rows, { section = true, text = saved_label })
+        for _, t in ipairs(themes) do
+            local entry = t
+            local th = ChatTheme.normalize(entry.theme)
+            local summary = (style_labels[th.style] or th.style)
+                .. " · " .. (shape_labels[th.avatar_shape] or th.avatar_shape)
+            local is_default = (entry.id == default_id)
+            table.insert(rows, {
+                text = entry.name or "?",
+                subtext = summary,
+                value = is_default and (function() return default_tag end) or nil,
+                callback = function()
+                    app:navigate("theme_edit", { editing_theme_id = entry.id })
+                end,
+            })
+        end
+    end
+    table.insert(rows, { section = true, text = _("Create") })
+    table.insert(rows, {
+        text = _("New theme…"), icon = "plus",
+        callback = function() app:create_theme() end,
+    })
+    table.insert(rows, {
+        text = _("Import theme…"), icon = "download",
+        callback = function() app:import_bubble_theme() end,
+    })
+    table.insert(rows, { section = true, text = _("Built-in themes") })
+    for _, b in ipairs(ChatTheme.BUILTINS()) do
+        local builtin = b
+        local th = builtin.theme
+        table.insert(rows, {
+            text = builtin.name,
+            subtext = style_labels[th.style] or th.style,
+            value = (builtin.id == default_id)
+                and (function() return default_tag end) or nil,
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                local self_ref = app
+                local actions = {
+                    { label = set_default_label, icon = "star",
+                      on_tap = function()
+                          self_ref:save_setting("bubble_theme_id", builtin.id)
+                          self_ref:refresh_bubble_theme()
+                          self_ref:refresh(true)
+                      end },
+                    { label = duplicate_label, icon = "copy",
+                      on_tap = function()
+                          self_ref:duplicate_bubble_theme(builtin.id)
+                          self_ref:refresh(true)
+                          local themes_now = require("kt_storage").list_chat_themes() or {}
+                          local copy = themes_now[#themes_now]
+                          if copy then
+                              self_ref:navigate("theme_edit",
+                                  { editing_theme_id = copy.id })
+                          end
+                      end },
+                    { label = export_label, icon = "upload",
+                      on_tap = function()
+                          self_ref:export_bubble_theme(builtin.id)
+                      end },
+                }
+                Sheets.show(app, { title = builtin.name, actions = actions })
+            end,
+        })
+    end
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+function Pages.theme_edit(view, bb, x, y, w, h, scroll)
+    -- B6 theme editor: ONE user theme, explicitly chosen from the manager.
+    -- Rows read app:chat_look() (the EDITED theme on this page) and write
+    -- through edit_chat_theme_key (explicit target - builtins never land
+    -- here). No preview band (author decision); the page title carries
+    -- the theme name.
+    local app = view.app
+    local ChatTheme = require("ktui/chat_theme")
+
+    local editing_id = app.state.editing_theme_id
+    if not editing_id then
+        -- Direct entry without a target: fall back to the manager.
+        app:navigate("settings_bubble_themes")
+        return 0
+    end
+    local theme_table, theme_name = app:find_chat_theme(editing_id)
+    if not theme_table then
+        app:navigate("settings_bubble_themes")
+        return 0
+    end
+    if (editing_id or ""):sub(1, 8) == "builtin:" then
+        -- Builtins are read-only code; the manager sheets own them.
+        app:navigate("settings_bubble_themes")
+        return 0
+    end
+
+    local look = app:chat_look()
+    local style_labels = {
+        bubbles = _("Bubbles"), flat = _("Flat"),
+    }
     local width_labels = {
         ["100"] = _("Full"), ["85"] = _("Wide"),
         ["70"] = _("Medium"), ["50"] = _("Narrow"),
+    }
+    local radius_labels = {
+        small = _("Small"), normal = _("Normal"), large = _("Large"),
     }
     local spacing_labels = {
         ["85"] = _("Compact"), ["100"] = _("Normal"),
         ["115"] = _("Airy"), ["130"] = _("Relaxed"),
     }
-    local radius_labels = {
-        small = _("Small"), normal = _("Normal"), large = _("Large"),
+    local shape_labels = {
+        round = _("Round"), rounded = _("Rounded"),
+        square = _("Square"), rect = _("Rectangular"),
     }
     local function pct_value(map, v)
         return map[tostring(v)] or tostring(v)
@@ -555,20 +756,18 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             end,
         }
     end
+    local function color_row(title, key)
+        return {
+            text = title,
+            swatch = true,
+            value = function()
+                return (look.colors[key] ~= "") and look.colors[key] or _("Default")
+            end,
+            callback = function() app:prompt_theme_color(key, title) end,
+        }
+    end
 
     local rows = {
-        { section = true, text = _("Chat theme") },
-        {
-            text = _("Default theme"),
-            icon = "star",
-            subtext = _("For every chat"),
-            value = function() return global_name or _("Default look") end,
-            callback = function() app:choose_default_bubble_theme() end,
-        },
-        {
-            text = _("Manage themes…"),
-            callback = function() app:navigate("settings_bubble_themes") end,
-        },
         { section = true, text = _("Chat") },
         pick_row(_("Chat style"), style_labels[look.style] or look.style, {
             { label = _("Bubbles"), value = "bubbles" },
@@ -587,7 +786,6 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             app:edit_chat_theme_key("chat_width", tonumber(v))
             app:refresh(true)
         end),
-
         pick_row(_("Bubble radius"),
             radius_labels[look.bubble_radius] or look.bubble_radius, {
             { label = _("Small"), value = "small" },
@@ -597,7 +795,6 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             app:edit_chat_theme_key("bubble_radius", v)
             app:refresh(true)
         end),
-
         { section = true, text = _("Text") },
         {
             text = _("Chat font"),
@@ -626,48 +823,13 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             app:refresh(true)
         end),
         { section = true, text = _("Colors") },
-        {
-            text = _("Text"),
-            swatch = true,
-            value = function() return (look.colors.text ~= "") and look.colors.text or _("Default") end,
-            callback = function() app:prompt_theme_color("text", _("Text")) end,
-        },
-        {
-            text = _("Chat surface"),
-            swatch = true,
-            value = function() return (look.colors.surface ~= "") and look.colors.surface or _("Default") end,
-            callback = function() app:prompt_theme_color("surface", _("Chat surface")) end,
-        },
-        {
-            text = _("AI messages"),
-            swatch = true,
-            value = function() return (look.colors.ai_panel ~= "") and look.colors.ai_panel or _("Default") end,
-            callback = function() app:prompt_theme_color("ai_panel", _("AI messages")) end,
-        },
-        {
-            text = _("User messages"),
-            swatch = true,
-            value = function() return (look.colors.user_panel ~= "") and look.colors.user_panel or _("Default") end,
-            callback = function() app:prompt_theme_color("user_panel", _("User messages")) end,
-        },
-        {
-            text = _("Border"),
-            swatch = true,
-            value = function() return (look.colors.border ~= "") and look.colors.border or _("Default") end,
-            callback = function() app:prompt_theme_color("border", _("Border")) end,
-        },
-        {
-            text = _("Italics"),
-            swatch = true,
-            value = function() return (look.colors.italics ~= "") and look.colors.italics or _("Default") end,
-            callback = function() app:prompt_theme_color("italics", _("Italics")) end,
-        },
-        {
-            text = _("Quote"),
-            swatch = true,
-            value = function() return (look.colors.quote ~= "") and look.colors.quote or _("Default") end,
-            callback = function() app:prompt_theme_color("quote", _("Quote")) end,
-        },
+        color_row(_("Text"), "text"),
+        color_row(_("Chat surface"), "surface"),
+        color_row(_("AI messages"), "ai_panel"),
+        color_row(_("User messages"), "user_panel"),
+        color_row(_("Border"), "border"),
+        color_row(_("Italics"), "italics"),
+        color_row(_("Quote"), "quote"),
         { section = true, text = _("Messages") },
         toggle_row(_("Show avatars"), look.show_avatars, "show_avatars"),
         pick_row(_("Avatar shape"),
@@ -695,12 +857,6 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
         toggle_row(_("Show message IDs"), look.show_msg_ids, "show_msg_ids"),
         toggle_row(_("Generation timer"), look.show_gen_timer, "show_gen_timer"),
         toggle_row(_("Inline images"), look.show_inline_images, "show_inline_images"),
-        {
-            text = _("Outline user bubbles"),
-            toggle = true,
-            value = function() return app.state.settings.outline_user_bubbles == true end,
-            callback = function() app:toggle_setting("outline_user_bubbles") end,
-        },
         { section = true, text = _("Advanced") },
         {
             text = _("Custom CSS"),
@@ -711,177 +867,64 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             end,
             callback = function() app:prompt_custom_css() end,
         },
+        { section = true, text = _("Theme") },
         {
-            text = _("Chat footer"),
-            subtext = _("Clock, battery and message count above the composer"),
-            toggle = true,
-            value = function() return app.state.settings.chat_footer == true end,
-            callback = function() app:toggle_setting("chat_footer") end,
+            text = _("Theme actions…"),
+            icon = "sliders",
+            subtext = _("Rename, default, duplicate, export, delete"),
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                local _ = require("gettext")
+                local self_ref = app
+                local is_default = (app.state.settings.bubble_theme_id == editing_id)
+                local actions = {
+                    { label = is_default and _("Unset default") or _("Set as default"),
+                      icon = "star",
+                      on_tap = function()
+                          self_ref:save_setting("bubble_theme_id",
+                              is_default and "" or editing_id)
+                          self_ref:refresh_bubble_theme()
+                          self_ref:refresh(true)
+                      end },
+                    { label = _("Rename"), icon = "edit",
+                      on_tap = function()
+                          local Modals = require("ktui/modals")
+                          Modals.input(_("Theme name"), theme_name or "",
+                              _("Theme name"), _("Save"), function(text)
+                                  self_ref:rename_bubble_theme(editing_id, text)
+                              end)
+                      end },
+                    { label = _("Duplicate"), icon = "copy",
+                      on_tap = function()
+                          self_ref:duplicate_bubble_theme(editing_id)
+                          self_ref:refresh(true)
+                      end },
+                    { label = _("Export theme"), icon = "upload",
+                      on_tap = function()
+                          self_ref:export_bubble_theme(editing_id)
+                      end },
+                    { label = _("Delete"), icon = "trash", danger = true,
+                      on_tap = function()
+                          self_ref:delete_bubble_theme(editing_id)
+                      end },
+                }
+                if app.state.in_chat_context == true then
+                    table.insert(actions, 1, {
+                        label = _("Apply to this chat"), icon = "check",
+                        on_tap = function()
+                            self_ref:set_chat_bubble_theme(editing_id)
+                            self_ref:navigate("chat")
+                        end,
+                    })
+                end
+                Sheets.show(app, { title = theme_name or _("Themes"), actions = actions })
+            end,
         },
     }
 
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
-
--- Appearance > Chat > Bubble themes: manage the saved chat-look themes and
--- pick the global default. Per-theme actions live in a sheet (apply to THIS
--- chat, set default, rename, duplicate, delete); creating snapshots the
--- current look (live theme or plain settings), importing reads one JSON.
-function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
-    local app = view.app
-    local Storage = require("kt_storage")
-    local ChatTheme = require("ktui/chat_theme")
-    local themes = Storage.list_chat_themes() or {}
-    local in_chat = (app.state.current_chat_path ~= nil)
-    local default_id = app.state.settings.bubble_theme_id or ""
-
-    local style_labels = {
-        bubbles = _("Bubbles"), flat = _("Flat"),
-    }
-    local shape_labels = {
-        round = _("Round"), rounded = _("Rounded"),
-        square = _("Square"), rect = _("Rectangular"),
-    }
-    local rows = {
-        { section = true, text = _("Create") },
-        { text = _("Save current look as theme"), icon = "plus",
-          callback = function()
-              local Modals = require("ktui/modals")
-              Modals.input(_("Theme name"), "", _("e.g. Warm paper"), _("Save"),
-                  function(text)
-                      app:save_bubble_theme_from_current(text)
-                      app:refresh(true)
-                  end)
-          end },
-        { text = _("Import theme"), icon = "download",
-          callback = function() app:import_bubble_theme() end },
-        { text = _("Chat theme"), icon = "star",
-          value = function()
-              for _, t in ipairs(themes) do
-                  if t.id == default_id then return t.name end
-              end
-              for _, b in ipairs(ChatTheme.BUILTINS()) do
-                  if b.id == default_id then return b.name end
-              end
-              return _("Default look")
-          end,
-          callback = function() app:choose_default_bubble_theme() end },
-    }
-    do
-        local saved_label = _("Saved themes")
-        local default_tag = _("Default")
-        local apply_label = _("Apply to this chat")
-        local rename_label = _("Rename")
-        local duplicate_label = _("Duplicate")
-        local delete_label = _("Delete")
-        local export_label = _("Export theme")
-        local set_default_label = _("Set as default")
-        local unset_default_label = _("Unset default")
-        local theme_name_label = _("Theme name")
-        local save_label = _("Save")
-        local builtins_label = _("Built-in themes (SillyTavern presets)")
-        table.insert(rows, { section = true, text = builtins_label })
-        for _, b in ipairs(ChatTheme.BUILTINS()) do
-            local builtin = b
-            table.insert(rows, {
-                text = builtin.name,
-                subtext = (style_labels[builtin.theme.style] or builtin.theme.style),
-                value = (builtin.id == default_id) and (function() return default_tag end) or nil,
-                callback = function()
-                    local Sheets = require("ktui/sheets")
-                    local self_ref = app
-                    local actions = {
-                        { label = set_default_label, icon = "star",
-                          on_tap = function()
-                              self_ref:save_setting("bubble_theme_id", builtin.id)
-                              self_ref:refresh_bubble_theme()
-                              self_ref:refresh(true)
-                          end },
-                        { label = duplicate_label, icon = "copy",
-                          on_tap = function()
-                              self_ref:duplicate_bubble_theme(builtin.id)
-                          end },
-                        { label = export_label, icon = "upload",
-                          on_tap = function()
-                              self_ref:export_bubble_theme(builtin.id)
-                          end },
-                    }
-                    if in_chat then
-                        table.insert(actions, 1, {
-                            label = apply_label, icon = "check",
-                            on_tap = function()
-                                self_ref:set_chat_bubble_theme(builtin.id)
-                            end })
-                    end
-                    Sheets.show(app, { title = builtin.name, actions = actions })
-                end,
-            })
-        end
-        if #themes > 0 then
-            table.insert(rows, { section = true, text = saved_label })
-            for _, t in ipairs(themes) do
-                local entry = t
-                local th = ChatTheme.normalize(entry.theme)
-                local summary = (style_labels[th.style] or th.style)
-                    .. " · " .. (shape_labels[th.avatar_shape] or th.avatar_shape)
-                local is_default = (entry.id == default_id)
-                table.insert(rows, {
-                    text = entry.name or "?",
-                    subtext = summary,
-                    value = is_default and (function() return default_tag end) or nil,
-                    callback = function()
-                        local Sheets = require("ktui/sheets")
-                        local self_ref = app
-                        local actions = {}
-                        if in_chat then
-                            table.insert(actions, {
-                                label = apply_label, icon = "check",
-                                on_tap = function()
-                                    self_ref:set_chat_bubble_theme(entry.id)
-                                end })
-                        end
-                        table.insert(actions, {
-                            label = is_default and unset_default_label or set_default_label,
-                            icon = "star",
-                            on_tap = function()
-                                self_ref:save_setting("bubble_theme_id",
-                                    is_default and "" or entry.id)
-                                self_ref:refresh_bubble_theme()
-                                self_ref:refresh(true)
-                            end })
-                        table.insert(actions, {
-                            label = rename_label, icon = "edit",
-                            on_tap = function()
-                                local Modals = require("ktui/modals")
-                                Modals.input(theme_name_label, entry.name or "",
-                                    theme_name_label, save_label, function(text)
-                                        self_ref:rename_bubble_theme(entry.id, text)
-                                    end)
-                            end })
-                        table.insert(actions, {
-                            label = duplicate_label, icon = "copy",
-                            on_tap = function()
-                                self_ref:duplicate_bubble_theme(entry.id)
-                            end })
-                        table.insert(actions, {
-                            label = export_label, icon = "upload",
-                            on_tap = function()
-                                self_ref:export_bubble_theme(entry.id)
-                            end })
-                        table.insert(actions, {
-                            label = delete_label, icon = "trash", danger = true,
-                            on_tap = function()
-                                self_ref:delete_bubble_theme(entry.id)
-                            end })
-                        Sheets.show(app, { title = entry.name or theme_name_label, actions = actions })
-                    end,
-                })
-            end
-        end
-    end
-    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
-end
 
 
 -- Dashboard customization: grid layout, card height, what to show on the

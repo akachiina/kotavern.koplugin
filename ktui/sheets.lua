@@ -111,7 +111,7 @@ function Sheets.show(app, opts)
         end
         free_snap()
     end
-    view:refresh()
+    if view then view:refresh() end
 end
 
 -- opts: title, text, ok_label (default "Confirm"), cancel_label,

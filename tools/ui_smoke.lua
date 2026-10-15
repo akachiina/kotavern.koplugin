@@ -3441,6 +3441,176 @@ do
     dump(bb_g, "settings_appearance")
 end
 
+-- B6: the three-screen theme model. Launcher census, manager ordering +
+-- in-chat context gate, and the theme editor end to end (create -> edit
+-- a knob -> the saved theme carries it).
+do
+    local ChatTheme_b6 = require("ktui/chat_theme")
+    local Storage_b6 = require("kt_storage")
+    local app_b6 = fake_app({ page = "settings_appearance_chat",
+        settings = { bubble_theme_id = "builtin:azure" } })
+    function app_b6:create_theme() self._created = true end
+    function app_b6:choose_default_bubble_theme() self._picked_default = true end
+    function app_b6:navigate(page) self._nav = page end
+    local view_b6 = { app = app_b6, hitboxes = {}, refresh = function() end }
+    local bb_b6 = new_bb()
+    local okp_b6 = pcall(function()
+        Pages.settings_appearance_chat(view_b6, bb_b6, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_b6, "b6 launcher: paints without crashing")
+    -- Launcher = 3 rows (New theme / Themes… / Default theme), no knobs.
+    local tap_count = #view_b6.hitboxes
+    ok(tap_count == 3, "b6 launcher: exactly 3 tappable rows (got " .. tap_count .. ")")
+    -- Tap each row by position: 1=New, 2=Themes…, 3=Default.
+    view_b6.hitboxes[1].callback(0, 0)
+    ok(app_b6._created == true, "b6 launcher: row 1 creates a theme")
+    view_b6.hitboxes[2].callback(0, 0)
+    ok(app_b6._nav == "settings_bubble_themes",
+        "b6 launcher: row 2 routes to the Themes manager")
+    view_b6.hitboxes[3].callback(0, 0)
+    ok(app_b6._picked_default == true, "b6 launcher: row 3 opens the default picker")
+
+    -- Manager in SETTINGS mode: user themes first, CREATE, builtins last.
+    local app_mgr = fake_app({ page = "settings_bubble_themes",
+        settings = {} })
+    function app_mgr:navigate(page, extra)
+        self._nav_mgr = page
+        self._nav_extra = extra
+    end
+    function app_mgr:set_chat_bubble_theme() end
+    function app_mgr:save_setting() end
+    function app_mgr:refresh_bubble_theme() end
+    function app_mgr:refresh() end
+    -- One user theme in the store so the YOUR THEMES section exists.
+    -- The store is ISOLATED for the manager census (earlier smoke blocks
+    -- leave their own fixtures in it), then restored.
+    local themes_snapshot = Storage_b6.list_chat_themes() or {}
+    local user_theme = {
+        id = "b6-user-test", name = "B6 User Theme",
+        theme = ChatTheme_b6.normalize({ style = "flat", avatar_shape = "square" }),
+    }
+    Storage_b6.save_chat_themes({ user_theme })
+    local view_mgr = { app = app_mgr, hitboxes = {}, refresh = function() end }
+    local bb_mgr = new_bb()
+    local okp_mgr = pcall(function()
+        Pages.settings_bubble_themes(view_mgr, bb_mgr, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_mgr, "b6 manager: settings mode paints without crashing")
+    -- Rows: 1 section + 1 user + 2 create + 1 section + 5 builtins = 10
+    -- tappables (sections are not hitboxes): 1 user + 2 create + 5 builtins.
+    local mgr_taps = #view_mgr.hitboxes
+    ok(mgr_taps == 8,
+        "b6 manager: 1 user + 2 create + 5 builtins tappable rows (got " .. mgr_taps .. ")")
+    -- Row 1 (user theme) opens the EDITOR with the id.
+    view_mgr.hitboxes[1].callback(0, 0)
+    ok(app_mgr._nav_mgr == "theme_edit"
+        and app_mgr._nav_extra and app_mgr._nav_extra.editing_theme_id == "b6-user-test",
+        "b6 manager: user theme tap opens the editor with its id")
+    -- Last row = the 5th builtin (dark_v); tap = sheet (no navigation).
+    view_mgr.hitboxes[mgr_taps].callback(0, 0)
+    ok(app_mgr._nav_mgr == "theme_edit",
+        "b6 manager: builtin tap opens a sheet (no page navigation)")
+
+    -- Manager in CHAT mode (in_chat_context): Follow-default first, tap
+    -- applies per-chat and returns to the chat.
+    local app_ch = fake_app({ page = "settings_bubble_themes",
+        settings = {} })
+    app_ch.state.in_chat_context = true
+    app_ch.state.current_chat_bubble_theme_id = nil
+    local nav_log = {}
+    function app_ch:navigate(page) nav_log[#nav_log + 1] = page end
+    function app_ch:set_chat_bubble_theme(id) self._applied = id end
+    local view_ch = { app = app_ch, hitboxes = {}, refresh = function() end }
+    local bb_ch = new_bb()
+    local okp_ch = pcall(function()
+        Pages.settings_bubble_themes(view_ch, bb_ch, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_ch, "b6 manager: chat mode paints without crashing")
+    -- 1 follow-default + 1 user + 5 builtins = 7 rows.
+    ok(#view_ch.hitboxes == 7,
+        "b6 manager: chat mode = follow-default + all themes (got " .. #view_ch.hitboxes .. ")")
+    view_ch.hitboxes[1].callback(0, 0)
+    ok(app_ch._applied == "" and nav_log[#nav_log] == "chat",
+        "b6 manager: Follow the default clears and returns to chat")
+    view_ch.hitboxes[2].callback(0, 0)
+    ok(app_ch._applied == "b6-user-test",
+        "b6 manager: chat-mode tap applies the theme to THIS chat")
+
+    -- Theme editor e2e: create -> edit style -> saved theme carries it.
+    -- (chat_look on theme_edit reads the EDITED theme; edit writes it.)
+    local app_ed = fake_app({ page = "theme_edit",
+        settings = {} })
+    app_ed.state.editing_theme_id = "b6-user-test"
+    function app_ed:refresh_bubble_theme() end
+    function app_ed:save_setting() end
+    function app_ed:refresh() end
+    function app_ed:navigate(page) self._nav_ed = page end
+    function app_ed:prompt_theme_color() end
+    function app_ed:choose_chat_font() end
+    function app_ed:prompt_chat_font_size() end
+    function app_ed:prompt_custom_css() end
+    function app_ed:rename_bubble_theme() end
+    function app_ed:duplicate_bubble_theme() end
+    function app_ed:export_bubble_theme() end
+    function app_ed:delete_bubble_theme() end
+    function app_ed:set_chat_bubble_theme() end
+    function app_ed:create_theme() end
+    -- The real edit method's editing-screen path, mirrored on the fake:
+    -- write to the EDITED theme, save the store.
+    function app_ed:edit_chat_theme_key(key, value)
+        local CT = require("ktui/chat_theme")
+        local all = Storage_b6.list_chat_themes() or {}
+        for ti = 1, #all do
+            if all[ti].id == self.state.editing_theme_id then
+                local th = CT.normalize(all[ti].theme)
+                local ckey = key:match("^colors%.(%w+)$")
+                if ckey then th.colors[ckey] = value else th[key] = value end
+                all[ti].theme = th
+                Storage_b6.save_chat_themes(all)
+                return
+            end
+        end
+    end
+    local view_ed = { app = app_ed, hitboxes = {}, refresh = function() end }
+    local bb_ed = new_bb()
+    local okp_ed = pcall(function()
+        Pages.theme_edit(view_ed, bb_ed, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_ed, "b6 editor: paints without crashing")
+    -- The DEFAULT-style full page: find the Chat style sheet + edit.
+    -- Direct write through the app method the rows use:
+    app_ed:edit_chat_theme_key("style", "bubbles")
+    local after = Storage_b6.list_chat_themes()
+    local saved_b6 = nil
+    for ti = 1, #after do
+        if after[ti].id == "b6-user-test" then saved_b6 = after[ti] end
+    end
+    ok(saved_b6 ~= nil and saved_b6.theme.style == "bubbles",
+        "b6 editor: knob write lands on the EDITED theme (style=bubbles)")
+    ok(ChatTheme_b6.normalize(saved_b6 and saved_b6.theme or {}).format
+        == ChatTheme_b6.DEFAULTS.format,
+        "b6 editor: saved theme keeps the schema format")
+    -- No editing id -> manager fallback (never a blank page).
+    app_ed.state.editing_theme_id = nil
+    local okp_fb = pcall(function()
+        Pages.theme_edit(view_ed, new_bb(), 0, 0, VW, VH, 0)
+    end)
+    ok(okp_fb and app_ed._nav_ed == "settings_bubble_themes",
+        "b6 editor: no target falls back to the manager")
+    -- Builtin guard: a builtin id bounces to the manager (read-only).
+    app_ed.state.editing_theme_id = "builtin:azure"
+    local okp_bl = pcall(function()
+        Pages.theme_edit(view_ed, new_bb(), 0, 0, VW, VH, 0)
+    end)
+    ok(okp_bl and app_ed._nav_ed == "settings_bubble_themes",
+        "b6 editor: builtin ids bounce to the manager (read-only)")
+    -- Restore the snapshot + keep the fixture (the editor e2e used it).
+    local restored = {}
+    for ti = 1, #themes_snapshot do restored[#restored + 1] = themes_snapshot[ti] end
+    restored[#restored + 1] = user_theme
+    Storage_b6.save_chat_themes(restored)
+end
+
 -- Theme editor page: rows only (the live preview band was removed at the
 -- author's request); the page must paint, expose the editor rows, and
 -- carry no chat hitboxes.

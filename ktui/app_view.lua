@@ -639,6 +639,8 @@ function AppView:draw_content(bb, x, y, w, h)
         max_scroll = Pages.settings_appearance_chat(self, bb, x, y, w, h, scroll)
     elseif page == "settings_bubble_themes" then
         max_scroll = Pages.settings_bubble_themes(self, bb, x, y, w, h, scroll)
+    elseif page == "theme_edit" then
+        max_scroll = Pages.theme_edit(self, bb, x, y, w, h, scroll)
     elseif page == "settings_dashboard" then
         max_scroll = Pages.settings_dashboard(self, bb, x, y, w, h, scroll)
     elseif page == "settings_behavior" then

@@ -1969,3 +1969,36 @@ msgstr "Tema para este chat"
 
 msgid "Overrides the default in this conversation only"
 msgstr "Anula el predeterminado solo en esta conversación"
+
+msgid "New theme"
+msgstr "Nuevo tema"
+
+msgid "New theme…"
+msgstr "Nuevo tema…"
+
+msgid "Themes…"
+msgstr "Temas…"
+
+msgid "Start a theme from your current look"
+msgstr "Empieza un tema desde tu aspecto actual"
+
+msgid "Manage, duplicate, import"
+msgstr "Gestionar, duplicar, importar"
+
+msgid "Your themes"
+msgstr "Tus temas"
+
+msgid "Built-in themes"
+msgstr "Temas integrados"
+
+msgid "Import theme…"
+msgstr "Importar tema…"
+
+msgid "My theme"
+msgstr "Mi tema"
+
+msgid "Theme actions…"
+msgstr "Acciones del tema…"
+
+msgid "Rename, default, duplicate, export, delete"
+msgstr "Renombrar, predeterminado, duplicar, exportar, eliminar"
