@@ -1419,9 +1419,24 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         and (theme_live.show_timestamps == true) or (settings.show_timestamps == true)
     local show_tokens = (theme_live and theme_live.show_tokens ~= nil)
         and (theme_live.show_tokens == true) or (settings.show_tokens == true)
+    -- ST mesIDDisplay / timer_enabled ports (theme keys; plain settings
+    -- never carry them, so no fallback chain needed).
+    local show_msg_ids = (theme_live and theme_live.show_msg_ids == true) or false
+    local show_gen_timer = (theme_live and theme_live.show_gen_timer == true) or false
     -- Experimental: whole-message HTML render (Debug toggle, false default).
     local html_render = settings.chat_html_render == true
-    local style = effective_style(Theme.get_bubble_style())
+    local raw_style = Theme.get_bubble_style()
+    local style = effective_style(raw_style)
+    -- Document (ST documentstyle): a book, not a chat - avatars, name rows
+    -- and panels all hide; messages flow as plain paragraphs on the
+    -- surface (kebab/actions stay on long-press, swipes keep their row).
+    local doc_mode = (raw_style == "document")
+    if doc_mode then
+        style = "flat"
+        show_avatars = false
+        show_timestamps = false
+        show_tokens = false
+    end
     local boxed = (style == "st")
     local panel_mode = (style == "bubbles")
     local radius = boxed and Theme.scale(STYLE_RADIUS[Theme.get_bubble_style()] or 12) or 0
@@ -1545,8 +1560,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         end
     end
 
-    local name_row_h = (flat and show_avatars) and math.max(name_h, avatar_size)
-        or (show_avatars and math.max(name_h, avatar_size) or name_h)
+    local name_row_h = doc_mode and 0
+        or ((flat and show_avatars) and math.max(name_h, avatar_size)
+        or (show_avatars and math.max(name_h, avatar_size) or name_h))
     local av_dy = math.max(0, math.floor((name_row_h - avatar_size) / 2))
     local reasoning_open = (view.app and view.app.state and view.app.state.reasoning_open) or {}
     -- "Show more" state for clamped reasoning blocks (see the measure pass).
@@ -1732,6 +1748,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             -- over the chars/4 estimate (ST token counters parity).
             tokens = tonumber(msg.completion_tokens) or math.ceil(#content_text / 4),
             tokens_real = tonumber(msg.completion_tokens) ~= nil,
+            gen_ms = tonumber(msg.gen_ms) or nil,
             y = cy,
         }
 
@@ -1960,7 +1977,8 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- the initial fallback stays untappable). Emitted after the
                 -- hold zone + kebab so the disc wins taps.
                 local av_hit = nil
-                if srow_y >= y - name_row_h - name_off and srow_y < y + h then
+                if not doc_mode
+                    and srow_y >= y - name_row_h - name_off and srow_y < y + h then
                     local sender_str = l.display_name or ""
                     local timestamp = show_timestamps and format_time(l.send_date) or nil
                     if flat and show_avatars and not l.is_thinking then
@@ -1978,6 +1996,22 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         end
                         local ny = srow_y + name_off + math.floor((name_row_h - name_h) / 2)
                         local nx = col_text_x
+                        -- Message ID (ST mesIDDisplay): tiny muted "#N" before
+                        -- the name, from its own draw (never bold like the
+                        -- name itself).
+                        if show_msg_ids then
+                            local id_str = "#" .. tostring(l.idx or "?")
+                            local idw = P.text_size(id_str, nil, "tiny").w
+                            P.text(bb, id_str, nx, ny + math.floor((name_h - Theme.line_h("tiny")) / 2),
+                                idw + 2, "tiny", { color = Theme.muted })
+                            nx = nx + idw + Theme.scale(6)
+                        end
+                        -- Generation timer (ST timer_enabled): duration of
+                        -- the reply, recorded at finalize time.
+                        if show_gen_timer and l.gen_ms then
+                            local secs = math.floor((l.gen_ms or 0) / 100 + 0.5) / 10
+                            l.gen_timer_str = tostring(secs) .. "s"
+                        end
                         -- End the sender budget where the ⋯ kebab hit starts
                         -- (kebab_x - 8): a long name used to run under the dots
                         -- and the timestamp overprinted them.
@@ -1985,15 +2019,19 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         if sender_str ~= "" then
                             P.text(bb, sender_str, nx, ny, nw,
                                 "small", { bold = true, color = Theme.ink })
+                            local after_w = P.text_size(sender_str, nw, "small", { bold = true })
+                            local tx = nx + math.min(after_w.w, nw) + Theme.scale(6)
                             if timestamp then
-                                local nsize = P.text_size(sender_str, nw, "small", { bold = true })
-                                local tx = nx + math.min(nsize.w, nw) + Theme.scale(6)
-                                -- Bottom-align the measured boxes (no baseline
-                                -- fudge): the old -2 constant detached the rule
-                                -- from the text at other font sizes.
                                 local tsize = P.text_size(timestamp, math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny")
-                                local ty = ny + math.max(0, nsize.h - tsize.h)
+                                local ty = ny + math.max(0, after_w.h - tsize.h)
                                 P.text(bb, timestamp, tx, ty,
+                                    math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny", { color = Theme.muted })
+                                tx = tx + math.min(tsize.w, inner_right - kebab_w - Theme.scale(8) - tx) + Theme.scale(6)
+                            end
+                            -- Gen timer trails the timestamp (ST shows the
+                            -- duration in the timestamp row).
+                            if l.gen_timer_str then
+                                P.text(bb, l.gen_timer_str, tx, ny + math.max(0, after_w.h - Theme.line_h("tiny")),
                                     math.max(1, inner_right - kebab_w - Theme.scale(8) - tx), "tiny", { color = Theme.muted })
                             end
                         end

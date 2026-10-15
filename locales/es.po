@@ -1930,3 +1930,30 @@ msgstr "Fondo de pantalla del chat"
 
 msgid "Invalid color"
 msgstr "Color no válido"
+
+msgid "Chat footer"
+msgstr "Pie del chat"
+
+msgid "Clock, battery and message count above the composer"
+msgstr "Reloj, batería y recuento de mensajes sobre el compositor"
+
+msgid "Search…"
+msgstr "Buscar…"
+
+msgid "Search font"
+msgstr "Buscar fuente"
+
+msgid "e.g. Noto"
+msgstr "p. ej., Noto"
+
+msgid "Install font…"
+msgstr "Instalar fuente…"
+
+msgid "Please select a .ttf or .otf font file."
+msgstr "Selecciona un archivo de fuente .ttf o .otf."
+
+msgid "Could not copy the font file."
+msgstr "No se pudo copiar el archivo de fuente."
+
+msgid "Font installed"
+msgstr "Fuente instalada"

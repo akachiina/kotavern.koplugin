@@ -3384,6 +3384,125 @@ do
     ok(chat_boxes == 0, "editor: preview hitboxes never reach the page view")
 end
 
+-- B2 ports: Document style (name row + kebab vanish, hold stays), message
+-- IDs + gen timer, the chat footer band, and line_spacing actually changing
+-- the rendered doc height.
+do
+    local ChatTheme = require("ktui/chat_theme")
+    local now_b2 = os.time()
+    -- Document style: a book, not a chat.
+    local app_doc = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "user", name = "You", content = "hi", send_date = now_b2 },
+            { role = "assistant", name = "Aria",
+              content = "The reply flows like a book paragraph.", send_date = now_b2 + 1 },
+        } })
+    app_doc.state.chat_theme_applied = ChatTheme.normalize({ style = "document" })
+    -- The style lives in the Theme module (the real app applies it through
+    -- apply_bubble_theme; the fake does not, so the test sets it directly).
+    local style_before = Theme.get_bubble_style()
+    Theme.set_bubble_style("document")
+    local view_doc = { app = app_doc, hitboxes = {}, refresh = function() end }
+    local bb_doc = new_bb()
+    local okp_doc = pcall(function() Pages.chat(view_doc, bb_doc, 0, 0, VW, VH, 0) end)
+    Theme.set_bubble_style(style_before)
+    ok(okp_doc, "b2 document: style paints without crashing")
+    local lay_doc, kebab_n = nil, 0
+    for _dk, l in pairs(view_doc._chat_layout_cache or {}) do
+        if type(l) == "table" and not l.is_user and not l.is_system then lay_doc = l end
+    end
+    for hb_i = 1, #view_doc.hitboxes do
+        local lab = view_doc.hitboxes[hb_i].label
+        if type(lab) == "string" and lab:sub(1, 6) == "kebab_" then
+            kebab_n = kebab_n + 1
+        end
+    end
+    ok(kebab_n == 0, "b2 document: no kebab hitboxes (chrome hidden)")
+    if lay_doc then
+        -- flat: bubble_y = y + name_row_h (+ reasoning 0) - document has
+        -- NO name row, so the content starts at the row top itself.
+        ok((lay_doc.bubble_y - lay_doc.y) <= 1,
+            "b2 document: no name row (content starts at row top, d="
+            .. tostring(lay_doc.bubble_y - lay_doc.y) .. ")")
+    end
+    local hold_n = 0
+    for hb_i = 1, #view_doc.hitboxes do
+        local lab = view_doc.hitboxes[hb_i].label
+        if type(lab) == "string" and lab:sub(1, 8) == "msghold_" then
+            hold_n = hold_n + 1
+        end
+    end
+    ok(hold_n > 0, "b2 document: long-press actions survive (hold zone)")
+    dump(bb_doc, "b2_document_style")
+
+    -- Message IDs + gen timer in the name row (bubbles mode).
+    local app_ids = fake_app({ page = "chat",
+        settings = { chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria", gen_ms = 2340,
+              content = "timed reply", send_date = now_b2 + 2 },
+        } })
+    app_ids.state.chat_theme_applied = ChatTheme.normalize({
+        show_msg_ids = true, show_gen_timer = true })
+    local view_ids = { app = app_ids, hitboxes = {}, refresh = function() end }
+    local bb_ids = new_bb()
+    local okp_ids = pcall(function() Pages.chat(view_ids, bb_ids, 0, 0, VW, VH, 0) end)
+    ok(okp_ids, "b2 ids+timer: paints without crashing")
+    local lay_ids = nil
+    for _ik, l in pairs(view_ids._chat_layout_cache or {}) do
+        if type(l) == "table" and not l.is_user and not l.is_system then lay_ids = l end
+    end
+    ok(lay_ids ~= nil and lay_ids.gen_ms == 2340,
+        "b2 gen timer: duration rides the layout")
+    dump(bb_ids, "b2_ids_timer")
+
+    -- Footer band: clock/msgs/model row above the composer.
+    local app_f = fake_app({ page = "chat",
+        settings = { chat_footer = true, chat_html_render = true },
+        messages = {
+            { role = "assistant", name = "Aria", content = "body", send_date = now_b2 + 3 },
+        } })
+    local view_f = { app = app_f, hitboxes = {}, refresh = function() end }
+    local bb_f = new_bb()
+    local okp_f = pcall(function() Pages.chat(view_f, bb_f, 0, 0, VW, VH, 0) end)
+    ok(okp_f, "b2 footer: chat paints without crashing")
+    -- The footer band sits right above the composer (54px): muted ink in
+    -- [VH-54-24, VH-54) must exist (clock + items).
+    local footer_ink = 0
+    for yy = VH - 54 - 24, VH - 54 - 2, 2 do
+        for xx = 20, VW - 20, 4 do
+            local okp, px = pcall(function() return bb_f:getPixel(xx, yy) end)
+            if okp and px and px:getR() < 200 then footer_ink = footer_ink + 1 end
+        end
+    end
+    ok(footer_ink > 10,
+        "b2 footer: band holds info ink above the composer (" .. footer_ink .. ")")
+    dump(bb_f, "b2_footer")
+
+    -- Line spacing: the same 3-line doc must render TALLER at 130 than 70.
+    local function spacing_doc_height(spacing)
+        local app_s = fake_app({})
+        app_s.state.chat_theme_applied = ChatTheme.normalize({ line_spacing = spacing })
+        local resolved = ChatTheme.resolved(app_s)
+        local Geom = require("ui/geometry")
+        local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+        local KtHTML = require("ktui/kthtml")
+        local wd = HtmlBoxWidget:new{ dimen = Geom:new{ w = 460, h = 600 } }
+        wd:setContent("<p>row one<br>row two<br>row three</p>",
+            KtHTML.chat_css(resolved), 22, false, nil, PLUGIN .. "/assets")
+        wd:_render()
+        local h = KtHTML.scan_bottom(wd.bb, 460, resolved.colors.surface)
+        pcall(function() wd:free() end)
+        return h
+    end
+    local h70 = spacing_doc_height(70)
+    local h130 = spacing_doc_height(130)
+    ok(h70 ~= nil and h130 ~= nil and h130 > h70 + 12,
+        "b2 spacing: line_spacing grows the doc height (70=" .. tostring(h70)
+        .. " 130=" .. tostring(h130) .. ")")
+end
+
 -- Chat Theme render: a dark theme must flip the doc colors (the "room"
 -- semantic - dark chat inside a light app) and scan_bottom must handle it.
 do

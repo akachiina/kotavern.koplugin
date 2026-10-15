@@ -39,6 +39,7 @@ local SETTINGS_DEFAULTS = {
     chat_font_size = 0,        -- custom chat text size (0 = follow base_font_size)
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
     chat_wallpaper = false,    -- character card art behind the chat messages (ST wallpaper)
+    chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
@@ -351,15 +352,107 @@ end
 -- Appearance > Chat: custom chat text font. Picker lists installed font
 -- FILES (FontList) with a "System default" reset at the top. The value is
 -- the font's file path (Font:getFace accepts a raw path via FontList).
+-- Chat font list: KOReader's FontList plus the plugin's drop-in fonts dir
+-- (<data>/fonts, KOReader EXT_FONT_DIR parity), merged, deduped, sorted by
+-- the file name. Never throws.
+function App:list_chat_fonts()
+    local paths, seen = {}, {}
+    pcall(function()
+        local FontList = require("fontlist")
+        for _, p in ipairs(FontList:getFontList() or {}) do
+            if type(p) == "string" and p ~= "" and not seen[p] then
+                seen[p] = true
+                paths[#paths + 1] = p
+            end
+        end
+    end)
+    pcall(function()
+        local lfs_ok2, lfs2 = pcall(require, "libs/libkoreader-lfs")
+        if not lfs_ok2 or not lfs2 then return end
+        local dir = Storage.fonts_dir()
+        for f in lfs2.dir(dir) do
+            if f ~= "." and f ~= ".."
+                and (f:lower():match("%.t[tf]f$") or f:lower():match("%.otf$")) then
+                local full = dir .. "/" .. f
+                if not seen[full] then
+                    seen[full] = true
+                    paths[#paths + 1] = full
+                end
+            end
+        end
+    end)
+    table.sort(paths, function(a, b)
+        return (a:match("[^/]+$") or a) < (b:match("[^/]+$") or b)
+    end)
+    return paths
+end
+
+-- Install a font: copy the picked file into <data>/fonts (the drop-in dir
+-- above), register it with FontList in place (no KOReader restart needed
+-- for the picker) and select it for the chat immediately.
+function App:install_chat_font()
+    local _ = require("gettext")
+    local self_ref = self
+    self:choose_file_path(function(file_path)
+        local ext = tostring(file_path):lower():match("%.(%w+)$") or ""
+        if ext ~= "ttf" and ext ~= "otf" and ext ~= "ttc" then
+            UIManager:show(InfoMessage:new{
+                text = _("Please select a .ttf or .otf font file."), timeout = 3 })
+            return
+        end
+        local dir = Storage.fonts_dir()
+        local fname = tostring(file_path):match("([^/]+)$") or ("font." .. ext)
+        local dest = dir .. "/" .. fname
+        local okc, cerr = pcall(function()
+            local inp = io.open(file_path, "rb")
+            if not inp then error("read") end
+            local data = inp:read("*a")
+            inp:close()
+            local out = io.open(dest, "wb")
+            if not out then error("write") end
+            out:write(data)
+            out:close()
+        end)
+        if not okc then
+            UIManager:show(InfoMessage:new{
+                text = _("Could not copy the font file.") .. " (" .. tostring(cerr) .. ")",
+                timeout = 3 })
+            return
+        end
+        pcall(function()
+            local FontList = require("fontlist")
+            table.insert(FontList.fontlist, dest)
+        end)
+        self_ref:edit_chat_theme_key("font_file", dest)
+        self_ref.state.chat_font_cache = nil
+        self_ref:refresh(true)
+        UIManager:show(InfoMessage:new{
+            text = _("Font installed") .. ": " .. fname, timeout = 3 })
+    end)
+end
+
 function App:choose_chat_font()
     local Sheets = require("ktui/sheets")
-    local FontList = require("fontlist")
     local _ = require("gettext")
     local self_ref = self
     -- The editor view: the applied chat theme wins over the plain setting
     -- (full-snapshot semantics), so the picker reads AND writes through it.
     local current = self:chat_look().font_file
+    local query = tostring(self._font_query or "")
     local actions = {
+        { label = _("Search…"), icon = "search",
+          on_tap = function()
+              local Modals = require("ktui/modals")
+              Modals.input(_("Search font"), query, _("e.g. Noto"), _("Search"),
+                  function(text)
+                      self_ref._font_query = (text ~= "" and text) or nil
+                      self_ref:choose_chat_font()
+                  end)
+          end },
+        { label = _("Install font…"), icon = "download",
+          on_tap = function()
+              self_ref:install_chat_font()
+          end },
         { label = _("System default"), checked = current == "",
           on_tap = function()
               self_ref:edit_chat_theme_key("font_file", "")
@@ -367,26 +460,23 @@ function App:choose_chat_font()
               self_ref:refresh(true)
           end },
     }
-    local fonts = {}
-    pcall(function()
-        for _, path in ipairs(FontList:getFontList() or {}) do
-            if type(path) == "string" and path ~= "" then table.insert(fonts, path) end
-        end
-    end)
-    for _, path in ipairs(fonts) do
+    local q = query:lower()
+    for _, path in ipairs(self:list_chat_fonts()) do
         local label = path:match("[^/]+$") or path
-        --most bundles carry 4 weights of the same family; keep all (user picks)
-        table.insert(actions, {
-            label = label,
-            checked = current == path,
-            on_tap = function()
-                self_ref:edit_chat_theme_key("font_file", path)
-                self_ref.state.chat_font_cache = nil
-                self_ref:refresh(true)
-            end,
-        })
+        if q == "" or label:lower():find(q, 1, true) then
+            table.insert(actions, {
+                label = label,
+                checked = current == path,
+                on_tap = function()
+                    self_ref:edit_chat_theme_key("font_file", path)
+                    self_ref.state.chat_font_cache = nil
+                    self_ref:refresh(true)
+                end,
+            })
+        end
     end
-    Sheets.show(self, { title = _("Chat font"), actions = actions })
+    Sheets.show(self, { title = _("Chat font") .. (query ~= "" and (" · " .. query) or ""),
+        actions = actions })
 end
 
 -- Custom CSS for the chat stylesheet (ST custom_css parity): a multiline
@@ -5078,6 +5168,7 @@ function App:_do_generate(api_messages, opts)
         -- the UI never freezes (Fase E). A "thinking" bubble is shown instead
         -- of a static full-screen loader and is repainted regionally.
         self.state.is_generating = true
+        self._gen_t0 = os.clock()
         self.state.loading = nil
         self.state.thinking = true
         self.state.thinking_frame = 0
@@ -5154,6 +5245,8 @@ function App:_do_generate(api_messages, opts)
                         local final_text = opts.continue_into and (base .. content) or content
                         self_ref:_finish_reused_message(target, final_text, opts, opts.continue_into and base or nil, path, reasoning)
                         if completion_tokens then target.completion_tokens = completion_tokens end
+                        target.gen_ms = math.floor(
+                            (os.clock() - (self_ref._gen_t0 or os.clock())) * 1000)
                     else
                         -- Multi-choice (n>1): every choice becomes a swipe.
                         local swipes = { content }
@@ -5172,9 +5265,13 @@ function App:_do_generate(api_messages, opts)
                             swipe_id = 1,
                             reasoning = reasoning,
                             completion_tokens = completion_tokens,
+                            gen_ms = math.floor(
+                                (os.clock() - (self_ref._gen_t0 or os.clock())) * 1000),
                         }
                         Storage.append_message(path, "assistant", swipes[1],
-                            { swipes = assistant_msg.swipes, swipe_id = 1, reasoning = reasoning }, char_name)
+                            { swipes = assistant_msg.swipes, swipe_id = 1,
+                              reasoning = reasoning,
+                              gen_ms = assistant_msg.gen_ms }, char_name)
                         -- Only touch the in-memory list when the reply still
                         -- belongs to the open chat; otherwise it is loaded
                         -- from disk on reopen.
@@ -5490,6 +5587,7 @@ function App:_do_stream_message(api_messages, opts)
     local msg_index = opts.msg_index or #self.state.messages
 
     self.state.is_generating = true
+    self._gen_t0 = os.clock()
     self.state.loading = nil
     self._stream_partial_count = 0
     self._last_stream_paint = nil
@@ -5584,6 +5682,10 @@ function App:_do_stream_message(api_messages, opts)
             if type(stream_usage) == "table" and tonumber(stream_usage.completion_tokens) then
                 assistant_msg.completion_tokens = tonumber(stream_usage.completion_tokens)
             end
+            -- Generation timer (ST timer_enabled parity): wall-clock duration
+            -- of the reply, shown in the name row when the theme asks.
+            assistant_msg.gen_ms = math.floor(
+                (os.clock() - (self_ref._gen_t0 or os.clock())) * 1000)
             if is_reuse then
                 local final_text = opts.continue_into and (base_content .. full_text) or full_text
                 self_ref:_finish_reused_message(assistant_msg, final_text, opts, opts.continue_into and base_content or nil, path, reasoning)
@@ -5606,6 +5708,9 @@ function App:_do_stream_message(api_messages, opts)
                         end
                         if assistant_msg.completion_tokens then
                             persisted.completion_tokens = assistant_msg.completion_tokens
+                        end
+                        if assistant_msg.gen_ms then
+                            persisted.gen_ms = assistant_msg.gen_ms
                         end
                         Storage.save_chat(path, chat_data.header, chat_data.messages)
                     end

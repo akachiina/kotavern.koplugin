@@ -754,6 +754,13 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
             value = function() return app.state.settings.chat_wallpaper == true end,
             callback = function() app:toggle_setting("chat_wallpaper") end,
         },
+        {
+            text = _("Chat footer"),
+            subtext = _("Clock, battery and message count above the composer"),
+            toggle = true,
+            value = function() return app.state.settings.chat_footer == true end,
+            callback = function() app:toggle_setting("chat_footer") end,
+        },
     }
 
     local gap = Theme.scale(6)
@@ -3179,10 +3186,19 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     -- pinned at the bottom; the message list takes the rest (grow). Same
     -- contract as the settings pilot - the page declares, the deck lays.
     local Deck = require("ktui/deck")
-    local rects = Deck.layout(view, {
+    -- Footer (KOReader readerfooter parity): a thin info band between the
+    -- messages and the composer - clock, battery, message count and the
+    -- active model, muted tiny. Off by default.
+    local footer_on = view.app.state.settings.chat_footer == true
+    local footer_h = footer_on and Theme.scale(16) or 0
+    local deck_rows = {
         Deck.card("messages", { grow = true }),
-        Deck.px("composer", Theme.scale(54)),
-    }, { x = x, y = y, w = w, h = h })
+    }
+    if footer_on then
+        deck_rows[#deck_rows + 1] = Deck.px("footer", footer_h)
+    end
+    deck_rows[#deck_rows + 1] = Deck.px("composer", Theme.scale(54))
+    local rects = Deck.layout(view, deck_rows, { x = x, y = y, w = w, h = h })
     local action_bar_h = rects.composer.h
     local content_h = rects.messages.h
     local action_y = rects.composer.y
@@ -3199,6 +3215,34 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
         rects.messages.h = content_h
     end
     local pad = Theme.scale(10)
+    -- Footer band paint (after the messages, before the composer wins the
+    -- z-order anyway by painting later).
+    if footer_on and rects.footer then
+        local fy = rects.footer.y
+        P.rect(bb, x, fy, w, footer_h, Theme.chat_bg)
+        P.rect(bb, x, fy, w, Theme.scale(1), Theme.soft)
+        local items = {}
+        local okb, cap = pcall(function()
+            local Device = require("device")
+            local pd = Device:getPowerDevice()
+            return (pd and pd.getCapacity and pd:getCapacity()) or nil
+        end)
+        if okb and cap then items[#items + 1] = tostring(cap) .. "%" end
+        items[#items + 1] = "#" .. tostring(#(state.messages or {}))
+        local model = (state.current_connection and state.current_connection.model_id) or ""
+        if model ~= "" then
+            items[#items + 1] = Widgets.truncate(model, 28)
+        end
+        local right = os.date("%H:%M")
+        local left_str = table.concat(items, " · ")
+        P.text(bb, left_str, x + pad, fy + math.floor((footer_h - Theme.line_h("tiny")) / 2) + 1,
+            w - pad * 2 - P.text_size(right, nil, "tiny").w - Theme.scale(6),
+            "tiny", { color = Theme.muted })
+        local rsize = P.text_size(right, nil, "tiny")
+        P.text(bb, right, x + w - pad - rsize.w,
+            fy + math.floor((footer_h - rsize.h) / 2) + 1,
+            rsize.w + 2, "tiny", { color = Theme.muted })
+    end
     -- Swipe step (a few text lines - zenpm row parity).
     local ChatBubblesHead = require("ktui/chat_bubbles")
     local line_step = ChatBubblesHead.line_step()

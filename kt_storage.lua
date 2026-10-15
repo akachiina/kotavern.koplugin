@@ -531,6 +531,15 @@ function Storage.save_chat_themes(themes)
     return write_json_file(data_dir() .. "/chat_themes.json", themes)
 end
 
+-- Drop-in fonts (KOReader EXT_FONT_DIR parity): anything the user copies
+-- here (or installs through the font picker) is listed alongside the
+-- system fonts without a KOReader restart.
+function Storage.fonts_dir()
+    local dir = data_dir() .. "/fonts"
+    ensure_dir(dir)
+    return dir
+end
+
 -- === Personas ===
 function Storage.personas_images_dir()
     local dir = data_dir() .. "/personas"
