@@ -589,6 +589,13 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
         pcall(function() widget:free() end)
         return nil
     end
+    -- setContent only swaps self.document; the previous one would wait for
+    -- the GC finalizer holding its fz_context + font cache (the same leak
+    -- closed in the chat's html_doc_for). Close explicitly before relayouts.
+    local function close_probe_doc()
+        pcall(function() if widget.document then widget.document:close() end end)
+        widget.document = nil
+    end
     local doc = {
         key = key, widget = widget, viewport_h = h, page = page,
         page_count = widget.page_count or 1, paginated = want_paginated,
@@ -621,6 +628,7 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
             -- Known shape: size the widget straight at the cached total
             -- (approximately always >= h; below-TALL_H guard held at probe
             -- time under identical body/css/font/width, so it holds here).
+            close_probe_doc()
             pcall(function()
                 widget.dimen = Geom:new{ w = w, h = cached_total }
                 widget:setContent(src.body, src.css,
@@ -637,6 +645,7 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
             end
         else
             local pages_at_tall = 1
+            close_probe_doc()
             pcall(function()
                 widget.dimen = Geom:new{ w = w, h = want_h }
                 widget:setContent(src.body, src.css,
@@ -647,6 +656,7 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
             doc.page_count = pages_at_tall
             if pages_at_tall > 1 then
                 doc.paginated = true
+                close_probe_doc()
                 pcall(function()
                     widget.dimen = Geom:new{ w = w, h = h }
                     widget:setContent(src.body, src.css,

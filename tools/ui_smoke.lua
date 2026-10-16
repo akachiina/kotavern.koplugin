@@ -2563,6 +2563,58 @@ do
     dump(b, "chat_html_render")
 end
 
+-- Doc sweep (the "Alto uso de memória" fix): with HTML render on, the docs
+-- of OFFSCREEN messages release their widget (tall bitmap + MuPDF document
+-- with its fz_context + font cache); visible docs keep theirs. Heights stay
+-- cached and scrolling back rebuilds in place through the same entry.
+do
+    local msgs = {}
+    for i = 1, 6 do
+        local lines = {}
+        for ln = 1, 12 do lines[ln] = "message " .. i .. " line " .. ln end
+        msgs[i] = { role = (i % 2 == 0) and "assistant" or "user",
+            name = (i % 2 == 0) and "Aria" or "You",
+            content = table.concat(lines, "\n"), send_date = 1000 + i }
+    end
+    local app = fake_app({ page = "chat",
+        settings = { chat_html_render = true }, scroll = {}, messages = msgs })
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local function count_docs()
+        local with_w, without_w = 0, 0
+        for k, v in pairs(app.state.chat_html_docs or {}) do
+            if type(k) == "string" and type(v) == "table" then
+                if v.widget then with_w = with_w + 1 else without_w = without_w + 1 end
+            end
+        end
+        return with_w, without_w
+    end
+    local b = new_bb()
+    local okp, err = pcall(function() Pages.chat(view, b, 0, 0, VW, VH, 999999) end)
+    ok(okp, "docs sweep: long HTML chat paints (" .. tostring(err) .. ")")
+    local with_w, without_w = count_docs()
+    ok(without_w >= 1,
+        "docs sweep: offscreen docs released their widget (nil=" .. without_w .. ")")
+    ok(with_w >= 1, "docs sweep: visible docs keep their widget (got " .. with_w .. ")")
+    ok(with_w <= 4, "docs sweep: resident widgets bounded by the band (got " .. with_w .. ")")
+    -- Second paint at the same scroll: idempotent (nothing churns back).
+    local b2 = new_bb()
+    pcall(function() Pages.chat(view, b2, 0, 0, VW, VH, 999999) end)
+    local with_w2 = count_docs()
+    ok(with_w2 == with_w, "docs sweep: second paint is idempotent ("
+        .. with_w .. " -> " .. with_w2 .. ")")
+    -- Scroll to the top: the bottom docs release, the top ones rebuild in
+    -- place through the same entries (heights were kept).
+    local b3 = new_bb()
+    local okp3, err3 = pcall(function() Pages.chat(view, b3, 0, 0, VW, VH, 0) end)
+    ok(okp3, "docs sweep: scroll-back paint (" .. tostring(err3) .. ")")
+    local with_w3, without_w3 = count_docs()
+    ok(with_w3 >= 1 and with_w3 <= 4,
+        "docs sweep: top view rebuilds its visible docs (w=" .. with_w3 .. ")")
+    ok((with_w3 + without_w3) == (with_w + without_w),
+        "docs sweep: rebuild reuses the entries, no growth ("
+        .. (with_w + without_w) .. " -> " .. (with_w3 + without_w3) .. ")")
+end
+
 -- HTML markdown coverage (the "markdown ainda não renderiza" round 2):
 -- inline markup must re-express into tags in the emitted body, model text
 -- must be escaped, and fence rows must become contiguous mono <p> blocks.
@@ -3148,6 +3200,10 @@ do
     local ch2 = deck2.messages.h
     -- Pages.chat already returns max_scroll (total - message area).
     local max0 = total0 or 0
+    -- The offscreen sweep (memory fix) releases the docs of messages below
+    -- the band: the tall message lives at the chat tail, so paint the
+    -- bottom first - visible there, it holds its rebuilt-in-place widget.
+    paint2(max0)
     local lay2, entry2 = find_long2()
     ok(lay2 ~= nil and entry2 ~= nil and entry2.widget ~= nil,
         "chat html bands: long html entry with a widget")

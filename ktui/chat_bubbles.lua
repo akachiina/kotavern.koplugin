@@ -864,7 +864,8 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
     if not docs then
         docs = {}
         app.state.chat_html_docs = docs
-        docs.cap = 32 -- tall-bitmap cache cap; pruned below (see paint epoch)
+        docs.cap = 96 -- entry cap; entries are metadata-only now (the
+                       -- offscreen sweep releases widgets, see pass 1.5)
         docs.n = 0    -- entry counter (amortized prune, audit D4: the
                       -- per-build pairs() count over the whole store was
                       -- O(n) per miss = O(N^2) opening a long chat)
@@ -926,9 +927,37 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         "\0", set_sig_local(det_revealed), "\0", tostring(css_extra or "") }, "")
     local cached = docs[key]
     if cached and cached.width == width then
+        if cached.widget then
+            return cached
+        end
+        -- The offscreen sweep (end of the measure pass) released the widget
+        -- but kept height/tall: rebuild IN PLACE at the tall height the
+        -- original build used - one setContent, no page probe, no bottom
+        -- scan (identical inputs reconstruct identical pixels).
+        local base_px = Theme.scale(Theme.get_base_font_size())
+            * (tonumber(resolved.font_scale) or 1)
+        base_px = math.max(8, math.floor(base_px + 0.5))
+        local css = require("ktui/kthtml").chat_css(resolved)
+        if css_extra and css_extra ~= "" then
+            css = css .. "\n" .. css_extra
+        end
+        local okr, rerr = pcall(function()
+            local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = cached.tall or 96 } }
+            widget:setContent(chat_html_body(content, revealed, det_revealed), css,
+                base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
+            widget:_render()
+            cached.widget = widget
+        end)
+        if not okr or not cached.widget then
+            require("logger").warn("chat html rebuild failed: ", rerr)
+            docs[key] = nil
+            return nil
+        end
+        cached.paint_id = view and view._chat_paint_id or 0
         return cached
     end
     if cached then
+        -- Same content at a different width: the old entry is unusable.
         pcall(function() if cached.widget then cached.widget:free() end end)
         docs[key] = nil
     end
@@ -1001,6 +1030,12 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         widget:setContent(chat_html_body(content, revealed, det_revealed), css,
             base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
         local pages = widget.page_count or 1
+        -- Close the probe document before the tall relayout: setContent only
+        -- drops the reference, and the probe's fz_context + font cache would
+        -- sit in memory until the GC runs its finalizer (one per build -
+        -- part of the "RAM sobe a cada mensagem" report).
+        pcall(function() if widget.document then widget.document:close() end end)
+        widget.document = nil
         -- Tall bitmap: relayout at pages*96 then scan the exact bottom.
         local tall = math.max(96, pages * 96)
         widget.dimen = Geom:new{ w = width, h = tall }
@@ -1014,7 +1049,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
             resolved.colors.surface)
         local h = last and math.max(16, last) or 96
         docs[key] = { widget = widget, height = h, width = width, key = key,
-            paint_id = view and view._chat_paint_id or 0 }
+            tall = tall, paint_id = view and view._chat_paint_id or 0 }
         docs.n = (docs.n or 0) + 1
     end)
     if not okp then
@@ -1997,6 +2032,55 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         view.app.state.scroll[view.app:scroll_key()] = clamped
     end
     scroll = clamped
+
+    -- Pass 1.5: release the HTML docs of OFFSCREEN messages. The doc-cache
+    -- prune alone could not: the fast path re-stamps _paint_id on every
+    -- layout each paint, so its live[] protection covered the whole store
+    -- and nothing was ever evicted in a growing chat (RSS rose with every
+    -- message - the "High memory usage" report). Visibility here is exact
+    -- for THIS paint (clamped scroll = what pass 2 paints, 100px margin
+    -- like the fast path), so the released docs give back their tall
+    -- bitmap + MuPDF document (fz_context + font cache) NOW; height/tall
+    -- stay cached and html_doc_for rebuilds in place when the message
+    -- scrolls back in (its layout_html_alive check forces the re-measure).
+    do
+        local docs = view.app and view.app.state and view.app.state.chat_html_docs
+        if type(docs) == "table" then
+            local keep = {}
+            local vis_top = scroll + y - 100
+            local vis_bottom = scroll + y + h + 100
+            for li = 1, #layouts do
+                local l = layouts[li]
+                local ly = l.y or 0
+                if (ly + (l.row_h or l.h or 0) > vis_top) and (ly < vis_bottom) then
+                    for ei = 1, #(l.entries or {}) do
+                        local e = l.entries[ei]
+                        if type(e) == "table" and e.kind == "html" and e.doc_key then
+                            keep[e.doc_key] = true
+                        end
+                    end
+                    for ri = 1, #(l.reasoning_entries or {}) do
+                        local re = l.reasoning_entries[ri]
+                        if type(re) == "table" and re.kind == "html" and re.doc_key then
+                            keep[re.doc_key] = true
+                        end
+                    end
+                end
+            end
+            local freed = 0
+            for k, v in pairs(docs) do
+                if type(k) == "string" and type(v) == "table" and v.widget
+                    and not keep[k] then
+                    pcall(function() v.widget:free() end)
+                    v.widget = nil
+                    freed = freed + 1
+                end
+            end
+            if freed > 0 then
+                pcall(collectgarbage, "step")
+            end
+        end
+    end
 
     -- Pass 2: draw
     -- Bubble panels paint through a viewport clamped to the messages band:
