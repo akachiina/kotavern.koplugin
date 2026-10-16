@@ -270,19 +270,23 @@ end
 -- Corner cutout for square/rounded avatar shapes (ST avatar_styles):
 -- paints the 4 corners back to the surface color with `radius` px cuts
 -- (radius 0 = no-op, sharp square; size/2 = the circle carve equivalent).
-function P.corner_carve(bb, x, y, size, radius, color)
+-- Optional explicit box (w, h): square `size` when omitted. The landscape
+-- avatar ("rect", 4:3) needs non-square corner carving.
+function P.corner_carve(bb, x, y, size, radius, color, w, h)
+    w = w or size
+    h = h or size
     radius = math.floor(radius or 0)
-    if radius <= 0 or size <= 0 then return end
-    radius = math.min(radius, math.floor(size / 2))
+    if radius <= 0 or w <= 0 or h <= 0 then return end
+    radius = math.min(radius, math.floor(math.min(w, h) / 2))
     for row = 0, radius - 1 do
         local inset = radius - math.floor(math.sqrt(radius * radius - (radius - row - 0.5) ^ 2) + 0.5)
         if inset > 0 then
             local y_top = y + row
-            local y_bot = y + size - 1 - row
+            local y_bot = y + h - 1 - row
             paint_fill(bb, x, y_top, inset, 1, color)
-            paint_fill(bb, x + size - inset, y_top, inset, 1, color)
+            paint_fill(bb, x + w - inset, y_top, inset, 1, color)
             bb:paintRect(x, y_bot, inset, 1, color)
-            bb:paintRect(x + size - inset, y_bot, inset, 1, color)
+            bb:paintRect(x + w - inset, y_bot, inset, 1, color)
         end
     end
 end

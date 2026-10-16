@@ -47,10 +47,11 @@ local function effective_style(style)
     return "st" -- st / rounded / square / unknown
 end
 
--- ST avatar shape: the shared Widgets avatar (square cover-fit image,
--- corners carved back to the surface color, ring). shape comes from the
--- applied chat theme first (round | rounded | square | rect - ST
--- avatar_styles), then the plain settings.
+-- ST avatar shape: the shared Widgets avatar (cover-fit image, corners
+-- carved back to the surface color, ring). shape comes from the applied
+-- chat theme first (round | rounded | square | rect - ST avatar_styles),
+-- then the plain settings. "rect" paints the LANDSCAPE 4:3 box
+-- (W.avatar_box_size); the geometry callers use avatar_w for it.
 local function draw_avatar(view, bb, x, y, size, image_file, name, carve_color)
     local st = view.app and view.app.state or nil
     local shape = (st and st.chat_theme_applied and st.chat_theme_applied.avatar_shape)
@@ -1500,6 +1501,12 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local av_mult = av_size_setting == "large" and 1.25
         or (av_size_setting == "small" and 0.75 or 1.0)
     local avatar_size = math.floor(Theme.scale(48) * av_mult)
+    -- Avatar WIDTH per shape: "rect" is landscape 4:3 (ST avatar_style 1).
+    -- Height (and every vertical metric) stays `avatar_size`; only the
+    -- width-sensitive geometry below uses avatar_w.
+    local av_shape = (theme_live and theme_live.avatar_shape)
+        or settings.avatar_shape or "round"
+    local avatar_w = select(1, Widgets.avatar_box_size(avatar_size, av_shape))
     local name_h = line_height(Theme.face("small")) + 2
     -- ST fa-ellipsis kebab (message actions) in the name row: 3 round dots.
     local kebab_r = math.max(2, math.floor(Theme.scale(6) / 2))
@@ -1559,7 +1566,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local col_text_x = inner_left
     local col_text_w = area
     if flat and show_avatars then
-        av_col_w = avatar_size + Theme.scale(10)
+        av_col_w = avatar_w + Theme.scale(10)
         col_text_x = inner_left + av_col_w
         col_text_w = math.max(8, inner_right - col_text_x)
     end
@@ -1577,7 +1584,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     -- the chat itself. Any change rebuilds the cache from scratch.
     local chat_sig = table.concat({
         style, tostring(dens), tostring(pad), tostring(gap),
-        tostring(avatar_size), tostring(show_avatars), tostring(show_inline),
+        tostring(avatar_size), tostring(avatar_w), tostring(show_avatars), tostring(show_inline),
         tostring(outline_user), tostring(show_timestamps), tostring(show_tokens),
         tostring(boxed), tostring(panel_mode), tostring(radius),
         tostring(dens), -- global density: pad/gap/metrics scale with it
@@ -2109,7 +2116,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         name_drawn = true
                     elseif l.is_user then
                         local boxed_str = sender_str .. (timestamp and ((sender_str ~= "" and "  " or "") .. timestamp) or "")
-                        local av_x = content_right - pad - avatar_size
+                        local av_x = content_right - pad - avatar_w
                         if show_avatars then
                             draw_avatar(view, bb, av_x, srow_y + av_dy, avatar_size, user_image, user, Theme.chat_panel)
                             if user_image and user_image ~= "" then
@@ -2132,7 +2139,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                                 av_hit = { x = av_x, y = srow_y + av_dy, img = char_image }
                             end
                         end
-                        local name_x = show_avatars and (av_x + avatar_size + Theme.scale(4)) or av_x
+                        local name_x = show_avatars and (av_x + avatar_w + Theme.scale(4)) or av_x
                         local name_w = math.max(1, content_right - pad - name_x)
                         if boxed_str ~= "" then
                             P.text(bb, boxed_str, name_x,
@@ -2200,7 +2207,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 -- kebab keep working everywhere else.
                 if av_hit and view.app.show_character_image_fullscreen then
                     local ah = av_hit
-                    P.hit(view, ah.x, ah.y, avatar_size, avatar_size, function()
+                    P.hit(view, ah.x, ah.y, avatar_w, avatar_size, function()
                         view.app:show_character_image_fullscreen(ah.img)
                     end, "chat_avatar_" .. l.idx)
                 end

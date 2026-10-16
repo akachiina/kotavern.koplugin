@@ -1162,6 +1162,73 @@ do
         "avatar: user without persona gets the initial fallback, not the card (got " .. without_av .. ")")
 end
 
+-- === 4j2. Avatar "Rectangular" is a landscape box (the "continua quadrado"
+-- report: rect used to fall into the square branch) ==========================
+do
+    local Widgets_av = require("ktui/widgets")
+    local Theme_av = require("ktui/theme")
+    -- Fallback (no image): the soft box must span the 4:3 landscape width.
+    local function box_ink_overhang(shape)
+        local b = new_bb()
+        Widgets_av.avatar(b, 10, 10, 48, "", "Aria", nil, shape)
+        local n = 0
+        for yy = 20, 46 do
+            for xx = 58, 73 do -- [x+48, x+64): square never paints here
+                if b:getPixel(xx, yy):getR() < 235 then n = n + 1 end
+            end
+        end
+        return n
+    end
+    ok(box_ink_overhang("square") == 0,
+        "avatar rect: square stays inside the square box")
+    ok(box_ink_overhang("rect") > 200,
+        "avatar rect: landscape 4:3 fallback paints past the square ("
+        .. box_ink_overhang("rect") .. ")")
+    ok(Widgets_av.avatar_box_size(48, "rect") == 64,
+        "avatar rect: 48px -> 64px wide (4:3)")
+    ok(Widgets_av.avatar_box_size(48, "square") == 48
+        and Widgets_av.avatar_box_size(48, nil) == 48,
+        "avatar rect: square/round keep the square box")
+
+    -- Chat e2e with the black card as the bot avatar: the landscape box
+    -- cover-fits MORE of the card than the square one (flat/bubbles panel
+    -- path), and boxed (st) mode with rect still paints.
+    local ChatBubbles_av = require("ktui/chat_bubbles")
+    local msgs_av = {
+        { role = "assistant", content = "hi", name = "Aria" },
+    }
+    local function chat_avatar_ink(shape, style)
+        local st = { page = "chat", settings = { show_avatars = true },
+            messages = msgs_av }
+        local a = fake_app(st)
+        a.state.chat_theme_applied = require("ktui/chat_theme").normalize(
+            { avatar_shape = shape, style = style })
+        local v = { app = a, hitboxes = {} }
+        local b = new_bb()
+        local okp = pcall(function()
+            ChatBubbles_av.draw(v, b, 0, 0, VW, VH, 0, msgs_av, "Aria",
+                false, "You", "/tmp/smoke_card.png", nil)
+        end)
+        if not okp then return -1, false end
+        local n = 0
+        for yy = 0, 130 do
+            for xx = 0, 90 do
+                if b:getPixel(xx, yy):getR() < 80 then n = n + 1 end
+            end
+        end
+        return n, true
+    end
+    local sq_ink, sq_ok = chat_avatar_ink("square", "bubbles")
+    local rect_ink, rect_ok = chat_avatar_ink("rect", "bubbles")
+    ok(sq_ok and rect_ok, "avatar rect: chat paints in bubbles mode")
+    ok(rect_ink > sq_ink + 100,
+        "avatar rect: the bot avatar cover-fits the landscape box ("
+        .. sq_ink .. " -> " .. rect_ink .. ")")
+    local st_ink, st_ok = chat_avatar_ink("rect", "st")
+    ok(st_ok and st_ink > 0,
+        "avatar rect: boxed (st) mode with rect paints (ink=" .. st_ink .. ")")
+end
+
 -- === 4k. Flick = one small fixed step (zenpm row parity) =======================
 do
     local AppView = require("ktui/app_view")
