@@ -1764,3 +1764,9 @@ msgstr "Renomear, padrão, duplicar, exportar, excluir"
 
 msgid "Model"
 msgstr "Modelo"
+
+msgid "Spacious"
+msgstr "Espaçada"
+
+msgid "Affects spacing across the whole app"
+msgstr "Afeta o espaçamento de todo o app"

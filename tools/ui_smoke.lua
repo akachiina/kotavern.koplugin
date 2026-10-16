@@ -1470,7 +1470,7 @@ do
         "ktui/icons.lua", "ktui/kthtml.lua", "ktui/modals.lua",
         "ktui/nav.lua", "ktui/pages.lua", "ktui/primitives.lua",
         "ktui/scroll.lua", "ktui/sheets.lua", "ktui/theme.lua",
-        "ktui/theme_css.lua", "ktui/widgets.lua" }
+        "ktui/widgets.lua" }
     local function strip(l)
         l = l:gsub('"(?:[^"\\]|\\.)*"', '""')
         l = l:gsub("'(?:[^'\\]|\\.)*'", "''")
@@ -6829,6 +6829,95 @@ do
         -- migration flags, chat_themes.json was written); leave the dir
         -- as the boot found the files (tests re-plant their own fixtures).
         pcall(function() app_boot:close() end)
+    end
+end
+
+-- === R2 audit: Default-look boot migration + no-theme = schema defaults ===
+do
+    local Storage_r2 = require("kt_storage")
+    local json_r2 = require("json")
+    -- Plant a plain custom look (flat style, gray surface, timestamps) and
+    -- NO theme selection: the one-time migration must snapshot it into a
+    -- "Default look" user theme and make it the global default.
+    os.remove(Storage_r2.data_dir() .. "/chat_themes.json")
+    os.remove(Storage_r2.data_dir() .. "/bubble_themes.json")
+    local fs = io.open(Storage_r2.data_dir() .. "/settings.json", "w")
+    if fs then
+        -- migrated_* flags = an install that already ran the legacy style
+        -- migrations (the realistic R2 cohort: they keep "flat" instead of
+        -- being bumped to bubbles).
+        fs:write(json_r2.encode({ bubble_style = "flat", chat_bg = "gray",
+            show_timestamps = true,
+            migrated_flat_style = true, migrated_bubbles_style = true }))
+        fs:close()
+    end
+    local ok_r2, app_r2 = pcall(function()
+        local App = require("kt_app")
+        return App:new({})
+    end)
+    ok(ok_r2 and app_r2 ~= nil, "r2 boot: plain custom look boots fine")
+    if ok_r2 and app_r2 then
+        local applied = app_r2.state.chat_theme_applied
+        ok(applied ~= nil, "r2: no-selection boot still applies a resolved look")
+        ok(applied and applied.style == "flat",
+            "r2: migration snapshot carried the plain style (flat)")
+        ok(applied and applied.colors.surface == "#e8e8e8",
+            "r2: chat_bg=gray mapped to the legacy surface tint (#e8e8e8)")
+        ok(applied and applied.show_timestamps == true,
+            "r2: migration snapshot carried the plain toggles")
+        local s_r2 = app_r2.state.settings
+        ok(type(s_r2.bubble_theme_id) == "string" and s_r2.bubble_theme_id ~= "",
+            "r2: the snapshot became the global default theme")
+        ok(s_r2.migrated_default_look == true, "r2: migration flag persisted")
+        local themes_r2 = Storage_r2.list_chat_themes() or {}
+        local found = false
+        for _t = 1, #themes_r2 do
+            if themes_r2[_t].id == s_r2.bubble_theme_id then found = true end
+        end
+        ok(found, "r2: the Default look theme lives in the store")
+
+        -- Second boot with PRISTINE settings (all defaults): no snapshot,
+        -- the schema defaults apply (bubbles + paper).
+        pcall(function() app_r2:close() end)
+        os.remove(Storage_r2.data_dir() .. "/chat_themes.json")
+        local fs2 = io.open(Storage_r2.data_dir() .. "/settings.json", "w")
+        if fs2 then
+            fs2:write(json_r2.encode({}))
+            fs2:close()
+        end
+        local ok_r2b, app_r2b = pcall(function()
+            local App = require("kt_app")
+            return App:new({})
+        end)
+        if ok_r2b and app_r2b then
+            local applied_b = app_r2b.state.chat_theme_applied
+            ok(applied_b ~= nil and applied_b.style == "bubbles",
+                "r2: defaults boot = schema defaults (bubbles)")
+            ok(app_r2b.state.settings.bubble_theme_id == "",
+                "r2: no snapshot when the plain look is default")
+            -- Density is a GLOBAL again: the Appearance row cycles it and
+            -- the live Theme metric follows (the whole-UI knob).
+            app_r2b.state.page = "settings_appearance"
+            local view_r2 = { app = app_r2b, hitboxes = {},
+                refresh = function() end }
+            local bb_r2 = new_bb()
+            local okp_r2 = pcall(function()
+                Pages.settings_appearance(view_r2, bb_r2, 0, 0, VW, VH, 0)
+            end)
+            ok(okp_r2, "r2: Appearance paints with the density row")
+            -- Rows: Theme(1) Font size(2) Density(3) Chat(4) Dashboard(5).
+            local den_box = view_r2.hitboxes[3]
+            if den_box then den_box.callback(0, 0) end
+            local Theme_r2 = require("ktui/theme")
+            ok(app_r2b.state.settings.density == "spacious"
+                and Theme_r2.get_density() == 1.4,
+                "r2: density row cycles normal -> spacious (live metric)")
+            if den_box then den_box.callback(0, 0) end
+            if den_box then den_box.callback(0, 0) end
+            ok(app_r2b.state.settings.density == "normal",
+                "r2: density cycles back to normal")
+            pcall(function() app_r2b:close() end)
+        end
     end
 end
 

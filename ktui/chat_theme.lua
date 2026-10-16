@@ -208,7 +208,8 @@ function ChatTheme.sig(theme)
     put("style", t.style)
     put("w", t.chat_width)
     put("rad", t.bubble_radius)
-    put("den", t.density)
+    -- density is a GLOBAL setting (Appearance): it enters the render sigs
+    -- through resolved()/chat_sig (global density input), never the theme.
     put("font", t.font_file)
     put("fs", t.font_size)
     put("fx", t.font_scale)
@@ -357,12 +358,11 @@ function ChatTheme.resolved(app)
     local t = ChatTheme.normalize(applied or {})
     local Theme = require("ktui/theme")
     local KtHTML = require("ktui/kthtml")
-    -- Text knobs: theme wins when set, plain settings otherwise.
-    local font_file = (t.font_file ~= "") and t.font_file or (s.chat_font_file or "")
-    local font_size = (t.font_size > 0) and t.font_size
-        or math.floor(tonumber(s.chat_font_size) or 0)
-    local custom_css = (t.custom_css ~= "") and t.custom_css
-        or tostring(s.custom_css or "")
+    -- Text knobs are theme-owned (R2): the plain chat font/css settings
+    -- retired with the Default-look migration.
+    local font_file = t.font_file
+    local font_size = t.font_size
+    local custom_css = t.custom_css
     local line_spacing = t.line_spacing
     -- Colors: theme set > live palette (the palette already carries the
     -- theme's surface/panel overrides when a theme is applied).
@@ -394,8 +394,10 @@ function ChatTheme.resolved(app)
     colors.mask_text = (ChatTheme.luminance(colors.mask) or 1) < 0.5
         and "#f2f2f2" or "#161616"
     -- One signature for the whole render config: layout caches and HTML
-    -- doc keys embed this so any knob change rebuilds.
+    -- doc keys embed this so any knob change rebuilds. Global density
+    -- scales the HTML font sizes (Theme.scale), so it joins the sig.
     local sig = ChatTheme.sig(t)
+        .. "|gd:" .. tostring(s.density)
         .. "|rf:" .. font_file .. ":" .. font_size .. ":" .. line_spacing
         .. ":" .. #custom_css .. ":" .. custom_css:sub(1, 48) .. ":"
         .. custom_css:sub(-48)

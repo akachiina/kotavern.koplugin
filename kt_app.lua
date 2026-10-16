@@ -19,13 +19,10 @@ local App = {}
 local SETTINGS_DEFAULTS = {
     theme = "light",
     base_font_size = 22,
-    density = "normal",        -- compact | normal | spacious
-    bubble_style = "bubbles",  -- ST chat_styles: bubbles (BUBBLES, default) | flat (DEFAULT) | st (legacy boxed) | rounded | square | none
-    chat_bg = "paper",         -- chat surface tint: paper | gray | none
+    density = "normal",        -- compact | normal | spacious (whole-UI metric)
     -- Debug Mode (hidden until triple-tapping "Installed" on the Updates
     -- page; experimental features, CSS sandbox). Not exposed in pickers.
     debug_mode = false,
-    debug_theme_css = "",      -- CSS file name (no path) from <data>/themes/
     show_inline_images = true, -- render message images inline (ST media)
     show_avatars = true,
     show_covers = true,
@@ -174,6 +171,69 @@ function App:save_setting(key, value)
     self:apply_settings()
 end
 
+-- One-time (audit R2): the plain chat-look keys (bubble_style, chat_bg,
+-- radius, chat font, custom CSS, avatars and the detail toggles) retired
+-- into themes - the theme editor owns every knob now. If the plain look
+-- differs from the app defaults and no theme is selected, snapshot it into
+-- a "Default look" user theme and make it the global default: nothing is
+-- lost and everything stays editable in theme_edit. Density is exempt: it
+-- stays a live global setting (Appearance).
+function App:_migrate_default_look()
+    local ChatTheme = require("ktui/chat_theme")
+    local s = self.state.settings
+    if s.migrated_default_look == true then return end
+    s.migrated_default_look = true
+    if type(s.bubble_theme_id) == "string" and s.bubble_theme_id ~= "" then
+        Storage.save_settings(s)
+        return
+    end
+    local d = SETTINGS_DEFAULTS
+    local custom = (s.bubble_style ~= nil and s.bubble_style ~= "bubbles")
+        or (s.chat_bg ~= nil and s.chat_bg ~= "paper")
+        or (s.bubble_radius ~= nil and s.bubble_radius ~= d.bubble_radius)
+        or (s.chat_width ~= nil and s.chat_width ~= d.chat_width)
+        or (s.chat_font_file ~= nil and s.chat_font_file ~= d.chat_font_file)
+        or (s.chat_font_size ~= nil and s.chat_font_size ~= d.chat_font_size)
+        or (s.custom_css ~= nil and s.custom_css ~= d.custom_css)
+        or (s.avatar_shape ~= nil and s.avatar_shape ~= d.avatar_shape)
+        or (s.avatar_size ~= nil and s.avatar_size ~= d.avatar_size)
+        or (s.show_avatars ~= nil and s.show_avatars ~= d.show_avatars)
+        or (s.show_timestamps ~= nil and s.show_timestamps ~= d.show_timestamps)
+        or (s.show_tokens ~= nil and s.show_tokens ~= d.show_tokens)
+        or (s.show_inline_images ~= nil and s.show_inline_images ~= d.show_inline_images)
+        or (s.outline_user_bubbles == true)
+        or (s.chat_footer == true)
+    if not custom then
+        Storage.save_settings(s)
+        return
+    end
+    -- Same surface tint mapping the legacy save-current-look path used.
+    local presets = { none = "#ffffff", paper = "#f2f2f2", gray = "#e8e8e8" }
+    local presets_user = { none = "#f0f0f0", paper = "#e6e6e6", gray = "#dbdbdb" }
+    local bg = s.chat_bg or "paper"
+    local _ = require("gettext")
+    local theme = ChatTheme.normalize({
+        style = s.bubble_style, bubble_radius = s.bubble_radius,
+        chat_width = s.chat_width,
+        colors = { surface = presets[bg], user_panel = presets_user[bg] },
+        font_file = s.chat_font_file, font_size = s.chat_font_size,
+        custom_css = s.custom_css,
+        avatar_shape = s.avatar_shape, avatar_size = s.avatar_size,
+        show_avatars = s.show_avatars, show_timestamps = s.show_timestamps,
+        show_tokens = s.show_tokens,
+        show_inline_images = s.show_inline_images,
+        outline_user_bubbles = s.outline_user_bubbles,
+        chat_footer = s.chat_footer,
+    })
+    theme.name = _("Default look")
+    local themes = Storage.list_chat_themes() or {}
+    local id = Util.uuid()
+    themes[#themes + 1] = { id = id, name = theme.name, theme = theme }
+    Storage.save_chat_themes(themes)
+    s.bubble_theme_id = id
+    Storage.save_settings(s)
+end
+
 function App:apply_settings()
     local Theme = require("ktui/theme")
     local s = self.state.settings
@@ -182,8 +242,6 @@ function App:apply_settings()
     -- App:refresh). Everything else repaints flash-free.
     local vsig = table.concat({
         tostring(s.theme), tostring(s.base_font_size), tostring(s.density),
-        tostring(s.bubble_style), tostring(s.chat_bg),
-        (s.debug_mode == true) and tostring(s.debug_theme_css or "") or "",
     }, "|")
     if self._visual_sig and self._visual_sig ~= vsig then
         self._flash_pending = true
@@ -215,23 +273,17 @@ function App:apply_settings()
         s.bubble_style = "bubbles"
         Storage.save_settings(s)
     end
+    -- One-time migration (audit R2): the plain chat-look keys retired into
+    -- themes (the editor owns every knob now). Run BEFORE the overlay.
+    self:_migrate_default_look()
     Theme.set_theme(s.theme)
     Theme.set_base_font_size(s.base_font_size)
     Theme.set_density(s.density)
-    Theme.set_bubble_style(s.bubble_style)
-    Theme.set_chat_bg(s.chat_bg)
-    Theme.set_bubble_radius(s.bubble_radius)
-    -- Custom chat text font (Appearance > Chat): file path + absolute size.
-    -- Empty file = system content face; size 0 = follow the base font size.
-    require("ktui/theme").set_chat_font(s.chat_font_file, s.chat_font_size)
-    -- Bubble theme overlay (chat override > global default). Runs AFTER the
-    -- plain settings so the theme's live values win on the palette.
+    -- The chat look (style, colors, geometry, chat font, detail toggles)
+    -- comes from the theme overlay alone now (refresh_bubble_theme): the
+    -- plain bubble_style/chat_bg/radius/font settings are retired. With no
+    -- theme selected the schema defaults apply (ChatTheme.DEFAULTS).
     self:refresh_bubble_theme()
-    -- Debug Mode CSS overlay (experimental): re-bakes the palette with the
-    -- selected theme file when debug mode is on; no-op otherwise.
-    if s.debug_mode == true then
-        require("ktui/theme_css").apply_to_app(self)
-    end
 end
 
 function App:_active_persona()
@@ -663,10 +715,8 @@ end
 
 function App:disable_debug_mode()
     self.state.settings.debug_mode = false
-    self.state.settings.debug_theme_css = ""
     Storage.save_settings(self.state.settings)
     self:apply_settings()
-    self.state.debug_theme_errors = nil
     -- Leaving a debug page? Back to Settings so the (now hidden) category
     -- change is visible instead of a silent no-op.
     if self.state.page == "settings_debug" then
@@ -3936,25 +3986,16 @@ function App:active_bubble_theme_id()
 end
 
 -- Apply a chat theme (normalized table) to the LIVE state: Theme setters
--- for the canvas geometry, color overrides for the surface/panels (unset
--- keys inherit the palette), the canvas chat font when the theme sets
--- one. state.chat_theme_applied holds the normalized theme so the paint
--- paths read one resolved object. nil = plain settings (overrides clear).
+-- for the canvas geometry, color overrides for the surface/panels, the
+-- canvas chat font. state.chat_theme_applied holds the normalized theme
+-- so the paint paths read one resolved object. The theme is a FULL
+-- snapshot (normalize fills every key): no settings fallbacks (the plain
+-- chat-look settings retired in the audit R2). Density is global: the
+-- overlay never touches it.
 function App:apply_bubble_theme(theme)
     local Theme = require("ktui/theme")
-    local s = self.state.settings
-    if not theme then
-        Theme.set_bubble_style(s.bubble_style)
-        Theme.set_bubble_radius(s.bubble_radius)
-        Theme.set_density(s.density)
-        Theme.set_chat_color_overrides(nil)
-        Theme.set_chat_font(s.chat_font_file, s.chat_font_size)
-        self.state.chat_theme_applied = nil
-        return
-    end
-    Theme.set_bubble_style(theme.style or s.bubble_style)
-    Theme.set_bubble_radius(theme.bubble_radius or s.bubble_radius)
-    Theme.set_density(theme.density or s.density)
+    Theme.set_bubble_style(theme.style)
+    Theme.set_bubble_radius(theme.bubble_radius)
     Theme.set_chat_color_overrides({
         surface = theme.colors.surface,
         ai_panel = theme.colors.ai_panel,
@@ -3962,23 +4003,19 @@ function App:apply_bubble_theme(theme)
         text = theme.colors.text,
         border = theme.colors.border,
     })
-    -- Canvas chat font: theme keys win when set, settings otherwise.
-    Theme.set_chat_font(
-        (theme.font_file ~= "" and theme.font_file) or s.chat_font_file,
-        (theme.font_size > 0 and theme.font_size) or s.chat_font_size)
+    -- Canvas chat font: theme keys own it (empty file = system face,
+    -- size 0 = follow the base font size).
+    Theme.set_chat_font(theme.font_file, theme.font_size)
     self.state.chat_theme_applied = ChatTheme.normalize(theme)
 end
 
--- Startup/reload path: resolve and apply the active theme (otherwise the
--- plain settings). Call after apply_settings.
+-- Startup/reload path: resolve and apply the active theme. No selection
+-- (or a dangling id) = the schema defaults (ChatTheme.DEFAULTS): the plain
+-- chat-look settings retired in the audit R2. Call after apply_settings.
 function App:refresh_bubble_theme()
     local id = self:active_bubble_theme_id()
-    if not id then
-        self:apply_bubble_theme(nil)
-        return
-    end
-    local theme = self:find_chat_theme(id)
-    self:apply_bubble_theme(theme) -- nil (dangling id) = plain settings
+    local theme = id and self:find_chat_theme(id) or nil
+    self:apply_bubble_theme(theme or ChatTheme.normalize({}))
 end
 
 function App:set_chat_bubble_theme(theme_id)
@@ -4176,18 +4213,9 @@ function App:chat_look()
         local t = self:find_chat_theme(self.state.editing_theme_id)
         if t then return ChatTheme.normalize(t) end
     end
-    local live = self.state.chat_theme_applied
-    if live then return ChatTheme.normalize(live) end
-    local s = self.state.settings
-    return ChatTheme.normalize({
-        style = s.bubble_style, bubble_radius = s.bubble_radius,
-        density = s.density, chat_width = s.chat_width,
-        font_file = s.chat_font_file, font_size = s.chat_font_size,
-        custom_css = s.custom_css,
-        avatar_shape = s.avatar_shape, avatar_size = s.avatar_size,
-        show_avatars = s.show_avatars, show_timestamps = s.show_timestamps,
-        show_tokens = s.show_tokens, show_inline_images = s.show_inline_images,
-    })
+    -- R2: the applied look is always set (schema defaults when nothing is
+    -- selected); the plain-settings seed died with the retired keys.
+    return ChatTheme.normalize(self.state.chat_theme_applied or {})
 end
 
 function App:edit_chat_theme_key(key, value)

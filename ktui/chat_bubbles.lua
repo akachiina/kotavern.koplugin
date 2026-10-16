@@ -1559,6 +1559,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         tostring(avatar_size), tostring(show_avatars), tostring(show_inline),
         tostring(outline_user), tostring(show_timestamps), tostring(show_tokens),
         tostring(boxed), tostring(panel_mode), tostring(radius),
+        tostring(dens), -- global density: pad/gap/metrics scale with it
         tostring(w), tostring(text_w), tostring(bubble_w),
         tostring(settings.avatar_size), tostring(settings.chat_width),
         tostring(settings.reasoning_prefix), tostring(settings.reasoning_suffix),
