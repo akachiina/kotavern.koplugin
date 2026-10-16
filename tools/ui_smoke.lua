@@ -6895,8 +6895,9 @@ do
                 "r2: defaults boot = schema defaults (bubbles)")
             ok(app_r2b.state.settings.bubble_theme_id == "",
                 "r2: no snapshot when the plain look is default")
-            -- Density is a GLOBAL again: the Appearance row cycles it and
-            -- the live Theme metric follows (the whole-UI knob).
+            -- Density has NO UI row (author call: internal metric only).
+            -- The page still paints with the surviving rows, and the
+            -- internal pipeline stays live (settings -> Theme metric).
             app_r2b.state.page = "settings_appearance"
             local view_r2 = { app = app_r2b, hitboxes = {},
                 refresh = function() end }
@@ -6904,18 +6905,16 @@ do
             local okp_r2 = pcall(function()
                 Pages.settings_appearance(view_r2, bb_r2, 0, 0, VW, VH, 0)
             end)
-            ok(okp_r2, "r2: Appearance paints with the density row")
-            -- Rows: Theme(1) Font size(2) Density(3) Chat(4) Dashboard(5).
-            local den_box = view_r2.hitboxes[3]
-            if den_box then den_box.callback(0, 0) end
+            ok(okp_r2, "r2: Appearance paints without the density row")
+            -- Rows: Theme(1) Font size(2) Chat(3) Dashboard(4) - and no
+            -- 5th row: density must not have crept back in.
+            ok(#view_r2.hitboxes == 4,
+                "r2: Appearance = 4 tappable rows, no density (got "
+                .. #view_r2.hitboxes .. ")")
             local Theme_r2 = require("ktui/theme")
-            ok(app_r2b.state.settings.density == "spacious"
-                and Theme_r2.get_density() == 1.4,
-                "r2: density row cycles normal -> spacious (live metric)")
-            if den_box then den_box.callback(0, 0) end
-            if den_box then den_box.callback(0, 0) end
-            ok(app_r2b.state.settings.density == "normal",
-                "r2: density cycles back to normal")
+            ok(app_r2b.state.settings.density == "normal"
+                and Theme_r2.get_density() == 1.0,
+                "r2: density stays the internal default (metric 1.0)")
             pcall(function() app_r2b:close() end)
         end
     end

@@ -395,10 +395,6 @@ msgstr "Excluir este preset permanentemente?"
 
 msgid "Delete this regex script?"
 msgstr "Excluir este script de regex?"
-
-msgid "Density"
-msgstr "Densidade"
-
 msgid "Depth"
 msgstr "Profundidade"
 
@@ -1764,9 +1760,3 @@ msgstr "Renomear, padrão, duplicar, exportar, excluir"
 
 msgid "Model"
 msgstr "Modelo"
-
-msgid "Spacious"
-msgstr "Espaçada"
-
-msgid "Affects spacing across the whole app"
-msgstr "Afeta o espaçamento de todo o app"

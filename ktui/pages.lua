@@ -442,7 +442,8 @@ function Pages.settings(view, bb, x, y, w, h, scroll)
     return max_scroll
 end
 
--- Settings > Appearance: theme/font/density/chat-style/appearance toggles.
+-- Settings > Appearance: app-level chrome (theme, base font) + the chat
+-- look launcher. Density stays an internal metric (no UI row, author call).
 function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
     local app = view.app
     local rows = {
@@ -462,25 +463,6 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             text = _("Font size"),
             value = function() return tostring(app.state.settings.base_font_size) end,
             callback = function() app:prompt_base_font_size() end,
-        },
-        {
-            text = _("Density"),
-            subtext = _("Affects spacing across the whole app"),
-            value = function()
-                local v = app.state.settings.density or "normal"
-                if v == "compact" then return _("Compact") end
-                if v == "spacious" then return _("Spacious") end
-                return _("Normal")
-            end,
-            callback = function()
-                local order = { "compact", "normal", "spacious" }
-                local cur = app.state.settings.density or "normal"
-                local next_v = order[1]
-                for i, v in ipairs(order) do
-                    if v == cur then next_v = order[(i % #order) + 1] end
-                end
-                app:save_setting("density", next_v)
-            end,
         },
         {
             text = _("Chat"),
