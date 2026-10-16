@@ -37,6 +37,7 @@ local SETTINGS_DEFAULTS = {
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
+    debug_header_stats = false, -- Debug: plugin/device RAM+CPU beside the header dots
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
     streaming = true,          -- global default for new connections

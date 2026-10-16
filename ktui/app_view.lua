@@ -512,6 +512,7 @@ function AppView:onClose()
 end
 
 function AppView:paintTo(bb, x, y)
+    local t0 = os.clock()
     self.hitboxes = {}
     -- Any full paint invalidates the sheet snapshot (it holds pre-sheet
     -- pixels; see ktui/sheets.lua).
@@ -591,6 +592,9 @@ function AppView:paintTo(bb, x, y)
     if self.app.state.sheet then
         Sheets.draw(self, bb)
     end
+
+    -- Plugin CPU accounting for the debug header stats (ktui/debug_stats).
+    require("ktui/debug_stats").note_paint(t0)
 end
 
 function AppView:draw_content(bb, x, y, w, h)

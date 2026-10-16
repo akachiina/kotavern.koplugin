@@ -402,6 +402,20 @@ function Header.draw(view, bb, x, y, w)
     local kebab_s = Theme.scale(42)
     local kebab_x = x + w - pad - kebab_s
 
+    -- Debug stats (Debug > "Show RAM and CPU in the header"): compact
+    -- plugin+device usage right before the kebab. Sample lives in
+    -- ktui/debug_stats (throttled, /proc + paint-CPU accounting); the title
+    -- zone below yields it the room.
+    local stats_text, stats_w = nil, 0
+    if state.settings and state.settings.debug_header_stats then
+        stats_text = require("ktui/debug_stats").text(view.app)
+        if stats_text and stats_text ~= "" then
+            stats_w = P.text_size(stats_text, nil, "tiny").w + Theme.scale(10)
+        else
+            stats_text = nil
+        end
+    end
+
     -- Brand/title. The swallow hit covers ONLY the text zone: taps on the bare
     -- title area must still reach AppView's KOReader-menu passthrough.
     local title_x = x + pad
@@ -412,7 +426,7 @@ function Header.draw(view, bb, x, y, w)
             P.center_text_box(bb, "K", x + pad, ly, logo_s, logo_s, "title", { bold = true })
         end
         title_x = x + pad + logo_s + Theme.scale(14)
-        P.vcenter_text(bb, page_title(view), title_x, y, math.max(0, kebab_x - Theme.scale(6) - title_x), h, "title", { bold = true, color = h_ink })
+        P.vcenter_text(bb, page_title(view), title_x, y, math.max(0, kebab_x - Theme.scale(6) - stats_w - title_x), h, "title", { bold = true, color = h_ink })
     else
         -- ZenPM back: dedicated 46px square, CENTERED in the titlebar band
         -- (not full-height), with a chevron SVG. No background box: the
@@ -424,12 +438,23 @@ function Header.draw(view, bb, x, y, w)
         title_x = x + pad + back_s + Theme.scale(6)
         local title_text = Widgets.sanitize(page_title(view))
         if title_text == "" then title_text = _("Untitled") end
-        P.vcenter_text(bb, title_text, title_x, y, math.max(0, kebab_x - Theme.scale(6) - title_x), h, "heading", { bold = true, color = h_ink })
+        P.vcenter_text(bb, title_text, title_x, y, math.max(0, kebab_x - Theme.scale(6) - stats_w - title_x), h, "heading", { bold = true, color = h_ink })
     end
 
     -- Title-zone swallow (see comment above).
-    if kebab_x - Theme.scale(6) > title_x then
-        P.hit(view, title_x, y, kebab_x - Theme.scale(6) - title_x, h, function() end, "header_title")
+    if kebab_x - Theme.scale(6) - stats_w > title_x then
+        P.hit(view, title_x, y, kebab_x - Theme.scale(6) - stats_w - title_x, h, function() end, "header_title")
+    end
+
+    -- Stats readout + tap-through for the details modal. Registered after
+    -- the title swallow so it wins its own zone (hits check in reverse).
+    if stats_text then
+        local sx = kebab_x - Theme.scale(6) - stats_w + Theme.scale(5)
+        P.vcenter_text(bb, stats_text, sx, y, stats_w - Theme.scale(10), h, "tiny", { color = h_soft })
+        P.hit(view, sx - Theme.scale(5), y, stats_w, h, function()
+            local Modals = require("ktui/modals")
+            Modals.info(require("ktui/debug_stats").details(view.app))
+        end, "header_stats")
     end
 
     -- Kebab (3 drawn dots). No background box: it sits directly on the

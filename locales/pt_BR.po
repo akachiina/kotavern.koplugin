@@ -1760,3 +1760,9 @@ msgstr "Renomear, padrão, duplicar, exportar, excluir"
 
 msgid "Model"
 msgstr "Modelo"
+
+msgid "Show RAM and CPU in the header"
+msgstr "Mostrar RAM e CPU no cabeçalho"
+
+msgid "Plugin and device usage beside the title dots"
+msgstr "Uso do plugin e do dispositivo ao lado dos três pontinhos"

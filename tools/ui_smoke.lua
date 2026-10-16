@@ -2615,6 +2615,56 @@ do
         .. (with_w + without_w) .. " -> " .. (with_w3 + without_w3) .. ")")
 end
 
+-- Debug header stats ("Show RAM and CPU in the header", Debug mode): the
+-- compact P<lua MB> <cpu %>·D<device MB> <cpu %> readout beside the kebab
+-- (ktui/debug_stats), fed by /proc reads + AppView paint-CPU accounting.
+do
+    local DebugStats = require("ktui/debug_stats")
+    DebugStats.reset()
+    local app = fake_app({ page = "dashboard",
+        settings = { debug_header_stats = true } })
+    local txt = DebugStats.text(app)
+    ok(type(txt) == "string" and txt:sub(1, 1) == "P" and txt:find("·", 1, true) ~= nil,
+        "debug stats: header text has the P...·D... shape (" .. tostring(txt) .. ")")
+    ok(txt:find("%d+M") ~= nil and txt:find("%%") ~= nil,
+        "debug stats: numeric MB and percent fields")
+    ok(DebugStats.text(app) == txt,
+        "debug stats: calls inside the sampling window reuse the sample")
+    DebugStats.note_paint(os.clock() - 0.001)
+    local detail = DebugStats.details(app)
+    ok(type(detail) == "string" and detail:find("Lua heap", 1, true) ~= nil
+        and detail:find("Process RSS", 1, true) ~= nil
+        and detail:find("Device RAM", 1, true) ~= nil,
+        "debug stats: details text lists Lua heap, RSS and device RAM")
+    -- Header: with the toggle on the title swallow shrinks by the stats
+    -- width and a header_stats zone appears; off, neither.
+    local function header_zones(stats_on)
+        local app_h = fake_app({ page = "dashboard",
+            settings = { debug_header_stats = stats_on } })
+        local view_h = { app = app_h, hitboxes = {}, refresh = function() end }
+        Header.draw(view_h, new_bb(), 0, 0, VW)
+        local title_w, stats_hit = nil, false
+        for _i, hb in ipairs(view_h.hitboxes) do
+            if hb.label == "header_title" then title_w = hb.w end
+            if hb.label == "header_stats" then stats_hit = true end
+        end
+        return title_w, stats_hit
+    end
+    local w_off, hit_off = header_zones(false)
+    local w_on, hit_on = header_zones(true)
+    ok(hit_off == false and hit_on == true,
+        "debug stats: header_stats zone exists only with the toggle on")
+    ok(w_off and w_on and w_on < w_off,
+        "debug stats: title swallow yields room to the stats ("
+        .. tostring(w_off) .. " -> " .. tostring(w_on) .. ")")
+    -- Chat page (theme chrome header) paints with the stats on.
+    local app_c = fake_app({ page = "chat",
+        settings = { debug_header_stats = true } })
+    local view_c = { app = app_c, hitboxes = {}, refresh = function() end }
+    local okc = pcall(function() Header.draw(view_c, new_bb(), 0, 0, VW) end)
+    ok(okc, "debug stats: chat header paints with the stats on")
+end
+
 -- HTML markdown coverage (the "markdown ainda não renderiza" round 2):
 -- inline markup must re-express into tags in the emitted body, model text
 -- must be escaped, and fence rows must become contiguous mono <p> blocks.
