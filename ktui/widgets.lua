@@ -6,7 +6,6 @@ local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
 local Geom = require("ktui/geom")
-local _ = require("gettext")
 
 local W = {}
 
@@ -262,10 +261,6 @@ function W.section_header(view, bb, x, y, w, text)
     return lh + Theme.scale(10)
 end
 
--- 1px soft divider line.
-function W.divider(bb, x, y, w)
-    P.rect(bb, x, y, w, math.max(1, Theme.scale(1)), Theme.soft)
-end
 
 -- === Row ===
 

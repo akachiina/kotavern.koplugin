@@ -676,41 +676,6 @@ function App:disable_debug_mode()
     end
 end
 
-function App:show_debug_actions()
-    local Sheets = require("ktui/sheets")
-    local _ = require("gettext")
-    local actions = {}
-    for _i, file in ipairs(require("ktui/theme_css").list_files()) do
-        actions[#actions + 1] = {
-            label = file.name,
-            icon = "magic",
-            on_tap = function()
-                self:save_setting("debug_theme_css", file.name)
-                self:apply_settings()
-                self:refresh(true)
-            end,
-        }
-    end
-    if #actions == 0 then
-        actions[#actions + 1] = {
-            label = _("Default theme (built-in)"),
-            icon = "magic",
-            on_tap = function()
-                self:save_setting("debug_theme_css", "")
-                self:apply_settings()
-                self:refresh(true)
-            end,
-        }
-    end
-    Sheets.show(self, { title = _("Theme CSS"), actions = actions })
-end
-
--- Write the sandbox demo screen to <data>/themes/pages/sandbox.html so users
--- have a starting file. Tapping again resets it to the current skeleton:
--- the old file is kept as sandbox.html.bak first (user-owned, never lost).-- (sandbox.html installer removed with the UIDSL engine: the surviving
--- html_sandbox.html install covers the kthtml page path; pure-CSS theme
--- files keep working through ktui/theme_css.lua.)
-
 -- Write the HTML sandbox demo page to <data>/themes/pages/html_sandbox.html.
 -- Tapping again resets it to the current skeleton: the old file is kept as
 -- .bak first (user-owned, never lost).
@@ -752,46 +717,6 @@ function App:install_html_sandbox_file()
         UIManager:show(InfoMessage:new{
             text = _("Could not write html_sandbox.html"), timeout = 3 })
     end
-end
-
--- Write the sandbox demo CSS to <data>/themes so users have a starting file.
-function App:install_demo_theme()
-    local Storage = require("kt_storage")
-    local dir = Storage.data_dir() .. "/themes"
-    local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
-    if not lfs_ok or not lfs then
-        local ok2, lfs2 = pcall(require, "lfs")
-        lfs = ok2 and lfs2 or nil
-    end
-    pcall(function()
-        if lfs and lfs.mkdir then lfs.mkdir(dir) end
-    end)
-    local path = dir .. "/sandbox.css"
-    local f = io.open(path, "w")
-    if not f then
-        local InfoMessage = require("ui/widget/infomessage")
-        UIManager:show(InfoMessage:new{
-            text = _("Could not write the theme file"), timeout = 3 })
-        return
-    end
-    -- The demo theme is plain CSS (the surviving palette-overlay surface):
-    -- background/color + the named accent slots, ktui/theme_css.lua.
-    f:write([[
-/* KOTavern demo theme - edit anything, pick it in Test CSS, see it live. */
-page {
-  background: gray(0.04);
-  color: #111111;
-  panel-color: #ffffff;
-  soft-color: gray(0.25);
-  border-color: gray(0.2);
-  muted-color: gray(0.45);
-}
-]])
-    f:close()
-    local InfoMessage = require("ui/widget/infomessage")
-    local _ = require("gettext")
-    UIManager:show(InfoMessage:new{
-        text = _("sandbox.css created in the themes folder"), timeout = 3 })
 end
 
 -- Dump the current page viewport to the Data folder (Debug evidence).
@@ -1470,7 +1395,7 @@ App.CHARACTER_FIELDS = {
     { key = "mes_example", title = "Example Messages", multiline = true },
     { key = "system_prompt", title = "System Prompt", multiline = true },
     { key = "post_history_instructions", title = "Post-History Instructions", multiline = true },
-    { key = "creator_notes", title = "Creator Notes", multiline = true },
+    { key = "creator_notes", title = _("Creator Notes"), multiline = true },
     { key = "creator", title = "Creator" },
     { key = "tags", title = "Tags (comma separated)" },
     { key = "character_version", title = "Version" },
@@ -3478,62 +3403,6 @@ function App:add_prompt_item()
     end)
 end
 
--- Remove a utility prompt from the preset: drops its prompts entry and every
--- order reference, so it cannot resurface in the next build. Markers and the
--- chatHistory marker are refused (they are the layout skeleton).
-function App:remove_prompt_item(index)
-    local Sheets = require("ktui/sheets")
-    local _ = require("gettext")
-    local self_ref = self
-    local preset = self.state.editing_preset
-    if not preset then return end
-    local list = self:_prompt_order_list()
-    local item = list and list[index]
-    local prompt = item and self:_find_prompt(item.identifier)
-    if not prompt or prompt.marker or item.identifier == "chatHistory" then return end
-    Sheets.confirm(self_ref, {
-        title = _("Remove prompt"),
-        text = _("Remove this prompt from the preset?") .. " (" .. tostring(prompt.name or item.identifier) .. ")",
-        ok_label = _("Remove"), danger = true,
-        on_ok = function()
-            local prompts = preset.prompts or {}
-            for i = #prompts, 1, -1 do
-                if prompts[i] == prompt then table.remove(prompts, i) end
-            end
-            for _j, po in ipairs(preset.prompt_order or {}) do
-                if type(po.order) == "table" then
-                    for i = #po.order, 1, -1 do
-                        if po.order[i].identifier == item.identifier then
-                            table.remove(po.order, i)
-                        end
-                    end
-                end
-            end
-            self_ref:refresh(true)
-        end,
-    })
-end
-
--- Rename a utility prompt (markers and the chatHistory marker are refused -
--- their display names are ST structural identifiers).
-function App:rename_prompt_item(index)
-    local Modals = require("ktui/modals")
-    local _ = require("gettext")
-    local self_ref = self
-    local preset = self.state.editing_preset
-    if not preset then return end
-    local list = self:_prompt_order_list()
-    local item = list and list[index]
-    local prompt = item and self:_find_prompt(item.identifier)
-    if not prompt or prompt.marker or item.identifier == "chatHistory" then return end
-    Modals.input(_("Rename Prompt"), tostring(prompt.name or ""), _("Prompt name"), _("Save"), function(text)
-        text = Util.trim(tostring(text or ""))
-        if text == "" then return end
-        prompt.name = text
-        self_ref:refresh(true)
-    end)
-end
-
 -- === Quick Replies (global set) ===
 function App:show_quick_replies()
     local Sheets = require("ktui/sheets")
@@ -4112,38 +3981,6 @@ function App:refresh_bubble_theme()
     self:apply_bubble_theme(theme) -- nil (dangling id) = plain settings
 end
 
-function App:choose_chat_bubble_theme()
-    local Sheets = require("ktui/sheets")
-    local _ = require("gettext")
-    local self_ref = self
-    local current = self.state.current_chat_bubble_theme_id
-    local actions = {
-        { label = _("Follow the default"), checked = current == nil or current == "",
-          on_tap = function()
-              self_ref:set_chat_bubble_theme("")
-          end },
-    }
-    for _, b in ipairs(ChatTheme.BUILTINS()) do
-        table.insert(actions, {
-            label = b.name, checked = (current == b.id),
-            on_tap = function()
-                self_ref:set_chat_bubble_theme(b.id)
-            end })
-    end
-    for _, t in ipairs(Storage.list_chat_themes() or {}) do
-        table.insert(actions, {
-            label = t.name or "?", checked = (current == t.id),
-            on_tap = function()
-                self_ref:set_chat_bubble_theme(t.id)
-            end })
-    end
-    table.insert(actions, {
-        label = _("Manage themes…"), icon = "sliders",
-        on_tap = function() self_ref:navigate("settings_appearance_chat") end,
-    })
-    Sheets.show(self, { title = _("Chat theme") .. " · " .. _("This chat"), actions = actions })
-end
-
 function App:set_chat_bubble_theme(theme_id)
     self.state.current_chat_bubble_theme_id = theme_id
     local path = self.state.current_chat_path
@@ -4156,39 +3993,6 @@ function App:set_chat_bubble_theme(theme_id)
     end
     self:refresh_bubble_theme()
     self:refresh(true)
-end
-
--- Snapshot the CURRENT look into a new named theme: the applied theme
--- (if any) copied under the new name, otherwise the plain settings
--- raised to the full schema.
-function App:save_bubble_theme_from_current(name)
-    local s = self.state.settings
-    name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if name == "" then return end
-    local raw
-    local live = self.state.chat_theme_applied
-    if live then
-        raw = live
-    else
-        -- Plain settings: keep the 3 chat_bg tints recognizable as the
-        -- same migration the store does (bubble themes -> chat themes).
-        local presets = { none = "#ffffff", paper = "#f2f2f2", gray = "#e8e8e8" }
-        local presets_user = { none = "#f0f0f0", paper = "#e6e6e6", gray = "#dbdbdb" }
-        local bg = s.chat_bg or "paper"
-        raw = {
-            style = s.bubble_style, bubble_radius = s.bubble_radius,
-            density = s.density,
-            colors = { surface = presets[bg], user_panel = presets_user[bg] },
-            font_file = s.chat_font_file, font_size = s.chat_font_size,
-            show_avatars = s.show_avatars, show_timestamps = s.show_timestamps,
-            show_tokens = s.show_tokens,
-        }
-    end
-    local theme = ChatTheme.normalize(raw)
-    theme.name = name
-    local themes = Storage.list_chat_themes() or {}
-    themes[#themes + 1] = { id = Util.uuid(), name = name, theme = theme }
-    Storage.save_chat_themes(themes)
 end
 
 function App:rename_bubble_theme(id, name)
@@ -4205,17 +4009,20 @@ function App:rename_bubble_theme(id, name)
     self:refresh(true)
 end
 
+-- Returns the copy's id (the builtin sheet routes straight to the editor
+-- with it); nil when the source id is unknown.
 function App:duplicate_bubble_theme(id)
     local theme = self:find_chat_theme(id)
-    if not theme then return end
+    if not theme then return nil end
     local _ = require("gettext")
     local copy_label = _("(copy)")
     local themes = Storage.list_chat_themes() or {}
     local copy = ChatTheme.normalize(theme)
     copy.name = (theme.name or "?") .. " " .. copy_label
-    themes[#themes + 1] = { id = Util.uuid(), name = copy.name, theme = copy }
+    local copy_id = Util.uuid()
+    themes[#themes + 1] = { id = copy_id, name = copy.name, theme = copy }
     Storage.save_chat_themes(themes)
-    self:refresh(true)
+    return copy_id
 end
 
 function App:delete_bubble_theme(id)
@@ -4384,80 +4191,18 @@ function App:chat_look()
 end
 
 function App:edit_chat_theme_key(key, value)
+    -- Theme-edit screen only (B6): every caller is a theme_edit row or one
+    -- of its prompt helpers; there is always an explicit editing target.
+    -- The old implicit "Current look" promotion path died with the B6
+    -- reorganization (all callers pass through the editor now).
     local ChatTheme = require("ktui/chat_theme")
-    -- Editing screen: explicit target, no implicit resolution (B6).
-    if self.state.page == "theme_edit" and self.state.editing_theme_id then
-        local themes = Storage.list_chat_themes()
-        for ti = 1, #themes do
-            local t = themes[ti]
-            if t.id == self.state.editing_theme_id then
-                local th = ChatTheme.normalize(t.theme)
-                local ckey = key:match("^colors%.(%w+)$")
-                if ckey then
-                    th.colors[ckey] = value
-                else
-                    th[key] = value
-                end
-                t.theme = th
-                Storage.save_chat_themes(themes)
-                return
-            end
-        end
+    if not (self.state.page == "theme_edit" and self.state.editing_theme_id) then
         return
-    end
-    local id = self:active_bubble_theme_id()
-    if not id then
-        local settings_keys = {
-            style = "bubble_style", bubble_radius = "bubble_radius",
-            density = "density", chat_width = "chat_width",
-            font_file = "chat_font_file", font_size = "chat_font_size",
-            custom_css = "custom_css", avatar_shape = "avatar_shape",
-            avatar_size = "avatar_size", show_avatars = "show_avatars",
-            show_timestamps = "show_timestamps", show_tokens = "show_tokens",
-            show_inline_images = "show_inline_images",
-        }
-        local sk = settings_keys[key]
-        if sk then
-            self:save_setting(sk, value)
-            return
-        end
-        -- Theme-only key: promote the current look into a real theme
-        -- ("Current look") and make it the global default, then edit it.
-        local themes = Storage.list_chat_themes()
-        local cur
-        for ti = 1, #themes do
-            if themes[ti].name == "Current look" then cur = themes[ti] end
-        end
-        if not cur then
-            self:save_bubble_theme_from_current("Current look")
-            themes = Storage.list_chat_themes()
-            for ti = 1, #themes do
-                if themes[ti].name == "Current look" then cur = themes[ti] end
-            end
-        end
-        if not cur then return end
-        self:save_setting("bubble_theme_id", cur.id)
-        id = cur.id
-    end
-    -- Built-ins are code: duplicate into a user copy, switch the SAME
-    -- scope to the copy, and edit there.
-    if id:sub(1, 8) == "builtin:" then
-        self:duplicate_bubble_theme(id)
-        local themes = Storage.list_chat_themes()
-        local copy = themes and themes[#themes] or nil
-        if not copy then return end
-        if self.state.current_chat_bubble_theme_id == id then
-            self:set_chat_bubble_theme(copy.id)
-        else
-            self:save_setting("bubble_theme_id", copy.id)
-            self:refresh_bubble_theme()
-        end
-        id = copy.id
     end
     local themes = Storage.list_chat_themes()
     for ti = 1, #themes do
         local t = themes[ti]
-        if t.id == id then
+        if t.id == self.state.editing_theme_id then
             local th = ChatTheme.normalize(t.theme)
             local ckey = key:match("^colors%.(%w+)$")
             if ckey then
@@ -4467,7 +4212,6 @@ function App:edit_chat_theme_key(key, value)
             end
             t.theme = th
             Storage.save_chat_themes(themes)
-            self:refresh_bubble_theme()
             return
         end
     end

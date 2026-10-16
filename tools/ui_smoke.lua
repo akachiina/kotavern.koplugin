@@ -1251,10 +1251,16 @@ do
         and cmd:find("Authorization", 1, true) == nil,
         "update: API calls carry UA, never a token")
 
+    -- The About line runs through gettext now ("KOTavern v"/"Stable" are
+    -- msgids): expect whatever the ACTIVE translation yields, not frozen
+    -- English (the audit fix: the old concat never fired the translations).
+    local GT = require("gettext")
     ok(Update.about_title({ channel = "stable", version = "0.2.0" })
-        == "KOTavern v0.2.0 Stable", "update: stable About line")
+        == GT("KOTavern v") .. "0.2.0" .. " " .. GT("Stable"),
+        "update: stable About line (gettext-piped)")
     ok(Update.about_title({ channel = "commits", version = "0.2.0", commit = "a1b2c3d" })
-        == "KOTavern v0.2.0 (a1b2c3d)", "update: commits About line")
+        == GT("KOTavern v") .. "0.2.0" .. " (a1b2c3d)",
+        "update: commits About line (gettext-piped)")
     ok(Update.installed_build(nil).version ~= nil
         and Update.installed_build({ channel = "commits", version = "0.2.0" }).channel == "commits",
         "update: installed build with legacy fallback")

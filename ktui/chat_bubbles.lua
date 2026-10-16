@@ -66,7 +66,6 @@ end
 -- document (HtmlBoxWidget via KtHTML, real bold/italic/lists/tables), painted
 -- as a single block entry. Measured once per content+width+theme (KtHTML's
 -- tall-total scan), clipped per band like every other entry.
-local html_mode_cache = nil -- { key -> { h, widget } } attached to app.state
 
 -- Compact + re-express the message for MuPDF. Model text is NOT trusted as
 -- HTML: block structure is detected on the RAW line, then the line is
@@ -1452,7 +1451,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     local show_avatars = (theme_live and theme_live.show_avatars ~= nil)
         and (theme_live.show_avatars == true) or (settings.show_avatars ~= false)
     local show_inline = settings.show_inline_images ~= false
-    local outline_user = not not settings.outline_user_bubbles
+    local outline_user = (theme_live and theme_live.outline_user_bubbles ~= nil)
+        and (theme_live.outline_user_bubbles == true)
+        or (settings.outline_user_bubbles == true)
     local show_timestamps = (theme_live and theme_live.show_timestamps ~= nil)
         and (theme_live.show_timestamps == true) or (settings.show_timestamps == true)
     local show_tokens = (theme_live and theme_live.show_tokens ~= nil)

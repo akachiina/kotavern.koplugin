@@ -137,9 +137,6 @@ local bubble_radius = "normal"
 function Theme.set_bubble_radius(value)
     if bubble_radius_map[value] then bubble_radius = value end
 end
-function Theme.get_bubble_radius()
-    return bubble_radius
-end
 function Theme.bubble_radius_px()
     return Theme.scale(bubble_radius_map[bubble_radius] or 10)
 end
@@ -155,9 +152,6 @@ function Theme.set_chat_bg(value)
     Theme._apply_chat_colors()
 end
 
-function Theme.get_chat_bg()
-    return chat_bg
-end
 
 -- Recompute chat surface colors from theme + chat_bg setting.
 function Theme._apply_chat_colors()

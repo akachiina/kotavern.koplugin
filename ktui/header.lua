@@ -47,8 +47,6 @@ local function page_title(view)
     local Storage = require("kt_storage")
     if page == "dashboard" then
         return _("%s %s %s"):format(_("Welcome"), _("to"), _("KOTavern"))
-    elseif page == "css_test" then
-        return _("CSS Test")
     elseif page == "chats" then
         local visible = view.app:chats_visible()
         local total = tostring(#(state.chats_index or {}))
@@ -77,16 +75,30 @@ local function page_title(view)
             settings = _("Settings"),
             settings_appearance = _("Appearance"),
             settings_appearance_chat = _("Chat"),
-            settings_bubble_themes = _("Bubble themes"),
+            settings_bubble_themes = _("Themes"),
             settings_dashboard = _("Dashboard"),
             settings_behavior = _("Behavior"),
             settings_network = _("Network"),
             settings_language = _("Language"),
             settings_data = _("Data"),
             settings_debug = _("Debug"),
-            css_test = _("CSS Test"),
         }
         return names[page] or _("Settings")
+    elseif page == "theme_edit" then
+        -- The editor's title = the theme being edited (the B6 design
+        -- promised it; the header never had the branch).
+        if state.editing_theme_id and view.app.find_chat_theme then
+            local _, name = view.app:find_chat_theme(state.editing_theme_id)
+            if name then return name end
+        end
+        return _("Themes")
+    elseif page == "data_storage" then
+        return _("Data")
+    elseif page == "model_picker" then
+        return _("Model")
+    elseif page == "connection_editor" then
+        return (state.editing_connection and state.editing_connection.name)
+            or _("API Connections")
     elseif page == "character_editor" then
         return _("Edit Character")
     elseif page == "character_view" then

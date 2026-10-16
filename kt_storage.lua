@@ -468,19 +468,6 @@ function Storage.save_presets(presets)
     return write_json_file(data_dir() .. "/presets.json", presets)
 end
 
--- === Bubble themes (Appearance > Chat > Bubble themes) ===
--- A theme snapshots the chat surface: style, tint levels, bubble radius,
--- density and the detail toggles. IDs are uuids; "default" is implicit
--- (no per-chat override and no global selection = the global settings).
-function Storage.list_bubble_themes()
-    local path = data_dir() .. "/bubble_themes.json"
-    return read_json_file(path) or {}
-end
-
-function Storage.save_bubble_themes(themes)
-    return write_json_file(data_dir() .. "/bubble_themes.json", themes)
-end
-
 -- === Chat themes (the full-appearance successors of bubble themes) ===
 -- One theme = the WHOLE chat look (style, geometry, text, colors, avatars,
 -- backdrop, custom CSS - ktui/chat_theme.lua owns the schema). Stored as

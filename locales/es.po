@@ -133,10 +133,6 @@ msgstr "Ramificación creada: "
 
 msgid "Branch from here"
 msgstr "Ramificar desde aquí"
-
-msgid "Bubbles (ST)"
-msgstr "Burbujas (ST)"
-
 msgid "Calm"
 msgstr "Suave"
 
@@ -187,10 +183,6 @@ msgstr "Nombre del chat"
 
 msgid "Chat Options"
 msgstr "Opciones del chat"
-
-msgid "Chat background"
-msgstr "Fondo del chat"
-
 msgid "Chat exported to "
 msgstr "Chat exportado a "
 
@@ -415,10 +407,6 @@ msgstr "Descripción"
 
 msgid "Description (sent as context to AI)"
 msgstr "Descripción (enviada como contexto a la IA)"
-
-msgid "Dev builds"
-msgstr "Compilaciones dev"
-
 msgid "Developed by akachiina · GitHub"
 msgstr "Desarrollado por akachiina · GitHub"
 
@@ -607,10 +595,6 @@ msgstr "De esta tarjeta de personaje"
 
 msgid "Generation prompts"
 msgstr "Prompts de generación"
-
-msgid "GitHub token"
-msgstr "Token de GitHub"
-
 msgid "Give the lorebook a name first."
 msgstr "Dale un nombre al lorebook primero."
 
@@ -730,10 +714,6 @@ msgstr "Grande"
 
 msgid "Light"
 msgstr "Claro"
-
-msgid "Light gray"
-msgstr "Gris claro"
-
 msgid "List"
 msgstr "Lista"
 
@@ -940,10 +920,6 @@ msgstr "Sin respuestas rápidas. Gestiónalas en Ajustes → Datos."
 
 msgid "No regex scripts. They find/replace text in AI output or prompts (Lua patterns)."
 msgstr "Sin scripts de regex. Localizan/sustituyen texto en la salida de la IA o en los prompts (patrones Lua)."
-
-msgid "No repository configured. Set it in Settings → Updates."
-msgstr "Ningún repositorio configurado. Defínelo en Ajustes → Updates."
-
 msgid "None"
 msgstr "Ninguno"
 
@@ -997,10 +973,6 @@ msgstr "Opciones"
 
 msgid "Outline user bubbles"
 msgstr "Contornear burbujas del usuario"
-
-msgid "Paper"
-msgstr "Papel"
-
 msgid "Past Chats"
 msgstr "Chats pasados"
 
@@ -1120,10 +1092,6 @@ msgstr "Scripts de regex"
 
 msgid "Regex scripts"
 msgstr "Scripts de regex"
-
-msgid "Remove"
-msgstr "Quitar"
-
 msgid "Remove Favorite"
 msgstr "Quitar favorito"
 
@@ -1132,22 +1100,11 @@ msgstr "Quitar predeterminado global"
 
 msgid "Remove Image"
 msgstr "Quitar imagen"
-
-msgid "Remove prompt"
-msgstr "Quitar prompt"
-
-msgid "Remove this prompt from the preset?"
-msgstr "¿Quitar este prompt del preset?"
-
 msgid "Rename"
 msgstr "Renombrar"
 
 msgid "Rename Chat"
 msgstr "Renombrar chat"
-
-msgid "Rename Prompt"
-msgstr "Renombrar prompt"
-
 msgid "Rename lorebook"
 msgstr "Renombrar lorebook"
 
@@ -1192,16 +1149,8 @@ msgstr "Reintentar"
 
 msgid "Next"
 msgstr "Siguiente"
-
-msgid "menu not found: "
-msgstr "menú no encontrado: "
-
 msgid "Role"
 msgstr "Rol"
-
-msgid "Role (system/user/assistant)"
-msgstr "Rol (system/user/assistant)"
-
 msgid "Role @ depth"
 msgstr "Rol @ profundidad"
 
@@ -1300,10 +1249,6 @@ msgstr "Mostrar horas"
 
 msgid "Show token counts"
 msgstr "Mostrar conteo de tokens"
-
-msgid "SillyTavern"
-msgstr "SillyTavern"
-
 msgid "Small"
 msgstr "Pequeño"
 
@@ -1318,10 +1263,6 @@ msgstr "Ordenar personajes"
 
 msgid "Sort chats"
 msgstr "Ordenar chats"
-
-msgid "Spacious"
-msgstr "Espacioso"
-
 msgid "Spanish"
 msgstr "Español"
 
@@ -1411,10 +1352,6 @@ msgstr "Tema"
 
 msgid "This profile's connection no longer exists."
 msgstr "La conexión de este perfil ya no existe."
-
-msgid "Token (dev channel only)"
-msgstr "Token (solo canal dev)"
-
 msgid "Tokens & creator"
 msgstr "Tokens y creador"
 
@@ -1537,37 +1474,8 @@ msgstr "tok"
 
 msgid "user"
 msgstr "usuario"
-
-msgid "A longer paragraph to show the box model measuring wrapped lines before painting them onto the canvas."
-msgstr "Un párrafo más largo para mostrar el modelo de cajas midiendo las líneas ajustadas antes de pintarlas en el lienzo."
-
-msgid "Active"
-msgstr "Activo"
-
-msgid "CSS Test"
-msgstr "Prueba de CSS"
-
-msgid "CSS problems:"
-msgstr "Problemas de CSS:"
-
-msgid "CSS theme"
-msgstr "Tema CSS"
-
-msgid "Card A: paragraphs"
-msgstr "Tarjeta A: párrafos"
-
-msgid "Card B: alignment"
-msgstr "Tarjeta B: alineación"
-
-msgid "Card C: image node"
-msgstr "Tarjeta C: nodo de imagen"
-
 msgid "Could not save the screenshot"
 msgstr "No se pudo guardar la captura de pantalla"
-
-msgid "Could not write the theme file"
-msgstr "No se pudo escribir el archivo de tema"
-
 msgid "Danger zone"
 msgstr "Zona de peligro"
 
@@ -1582,91 +1490,21 @@ msgstr "Modo Debug activado"
 
 msgid "Debug Mode active - experimental features enabled."
 msgstr "Modo Debug activo: funciones experimentales habilitadas."
-
-msgid "Debug Mode: CSS sandbox"
-msgstr "Modo Debug: sandbox de CSS"
-
-msgid "Declarative nodes painted by the UI DSL engine. Pick a theme in Debug settings; Reload re-reads the CSS."
-msgstr "Nodos declarativos pintados por el motor UI DSL. Elige un tema en los ajustes de Debug; Recargar relee el CSS."
-
-msgid "Default theme (built-in)"
-msgstr "Tema predeterminado (integrado)"
-
 msgid "Experimental"
 msgstr "Experimental"
-
-msgid "Install default CSS"
-msgstr "Instalar CSS predeterminado"
-
-msgid "KOTavern UI DSL - debug build"
-msgstr "KOTavern UI DSL - build de debug"
-
-msgid "None (built-in)"
-msgstr "Ninguno (integrado)"
-
 msgid "Reload"
 msgstr "Recargar"
-
-msgid "Sandbox page painted by the UI DSL engine"
-msgstr "Página sandbox pintada por el motor UI DSL"
-
 msgid "Shot"
 msgstr "Captura"
-
-msgid "Shot captures this page into the Data folder."
-msgstr "Captura guarda esta página en la carpeta de datos."
-
-msgid "Test CSS"
-msgstr "Probar CSS"
-
 msgid "Turning it off hides this category and the CSS overlay."
 msgstr "Apagarlo oculta esta categoría y la superposición de CSS."
-
-msgid "Write sandbox.css into the themes folder"
-msgstr "Escribe sandbox.css en la carpeta de temas"
-
 msgid "You are in Debug Mode!"
 msgstr "¡Estás en modo Debug!"
-
-msgid "centered text"
-msgstr "texto centrado"
-
-msgid "right text"
-msgstr "texto a la derecha"
-
-msgid "sandbox.css created in the themes folder"
-msgstr "sandbox.css creado en la carpeta de temas"
-
-msgid "CSS reloaded"
-msgstr "CSS recargado"
-
 msgid "Debug Mode disabled"
 msgstr "Modo Debug desactivado"
 
 msgid "Screenshot saved"
 msgstr "Captura guardada"
-
-msgid "Install sandbox.html"
-msgstr "Instalar sandbox.html"
-
-msgid "Write the demo screen into themes/pages/"
-msgstr "Escribir la pantalla demo en themes/pages/"
-
-msgid "Write the demo screen into themes/pages/ (tap again to reset)"
-msgstr "Escribir la pantalla demo en themes/pages/ (toca de nuevo para restablecer)"
-
-msgid "sandbox.html reset (backup kept)"
-msgstr "sandbox.html restablecido (copia guardada)"
-
-msgid "sandbox.html created in themes/pages/"
-msgstr "sandbox.html creado en themes/pages/"
-
-msgid "sandbox.html already exists"
-msgstr "sandbox.html ya existe"
-
-msgid "Could not write sandbox.html"
-msgstr "No se pudo escribir sandbox.html"
-
 msgid "Test HTML"
 msgstr "Probar HTML"
 
@@ -1702,13 +1540,6 @@ msgstr "HTML recargado"
 
 msgid "HTML problems:"
 msgstr "Problemas de HTML:"
-
-msgid "Test Native+HTML"
-msgstr "Probar Nativo+HTML"
-
-msgid "Native layout with an HTML island"
-msgstr "Diseño nativo con una isla HTML"
-
 msgid "HTML chat renderer"
 msgstr "Renderizador HTML del chat"
 
@@ -1720,10 +1551,6 @@ msgstr "Mensajes"
 
 msgid "Text"
 msgstr "Texto"
-
-msgid "Details"
-msgstr "Detalles"
-
 msgid "Chat font"
 msgstr "Fuente del chat"
 
@@ -1738,37 +1565,8 @@ msgstr "Seguir el tamaño base"
 
 msgid "0 follows the base font size"
 msgstr "0 sigue el tamaño de fuente base"
-
-msgid "Bubble theme"
-msgstr "Tema de burbujas"
-
-msgid "Bubble themes"
-msgstr "Temas de burbujas"
-
-msgid "Default bubble theme"
-msgstr "Tema de burbujas predeterminado"
-
-msgid "Default (settings)"
-msgstr "Predeterminado (ajustes)"
-
-msgid "None (settings)"
-msgstr "Ninguno (ajustes)"
-
-msgid "Save, apply and manage chat looks"
-msgstr "Guardar, aplicar y gestionar aspectos del chat"
-
-msgid "Save current look as theme"
-msgstr "Guardar el aspecto actual como tema"
-
 msgid "Theme name"
 msgstr "Nombre del tema"
-
-msgid "e.g. Warm paper"
-msgstr "p. ej., Papel cálido"
-
-msgid "Import theme"
-msgstr "Importar tema"
-
 msgid "Please select a .json theme file."
 msgstr "Selecciona un archivo de tema .json."
 
@@ -1777,13 +1575,6 @@ msgstr "Fallo al importar: archivo de tema no válido."
 
 msgid "Theme imported!"
 msgstr "¡Tema importado!"
-
-msgid "Manage themes…"
-msgstr "Gestionar temas…"
-
-msgid "Saved themes"
-msgstr "Temas guardados"
-
 msgid "Set as default"
 msgstr "Establecer como predeterminado"
 
@@ -1795,10 +1586,6 @@ msgstr "Aplicar a este chat"
 
 msgid "Themes"
 msgstr "Temas"
-
-msgid "copy"
-msgstr "copia"
-
 msgid "Show QR code"
 msgstr "Mostrar código QR"
 
@@ -1846,22 +1633,11 @@ msgstr "Error al exportar."
 
 msgid "Theme not found."
 msgstr "Tema no encontrado."
-
-msgid "Theme CSS"
-msgstr "CSS de tema"
-
-msgid "Built-in themes (SillyTavern presets)"
-msgstr "Temas integrados (preajustes de SillyTavern)"
-
 msgid "Rectangular"
 msgstr "Rectangular"
 
 msgid "Chat theme"
 msgstr "Tema del chat"
-
-msgid "Tap: global default · in a chat, Manage to apply per chat"
-msgstr "Toque: predeterminado global · en un chat, Gestionar aplica solo a él"
-
 msgid "Bubble radius"
 msgstr "Radio de las burbujas"
 
@@ -1933,19 +1709,6 @@ msgstr "No se pudo copiar el archivo de fuente."
 
 msgid "Font installed"
 msgstr "Fuente instalada"
-
-msgid "Default for every chat"
-msgstr "Predeterminado para todos los chats"
-
-msgid "This chat"
-msgstr "Este chat"
-
-msgid "Overrides the default for this conversation only"
-msgstr "Anula el predeterminado solo en esta conversación"
-
-msgid "Follows the default"
-msgstr "Sigue el predeterminado"
-
 msgid "Default look"
 msgstr "Aspecto predeterminado"
 
@@ -1966,10 +1729,6 @@ msgstr "Para todos los chats"
 
 msgid "Theme for this chat"
 msgstr "Tema para este chat"
-
-msgid "Overrides the default in this conversation only"
-msgstr "Anula el predeterminado solo en esta conversación"
-
 msgid "New theme"
 msgstr "Nuevo tema"
 
@@ -2002,3 +1761,6 @@ msgstr "Acciones del tema…"
 
 msgid "Rename, default, duplicate, export, delete"
 msgstr "Renombrar, predeterminado, duplicar, exportar, eliminar"
+
+msgid "Model"
+msgstr "Modelo"

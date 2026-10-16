@@ -26,7 +26,6 @@
 --   ChatTheme.luminance(hex)    -> 0..1 (dark theme detection)
 --   ChatTheme.resolved(app)     -> effective theme + rendered extras
 --   ChatTheme.BUILTINS          -> { {id, name, theme} } ST preset ports
---   ChatTheme.RENDER_SIG_KEYS   -> keys that change HTML docs (hash inputs)
 
 local ChatTheme = {}
 local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
@@ -66,6 +65,8 @@ ChatTheme.DEFAULTS = {
     show_msg_ids = false,     -- ST mesIDDisplay_enabled
     show_gen_timer = false,   -- ST timer_enabled (generation duration)
     show_inline_images = true,
+    outline_user_bubbles = false, -- user bubble outline (ST look)
+    chat_footer = false,      -- info band above the composer (readerfooter parity)
     custom_css = "",          -- appended last to the chat stylesheet
 }
 
@@ -75,12 +76,6 @@ local DENSITIES = { compact = true, normal = true, spacious = true }
 local SHAPES = { round = true, rounded = true, square = true, rect = true }
 local AV_SIZES = { small = true, normal = true, large = true }
 local COLOR_KEYS = { "text", "surface", "ai_panel", "user_panel", "border", "italics", "quote" }
-
--- Keys that change MuPDF documents (cache-key inputs alongside width):
--- everything chat_css() bakes in must participate in the doc hash.
-ChatTheme.RENDER_SIG_KEYS = {
-    "font_file", "font_size", "font_scale", "line_spacing", "custom_css",
-}
 
 -- ============================================================ colors ====
 
@@ -193,6 +188,8 @@ function ChatTheme.normalize(raw)
     out.show_msg_ids = raw.show_msg_ids == true
     out.show_gen_timer = raw.show_gen_timer == true
     out.show_inline_images = raw.show_inline_images ~= false
+    out.outline_user_bubbles = raw.outline_user_bubbles == true
+    out.chat_footer = raw.chat_footer == true
     out.custom_css = (type(raw.custom_css) == "string" and raw.custom_css) or ""
     return out
 end
@@ -228,6 +225,8 @@ function ChatTheme.sig(theme)
     put("mid", t.show_msg_ids)
     put("gen", t.show_gen_timer)
     put("img", t.show_inline_images)
+    put("outl", t.outline_user_bubbles)
+    put("foot", t.chat_footer)
     -- custom_css can be long; the render sig only needs to distinguish
     -- content, so a cheap fingerprint (len + head + tail) is enough.
     local cc = t.custom_css

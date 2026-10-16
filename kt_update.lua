@@ -462,13 +462,16 @@ function Update.installed_build(settings_build)
 end
 
 -- About title line: "KOTavern v0.2.0 Stable" | "KOTavern v0.2.0 (a1b2c3d)".
+-- Both words are msgids in the locales: the prefix and "Stable" translate
+-- (the version never does).
 function Update.about_title(build)
     build = build or {}
+    local _ = require("gettext")
     local v = tostring(build.version or Constants.VERSION)
     if build.channel == "commits" and build.commit then
-        return "KOTavern v" .. v .. " (" .. tostring(build.commit) .. ")"
+        return _("KOTavern v") .. v .. " (" .. tostring(build.commit) .. ")"
     end
-    return "KOTavern v" .. v .. " Stable"
+    return _("KOTavern v") .. v .. " " .. _("Stable")
 end
 
 return Update

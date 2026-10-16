@@ -27,24 +27,7 @@ function Modals.info(text)
     Modals.close_status()
 end
 
-function Modals.info_for(text, seconds)
-    local modal = InfoMessage:new{ text = text }
-    UIManager:show(modal)
-    Modals.close_status()
-    UIManager:scheduleIn(seconds, function()
-        UIManager:close(modal)
-    end)
-end
 
-function Modals.notice(text)
-    UIManager:show(ConfirmBox:new{
-        text = text,
-        icon = "notice-info",
-        no_ok_button = true,
-        cancel_text = _("OK"),
-    })
-    Modals.close_status()
-end
 
 function Modals.status(text)
     Modals.close_status()

@@ -493,25 +493,6 @@ function P.center_text_box(bb, text, x, y, w, h, role, opts)
     return size
 end
 
--- Right-aligned text, vertically centered inside the given box, bounded to w.
-function P.right_text_box(bb, text, x, y, w, h, role, opts)
-    opts = opts or {}
-    local widget = TextWidget:new{
-        text = tostring(text or ""),
-        face = opts.face or Theme.face(role),
-        bold = opts.bold,
-        fgcolor = opts.color or Theme.ink,
-        max_width = w,
-    }
-    local size = widget:getSize()
-    widget:paintTo(
-        bb,
-        x + math.max(0, w - size.w),
-        y + math.max(0, math.floor((h - size.h) / 2))
-    )
-    widget:free()
-    return size
-end
 
 -- PNG dimensions from the IHDR chunk (pure io, no decoding). Used by
 -- P.image's cover-fit mode to fill a container without stretching.
@@ -833,121 +814,7 @@ function P.image_dimensions(file, max_width, max_height)
     return width, height
 end
 
--- Paint a horizontal window [source_y, source_y+h] of an image scaled to width
--- w (exact source-rect crop, no scratch buffer). Falls back to P.image.
-function P.image_cropped(bb, file, x, y, w, h, source_h, source_y, opts)
-    if not file or file == "" or w <= 0 or h <= 0 or not source_h or source_h <= 0 then
-        return false
-    end
-    opts = opts or {}
-    local base_ok, base = pcall(function()
-        return ImageWidget:new{
-            file = file,
-            width = w,
-            height = source_h,
-            scale_factor = 0,
-            alpha = opts.alpha ~= false,
-            is_icon = opts.is_icon,
-            file_do_cache = true,
-        }
-    end)
-    if not base_ok or not base then
-        return false
-    end
 
-    local painted = false
-    local render_ok = pcall(function()
-        base:getSize()
-        local image = base._bb
-        if image then
-            local image_width = image:getWidth()
-            if image_width > 0 then
-                local center_y_ratio = math.max(0, math.min(1, (source_y + h / 2) / source_h))
-                local widget = ImageWidget:new{
-                    image = image,
-                    image_disposable = false,
-                    width = w,
-                    height = h,
-                    scale_factor = w / image_width,
-                    alpha = opts.alpha ~= false,
-                    is_icon = opts.is_icon,
-                    center_x_ratio = 0.5,
-                    center_y_ratio = center_y_ratio,
-                }
-                painted = pcall(function()
-                    widget:paintTo(bb, x, y)
-                end)
-                if widget.free then
-                    widget:free()
-                end
-            end
-        end
-    end)
-    if base.free then
-        base:free()
-    end
-    if render_ok and painted then
-        return true
-    end
-    return P.image(bb, file, x, y, w, h, opts)
-end
-
--- Cover-zoom an image inside (w, h) by `zoom` (centered crop).
-function P.image_zoomed(bb, file, x, y, w, h, zoom, opts)
-    opts = opts or {}
-    zoom = zoom or 1
-    if zoom <= 1 then
-        return P.image(bb, file, x, y, w, h, opts)
-    end
-    if not file or file == "" then
-        return false
-    end
-
-    local base_ok, base = pcall(function()
-        return ImageWidget:new{
-            file = file,
-            width = w,
-            height = h,
-            scale_factor = 0,
-            alpha = opts.alpha ~= false,
-            is_icon = opts.is_icon,
-            file_do_cache = true,
-        }
-    end)
-    if not base_ok or not base then
-        return false
-    end
-
-    local painted = false
-    local render_ok = pcall(function()
-        base:getSize()
-        local image = base._bb
-        if image then
-            local iw, ih = image:getWidth(), image:getHeight()
-            local widget = ImageWidget:new{
-                image = image,
-                image_disposable = false,
-                width = w,
-                height = h,
-                scale_factor = math.max(w / iw, h / ih) * zoom,
-                alpha = opts.alpha ~= false,
-                is_icon = opts.is_icon,
-                center_x_ratio = 0.5,
-                center_y_ratio = 0.5,
-            }
-            painted = pcall(function()
-                widget:paintTo(bb, x, y)
-            end)
-            if widget.free then
-                widget:free()
-            end
-        end
-    end)
-    if base.free then
-        base:free()
-    end
-    return render_ok and painted
-end
 
 function P.dim(bb, x, y, w, h, by)
     if w <= 0 or h <= 0 or not bb.lightenRect then
@@ -985,17 +852,6 @@ function P.hit(app, x, y, w, h, callback, label)
     })
 end
 
--- Attach horizontal-swipe actions to the MOST RECENT hitbox (UIDSL nodes
--- register their tap box right before this). AppView:onSwipeKotavern
--- checks west/east carriers inside the node's band BEFORE the page-level
--- handler, so chat swipe rows capture the gesture without new hitboxes.
-function P.hit_swipe(app, on_swipe)
-    local box = app and app.hitboxes and app.hitboxes[#app.hitboxes]
-    if box then
-        box.on_swipe_west = on_swipe and on_swipe.west or nil
-        box.on_swipe_east = on_swipe and on_swipe.east or nil
-    end
-end
 
 -- Long-press hitbox: taps are consumed by an explicit no-op (same sweep
 -- semantics as a tap callback); AppView:onHoldKotavern fires on_hold for

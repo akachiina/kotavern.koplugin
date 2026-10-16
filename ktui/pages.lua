@@ -71,7 +71,7 @@ local function fit_row_h(list_h, natural_h, gap)
         math.min(math.floor(natural_h * Deck.ROW_STRETCH_CAP + 0.5), fitted))
 end
 
--- Sandbox data-action steppers (css_test + html_test share the verbs):
+-- Sandbox data-action steppers (the html_test sandbox):
 -- bounds come from the BUTTON's data-min/data-max (same attrs as bind
 -- buttons), so authors tune range in HTML instead of Lua. Refresh is
 -- regional over the list area: paintTo repaints as usual (new layout
@@ -445,14 +445,6 @@ end
 -- Settings > Appearance: theme/font/density/chat-style/appearance toggles.
 function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
     local app = view.app
-    local bubble_labels = {
-        bubbles = _("Bubbles"),
-        st = _("SillyTavern"),
-        flat = _("Flat"),
-        rounded = _("Rounded"),
-        square = _("Square"),
-        none = _("None"),
-    }
     local rows = {
         {
             text = _("Theme"),
@@ -655,13 +647,10 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
                       end },
                     { label = duplicate_label, icon = "copy",
                       on_tap = function()
-                          self_ref:duplicate_bubble_theme(builtin.id)
-                          self_ref:refresh(true)
-                          local themes_now = require("kt_storage").list_chat_themes() or {}
-                          local copy = themes_now[#themes_now]
-                          if copy then
+                          local copy_id = self_ref:duplicate_bubble_theme(builtin.id)
+                          if copy_id then
                               self_ref:navigate("theme_edit",
-                                  { editing_theme_id = copy.id })
+                                  { editing_theme_id = copy_id })
                           end
                       end },
                     { label = export_label, icon = "upload",
@@ -857,6 +846,8 @@ function Pages.theme_edit(view, bb, x, y, w, h, scroll)
         toggle_row(_("Show message IDs"), look.show_msg_ids, "show_msg_ids"),
         toggle_row(_("Generation timer"), look.show_gen_timer, "show_gen_timer"),
         toggle_row(_("Inline images"), look.show_inline_images, "show_inline_images"),
+        toggle_row(_("Outline user bubbles"), look.outline_user_bubbles,
+            "outline_user_bubbles"),
         { section = true, text = _("Advanced") },
         {
             text = _("Custom CSS"),
@@ -866,6 +857,17 @@ function Pages.theme_edit(view, bb, x, y, w, h, scroll)
                 return (c ~= "") and tostring(#c) .. " chars" or _("None")
             end,
             callback = function() app:prompt_custom_css() end,
+        },
+        {
+            text = _("Chat footer"),
+            subtext = _("Clock, battery and message count above the composer"),
+            toggle = true,
+            value = function() return look.chat_footer == true end,
+            callback = function()
+                app:edit_chat_theme_key("chat_footer",
+                    not (look.chat_footer == true))
+                app:refresh(true)
+            end,
         },
         { section = true, text = _("Theme") },
         {
@@ -1358,9 +1360,9 @@ end
 
 -- === Debug Mode ===
 -- Experimental options + the CSS sandbox. Only reachable with debug_mode.
--- Debug category, both sandboxes: UI DSL (css_test) + KtHTML (html_test),
--- each with install/reset, plus pagination mode and the Debug Mode master
--- switch. Older native_test stays in code with no row: frozen, not deleted.
+-- Debug category: the KtHTML sandbox with install/reset, pagination mode
+-- and the Debug Mode master switch. Older native_test stays in code with
+-- no row: frozen, not deleted.
 function Pages.settings_debug(view, bb, x, y, w, h, scroll)
     local app = view.app
     local rows = {
@@ -3164,7 +3166,10 @@ function Pages.chat(view, bb, x, y, w, h, scroll)
     -- Footer (KOReader readerfooter parity): a thin info band between the
     -- messages and the composer - clock, battery, message count and the
     -- active model, muted tiny. Off by default.
-    local footer_on = view.app.state.settings.chat_footer == true
+    -- Theme wins, plain settings seed (same model as show_avatars).
+    local theme_foot = view.app.state.chat_theme_applied
+    local footer_on = (theme_foot and theme_foot.chat_footer == true)
+        or (view.app.state.settings.chat_footer == true)
     local footer_h = footer_on and Theme.scale(16) or 0
     local deck_rows = {
         Deck.card("messages", { grow = true }),

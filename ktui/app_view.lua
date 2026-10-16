@@ -239,23 +239,10 @@ function AppView:onSwipeKotavern(_, ges)
         return true
     end
     if direction == "west" or direction == "east" then
-        -- Node-scoped swipe capture (UIDSL data-swipe-left/right): the
-        -- gesture start point inside a node's band routes to that node's
-        -- action BEFORE the page-level chat swipe below. Topmost carrier
-        -- wins (reverse registration, same as taps).
-        for i = #self.hitboxes, 1, -1 do
-            local box = self.hitboxes[i]
-            local handler = (direction == "west" and box.on_swipe_west)
-                or (direction == "east" and box.on_swipe_east)
-                or nil
-            if handler and ges.start_pos
-                and P.contains(box, ges.start_pos.x, ges.start_pos.y) then
-                handler()
-                return true
-            end
-        end
         -- Horizontal swipe on the chat page cycles swipes of the last
-        -- assistant message (SillyTavern-style).
+        -- assistant message (SillyTavern-style). (The UIDSL-era
+        -- node-scoped swipe capture died with the engine: nothing has
+        -- registered on_swipe_west/east since.)
         if self.app.state.page == "chat" and not self.app.state.is_generating then
             local msgs = self.app.state.messages
             for i = #msgs, 1, -1 do
@@ -545,11 +532,11 @@ function AppView:paintTo(bb, x, y)
     -- passed position and the tick would keep blitting frames into ALL of
     -- them - the "sonic multiplies" bug.
     require("ktui/gifanim").invalidate_rects(self)
-    -- A page may paint fixed chrome OVER the scrolling content (the css_test
-    -- Reload/Shot toolbar): content_region still includes that band, so
-    -- DIRECT animation ticks must also stay out of it. The page declares
-    -- what it painted over (see Pages.css_test); the region from the
-    -- previous paint stays valid until this paint replaces it.
+    -- A page may paint fixed chrome OVER the scrolling content: the
+    -- html_test sandbox toolbar. content_region still includes that band,
+    -- so DIRECT animation ticks must also stay out of it. The page declares
+    -- what it painted over; the region from the previous paint stays valid
+    -- until this paint replaces it.
     self.chrome_region = nil
 
     local m = Theme.metrics()

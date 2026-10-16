@@ -253,15 +253,6 @@ function Export.copy_file(src, dst)
     return true, dst
 end
 
--- Default export directory inside the plugin data dir.
-function Export.export_dir()
-    local Storage = require("kt_storage")
-    local dir = Storage.data_dir() .. "/exports"
-    if lfs.attributes(dir, "mode") ~= "directory" then
-        lfs.mkdir(dir)
-    end
-    return dir
-end
 
 -- === Presets (SillyTavern flat format) ===
 -- ST stores presets as a flat JSON object (file name = preset name + ".json")
