@@ -11,6 +11,11 @@ local Theme = require("ktui/theme")
 local ok_ffi, ffi = pcall(require, "ffi")
 if not ok_ffi then ffi = nil end
 
+-- Hoisted once at load (audit D1): these were resolved per fill/row
+-- before - the hot path paid a require + ffi.typeof on every scanline.
+local BB_LIB = ok_ffi and require("ffi/blitbuffer") or nil
+local PX_T = ok_ffi and ffi.typeof("ColorRGB32*") or nil
+
 local P = {}
 
 -- ============================================================ color fill ====
@@ -24,22 +29,32 @@ local P = {}
 -- KOReader's own non-CBB RGB32 scanline fill (same code path its `else`
 -- branch uses - v:getColorRGB32() copied per scanline) for RGB32 targets;
 -- every other target keeps bb:paintRect exactly as before.
-local TYPE_RGB32 = ok_ffi and (require("ffi/blitbuffer")).TYPE_BBRGB32 or nil
+local TYPE_RGB32 = BB_LIB and BB_LIB.TYPE_BBRGB32 or nil
 
-local function rgb32_fast_fill(bb, x, y, w, h, color)
-    local v = color or Theme.bg
-    local bounded = { bb:getBoundedRect(x, y, w, h) }
-    x, y, w, h = bounded[1], bounded[2], bounded[3], bounded[4]
-    if w <= 0 or h <= 0 then return end
-    local rect = { bb:getPhysicalRect(x, y, w, h) }
-    x, y, w, h = rect[1], rect[2], rect[3], rect[4]
-    if w <= 0 or h <= 0 then return end
-    local src = v:getColorRGB32()
-    local BB = require("ffi/blitbuffer")
-    local px_t = ffi.typeof("ColorRGB32*")
+-- Per-buffer RGB32 decision, memoized (weak keys: dead buffers drop out
+-- with the GC). ~130 fills per paint paid the pcall+getType probe before,
+-- including on BB8 e-ink where the fast path never runs at all.
+local rgb32_cache = setmetatable({}, { __mode = "k" })
+local function bb_is_rgb32(bb)
+    local cached = rgb32_cache[bb]
+    if cached ~= nil then return cached end
+    local is = false
+    if TYPE_RGB32 then
+        local ok_t = pcall(function()
+            is = bb:getType() == TYPE_RGB32
+        end)
+        if not ok_t then is = false end
+    end
+    rgb32_cache[bb] = is
+    return is
+end
+
+-- x/y/w/h are already clamped (getBoundedRect+getPhysicalRect done by the
+-- caller); fills h scanlines from (x, y). The cast math is hoisted.
+local function rgb32_fill_rows(bb, x, y, w, h, src)
     local data = ffi.cast("uint8_t*", bb.data)
     for j = y, y + h - 1 do
-        local p = ffi.cast(px_t, data + bb.stride * j) + x
+        local p = ffi.cast(PX_T, data + bb.stride * j) + x
         for i = 0, w - 1 do
             p[0] = src
             p = p + 1
@@ -47,18 +62,31 @@ local function rgb32_fast_fill(bb, x, y, w, h, color)
     end
 end
 
+-- Clamp a rect against the buffer like KOReader's scanline fill does.
+local function rgb32_clamp(bb, x, y, w, h)
+    local bounded = { bb:getBoundedRect(x, y, w, h) }
+    x, y, w, h = bounded[1], bounded[2], bounded[3], bounded[4]
+    if w <= 0 or h <= 0 then return nil end
+    local rect = { bb:getPhysicalRect(x, y, w, h) }
+    x, y, w, h = rect[1], rect[2], rect[3], rect[4]
+    if w <= 0 or h <= 0 then return nil end
+    return x, y, w, h
+end
+
+-- The guarded fast path (clamps + fills); separate so paint_fill can
+-- pcall it WITHOUT allocating a closure per fill.
+local function rgb32_fast_fill(bb, x, y, w, h, target)
+    local cx, cy, cw, ch = rgb32_clamp(bb, x, y, w, h)
+    if cx then
+        rgb32_fill_rows(bb, cx, cy, cw, ch, target:getColorRGB32())
+    end
+end
+
 -- True-color fill: routes RGB32 buffers through our scanline fill (the
 -- CBB shortcut would flatten to gray); everything else via paintRect.
 local function paint_fill(bb, x, y, w, h, color)
     local target = color or Theme.bg
-    local is_rgb32 = false
-    if TYPE_RGB32 then
-        local ok_t = pcall(function()
-            is_rgb32 = bb:getType() == TYPE_RGB32
-        end)
-        if not ok_t then is_rgb32 = false end
-    end
-    if is_rgb32 and type(target) == "cdata" and target.getColorRGB32 then
+    if bb_is_rgb32(bb) and type(target) == "cdata" and target.getColorRGB32 then
         local ok_f = pcall(rgb32_fast_fill, bb, x, y, w, h, target)
         if ok_f then return end
     end
@@ -83,14 +111,7 @@ function P.rounded_rect(bb, x, y, w, h, color, radius)
     -- the color - verified: panel edge rings paint true) + our scanline
     -- fill for the center.
     local target = color or Theme.bg
-    local is_rgb32 = false
-    if TYPE_RGB32 then
-        local ok_t = pcall(function()
-            is_rgb32 = bb:getType() == TYPE_RGB32
-        end)
-        if not ok_t then is_rgb32 = false end
-    end
-    if is_rgb32 and type(target) == "cdata" and target.getColorRGB32 then
+    if bb_is_rgb32(bb) and type(target) == "cdata" and target.getColorRGB32 then
         local r = math.min(radius, math.floor(w / 2), math.floor(h / 2))
         if r <= 0 then
             paint_fill(bb, x, y, w, h, target)
@@ -98,18 +119,29 @@ function P.rounded_rect(bb, x, y, w, h, color, radius)
         end
         -- Row-scan rounded rect (paintBorder strips would flatten through
         -- the same CBB shortcut; the arcs keep color but the strips do
-        -- not). Circle-math insets per row, each strip via paint_fill.
+        -- not). Circle-math insets per row; ONE clamp covers every row
+        -- (all rows sit inside the same rect - the audit's per-row
+        -- getBoundedRect/getPhysicalRect pair is gone).
         local ok_scan = pcall(function()
-            for row = 0, h - 1 do
+            local cx, cy, cw, ch = rgb32_clamp(bb, x, y, w, h)
+            if not cx then return end
+            local src = target:getColorRGB32()
+            local data = ffi.cast("uint8_t*", bb.data)
+            for row = 0, ch - 1 do
                 local from_edge = row
-                if row >= h - r then from_edge = h - 1 - row end
+                if row >= ch - r then from_edge = ch - 1 - row end
                 local inset = 0
                 if from_edge < r then
                     local dy = (from_edge + 0.5) - r
                     inset = math.max(0, r - math.floor(math.sqrt(math.max(0, r * r - dy * dy)) + 0.5))
                 end
-                if inset * 2 < w then
-                    paint_fill(bb, x + inset, y + row, w - inset * 2, 1, target)
+                if inset * 2 < cw then
+                    local row_y = cy + row
+                    local p = ffi.cast(PX_T, data + bb.stride * row_y) + cx + inset
+                    for i = 0, cw - inset * 2 - 1 do
+                        p[0] = src
+                        p = p + 1
+                    end
                 end
             end
         end)

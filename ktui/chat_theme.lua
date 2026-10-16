@@ -350,8 +350,9 @@ end
 -- (apply_bubble_theme already pushed theme surface/panel overrides into
 -- Theme, so "unset" simply reads what the palette says). Everything the
 -- stylesheet builder and the doc cache need sits in ONE table, and .sig
--- changes whenever any of it does.
-function ChatTheme.resolved(app)
+-- changes whenever any of it does. The public ChatTheme.resolved below
+-- wraps this with a single-slot memo (audit D3).
+local function _resolved_impl(app)
     local state = (app and app.state) or nil
     local s = (state and state.settings) or {}
     local applied = state and state.chat_theme_applied or nil
@@ -395,9 +396,14 @@ function ChatTheme.resolved(app)
         and "#f2f2f2" or "#161616"
     -- One signature for the whole render config: layout caches and HTML
     -- doc keys embed this so any knob change rebuilds. Global density
-    -- scales the HTML font sizes (Theme.scale), so it joins the sig.
+    -- scales the HTML font sizes (Theme.scale) and the base font feeds
+    -- the MuPDF layout size when the theme sets no absolute size (the
+    -- audit found base-font changes never rebuilt cached docs), so BOTH
+    -- join the sig.
+    local Theme_metrics = require("ktui/theme")
     local sig = ChatTheme.sig(t)
         .. "|gd:" .. tostring(s.density)
+        .. "|bf:" .. tostring(Theme_metrics.get_base_font_size())
         .. "|rf:" .. font_file .. ":" .. font_size .. ":" .. line_spacing
         .. ":" .. #custom_css .. ":" .. custom_css:sub(1, 48) .. ":"
         .. custom_css:sub(-48)
@@ -413,6 +419,32 @@ function ChatTheme.resolved(app)
         colors = colors,
         sig = sig,
     }
+end
+
+-- Single-slot memo for resolved() (audit D3): the chat measure path calls
+-- it per message; each call re-normalized twice and rebuilt the whole sig
+-- (~50 string ops). The slot keys on the applied-theme identity, the
+-- global density and the Theme palette version (base font rides inside
+-- the sig itself) - one paint sees one key, any switch invalidates O(1).
+-- slot.applied anchors the key table: without the strong ref a collected
+-- theme could have its ADDRESS recycled by a different table (smoke churns
+-- fake apps) and the memo would serve a stale config for a fresh theme.
+local resolved_slot = { key = nil, applied = nil, value = nil }
+function ChatTheme.resolved(app)
+    local state = (app and app.state) or nil
+    local s = (state and state.settings) or {}
+    local applied = state and state.chat_theme_applied or nil
+    local Theme = require("ktui/theme")
+    local key = tostring(applied) .. "|" .. tostring(s.density) .. "|"
+        .. tostring(Theme.state_version)
+    if resolved_slot.key == key then
+        return resolved_slot.value
+    end
+    local value = _resolved_impl(app)
+    resolved_slot.key = key
+    resolved_slot.applied = applied
+    resolved_slot.value = value
+    return value
 end
 
 -- ============================================================== builtins

@@ -82,7 +82,12 @@ local Theme = {
 Theme.MIN_BASE_FONT_SIZE = 8
 Theme.MAX_BASE_FONT_SIZE = 32
 
+-- Bumped by the palette setters (audit D3): render caches (ChatTheme.resolved)
+-- key on it so a theme/density/base-font switch invalidates in O(1).
+Theme.state_version = 0
+
 function Theme.set_theme(name)
+    Theme.state_version = Theme.state_version + 1
     if name == "inverted" or name == "light" then
         current_theme = name
     end
@@ -104,6 +109,7 @@ function Theme.get_theme()
 end
 
 function Theme.set_density(value)
+    Theme.state_version = Theme.state_version + 1
     if value == "compact" then
         density_factor = 0.8
     elseif value == "spacious" then
@@ -232,6 +238,7 @@ end
 -- every apply path funnels through _apply_chat_colors.
 function Theme.set_chat_color_overrides(overrides)
     chat_color_overrides = overrides
+    Theme.state_version = Theme.state_version + 1
     Theme._apply_chat_colors()
 end
 

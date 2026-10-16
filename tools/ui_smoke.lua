@@ -6921,5 +6921,78 @@ do
     end
 end
 
+-- === R3 audit: render/storage caches and the primitives fast path ===
+do
+    -- Storage mtime caches: same identity until a save bumps the file,
+    -- fresh identity + fresh value after (connections + profiles + worlds).
+    local Storage_r3 = require("kt_storage")
+    local list_a = Storage_r3.list_profiles()
+    local list_b = Storage_r3.list_profiles()
+    ok(list_a == list_b, "r3: repeated list_profiles hands back the cached table")
+    Storage_r3.save_profiles({ { id = "r3", name = "probe" } })
+    local list_c = Storage_r3.list_profiles()
+    ok(list_c ~= list_a and #(list_c or {}) == 1 and list_c[1].id == "r3",
+        "r3: a save invalidates the profiles cache (fresh value)")
+    -- worlds: directory-mtime cache - rename-based saves must be visible.
+    Storage_r3.save_world("r3_probe_world", { entries = { { id = "e1" } } })
+    local worlds_a = Storage_r3.list_worlds()
+    ok(#(worlds_a or {}) > 0 and #worlds_a == #(worlds_a or {}) and true, "r3: list_worlds returns a list")
+    local found_w = false
+    for _wi = 1, #(worlds_a or {}) do
+        if worlds_a[_wi] == "r3_probe_world" then found_w = true end
+    end
+    ok(found_w, "r3: save_world is immediately visible through the dir cache")
+    Storage_r3.save_world("r3_probe_world", { entries = { { id = "e2" } } })
+    local w_data = Storage_r3.load_world("r3_probe_world")
+    ok(w_data and w_data.entries and w_data.entries[1].id == "e2",
+        "r3: same-name world rewrite invalidates (e2 not stale e1)")
+    Storage_r3.delete_world("r3_probe_world")
+
+    -- resolved() single-slot memo: identity-stable for one config,
+    -- invalidated by density and by an applied-theme switch.
+    local ChatTheme_r3 = require("ktui/chat_theme")
+    local app_m = fake_app({})
+    app_m.state.chat_theme_applied = ChatTheme_r3.normalize({ name = "M" })
+    local res_1 = ChatTheme_r3.resolved(app_m)
+    local res_2 = ChatTheme_r3.resolved(app_m)
+    ok(res_1 == res_2, "r3: resolved() memoized for the same config")
+    app_m.state.settings.density = "compact"
+    local res_3 = ChatTheme_r3.resolved(app_m)
+    ok(res_3 ~= res_1 and res_3.sig ~= res_1.sig,
+        "r3: a density switch busts the resolved memo (sig carries gd:)")
+    app_m.state.chat_theme_applied = ChatTheme_r3.normalize(
+        { name = "M2", style = "flat" })
+    local res_4 = ChatTheme_r3.resolved(app_m)
+    ok(res_4 ~= res_3 and res_4.theme.style == "flat",
+        "r3: an applied-theme switch busts the resolved memo")
+
+    -- Primitives RGB32 fast path after the hoist: fills keep the true
+    -- color, the memoized type probe agrees across calls, and BB8 keeps
+    -- going through paintRect (pixel-level equality with the old path
+    -- is covered by the b5/b8 pixel checks above).
+    local P_r3 = require("ktui/primitives")
+    local Theme_r3 = require("ktui/theme")
+    local bb32 = Blitbuffer.new(120, 60, Blitbuffer.TYPE_BBRGB32)
+    bb32:fill(Blitbuffer.COLOR_WHITE)
+    local navy = Blitbuffer.colorFromString("#1c2739")
+    P_r3.rect(bb32, 5, 5, 50, 20, navy)
+    P_r3.rounded_rect(bb32, 65, 5, 50, 20, navy, 6)
+    local function rgb_px(bb, x, y)
+        local okp, px = pcall(function() return bb:getPixel(x, y) end)
+        if not okp then return -1 end
+        return px:getR() * 65536 + px:getG() * 256 + px:getB()
+    end
+    ok(rgb_px(bb32, 30, 15) == 0x1c2739,
+        "r3: hoisted RGB32 fill keeps the true color (rect)")
+    ok(rgb_px(bb32, 90, 15) == 0x1c2739,
+        "r3: single-clamp rounded scan keeps the true color (center)")
+    ok(rgb_px(bb32, 66, 6) == 0xffffff,
+        "r3: rounded scan leaves the corner arc untouched")
+    local bb8 = new_bb()
+    P_r3.rect(bb8, 5, 5, 40, 10, Blitbuffer.COLOR_BLACK)
+    ok(rgb_px(bb8, 20, 10) == 0x000000,
+        "r3: BB8 fills still route through paintRect")
+end
+
 print(string.format("\n%d checks, %d failures", checks, fails))
 os.exit(fails == 0 and 0 or 1)

@@ -554,6 +554,19 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
     local in_chat_ctx = app.state.in_chat_context == true
     local default_id = app.state.settings.bubble_theme_id or ""
 
+    -- Per-paint normalize memo (audit D5): the list identity is stable
+    -- between saves (the storage mtime cache hands back the same table),
+    -- so both summary loops below reuse this pass until a save lands.
+    local memo = rawget(view, "_themes_norm_memo")
+    if not memo or memo.list ~= themes then
+        local norm = {}
+        for ti = 1, #themes do
+            norm[ti] = ChatTheme.normalize(themes[ti].theme)
+        end
+        memo = { list = themes, norm = norm }
+        rawset(view, "_themes_norm_memo", memo)
+    end
+
     local style_labels = {
         bubbles = _("Bubbles"), flat = _("Flat"),
     }
@@ -573,9 +586,9 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
                 app:navigate("chat")
             end,
         })
-        for _, entry in ipairs(themes) do
+        for ti, entry in ipairs(themes) do
             local theme = entry
-            local th = ChatTheme.normalize(theme.theme)
+            local th = memo.norm[ti]
             local summary = (style_labels[th.style] or th.style)
                 .. " · " .. (shape_labels[th.avatar_shape] or th.avatar_shape)
             local is_active = (app.state.current_chat_bubble_theme_id == theme.id)
@@ -620,9 +633,9 @@ function Pages.settings_bubble_themes(view, bb, x, y, w, h, scroll)
 
     if #themes > 0 then
         table.insert(rows, { section = true, text = saved_label })
-        for _, t in ipairs(themes) do
+        for ti, t in ipairs(themes) do
             local entry = t
-            local th = ChatTheme.normalize(entry.theme)
+            local th = memo.norm[ti]
             local summary = (style_labels[th.style] or th.style)
                 .. " · " .. (shape_labels[th.avatar_shape] or th.avatar_shape)
             local is_default = (entry.id == default_id)

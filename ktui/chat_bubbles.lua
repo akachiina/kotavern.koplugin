@@ -844,14 +844,29 @@ local function chat_html_body(content, revealed, det_revealed)
     return table.concat(body)
 end
 
+-- djb2 over the message body: doc keys embed the digest + length +
+-- head/tail slices (collision would need same len, same hash AND matching
+-- ends - acceptable for a 32-slot doc cache). Pure arithmetic (no bit
+-- lib / no 5.3 bitops): every intermediate stays under 2^36, exact in
+-- doubles on LuaJIT.
+local function content_digest(str)
+    local h = 5381
+    for i = 1, #str do
+        h = (h * 33 + str:byte(i)) % 2147483647
+    end
+    return string.format("%x", h)
+end
+
 local function html_doc_for(app, view, content, width, revealed, det_revealed, css_extra, role)
     if not app or not app.state then return nil end
     local docs = app.state.chat_html_docs
     if not docs then
         docs = {}
         app.state.chat_html_docs = docs
-        if #docs == 0 then docs.cap = 32 end -- cap the tall-bitmap cache;
-                                              -- prune below (see paint epoch)
+        docs.cap = 32 -- tall-bitmap cache cap; pruned below (see paint epoch)
+        docs.n = 0    -- entry counter (amortized prune, audit D4: the
+                      -- per-build pairs() count over the whole store was
+                      -- O(n) per miss = O(N^2) opening a long chat)
     end
     local Constants = require("kt_constants")
     local Theme = require("ktui/theme")
@@ -901,7 +916,10 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         table.sort(ks)
         return table.concat(ks, ",")
     end
-    local key = table.concat({ tostring(content), "\0", tostring(width), "\0",
+    local key = table.concat({ content_digest(content), "\0",
+        tostring(#content), "\0",
+        content:sub(1, 16), "\0", content:sub(-16), "\0",
+        tostring(width), "\0",
         resolved.sig, "\0", panel_bg,
         "\0", set_sig_local(revealed),
         "\0", set_sig_local(det_revealed), "\0", tostring(css_extra or "") }, "")
@@ -943,12 +961,12 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
             end
         end
     end
-    local n = 0
-    for k in pairs(docs) do n = n + 1 end
+    local n = docs.n or 0
     if n > (docs.cap or 32) + 1 then
         local victims = {}
         for k, v in pairs(docs) do
-            if k ~= key and type(v) == "table" and v.paint_id ~= paint_id
+            if type(k) == "string" and k ~= key and type(v) == "table"
+                and v.paint_id ~= paint_id
                 and not live[v.widget] then
                 victims[#victims + 1] = k
             end
@@ -962,6 +980,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
             docs[k] = nil
             removed = removed + 1
         end
+        docs.n = math.max(0, n - removed)
     end
     local okp, perr = pcall(function()
         -- Live settings thread through so the custom chat font (KTUser
@@ -995,6 +1014,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         local h = last and math.max(16, last) or 96
         docs[key] = { widget = widget, height = h, width = width, key = key,
             paint_id = view and view._chat_paint_id or 0 }
+        docs.n = (docs.n or 0) + 1
     end)
     if not okp then
         require("logger").warn("chat html render failed: ", perr)
@@ -1090,6 +1110,7 @@ local function invalidate_doc(app, entry)
         if old and old.widget then
             pcall(function() old.widget:free() end)
         end
+        if old then docs.n = math.max(0, (docs.n or 1) - 1) end
         docs[entry.doc_key] = nil
     end
 end

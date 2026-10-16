@@ -438,8 +438,12 @@ end
 
 -- === Connections ===
 function Storage.list_connections()
+    -- mtime cache (audit D2): the header counts connections on EVERY
+    -- paint; the file read + JSON decode was per-frame before.
     local path = data_dir() .. "/connections.json"
-    return read_json_file(path) or {}
+    return cached_table(path, function()
+        return read_json_file(path) or {}
+    end)
 end
 
 function Storage.save_connections(connections)
@@ -450,8 +454,11 @@ end
 -- A profile snapshots {connection_id, preset_id} so the chat can switch both
 -- atomically. Optional fields (stop, start_reply_with) ride along for later.
 function Storage.list_profiles()
+    -- mtime cache (audit D2): profiles ride the chat composer path.
     local path = data_dir() .. "/profiles.json"
-    return read_json_file(path) or {}
+    return cached_table(path, function()
+        return read_json_file(path) or {}
+    end)
 end
 
 function Storage.save_profiles(profiles)
@@ -460,8 +467,11 @@ end
 
 -- === Presets ===
 function Storage.list_presets()
+    -- mtime cache (audit D2): header count per paint.
     local path = data_dir() .. "/presets.json"
-    return read_json_file(path) or {}
+    return cached_table(path, function()
+        return read_json_file(path) or {}
+    end)
 end
 
 function Storage.save_presets(presets)
@@ -474,8 +484,13 @@ end
 -- {id, name, theme}; the first access migrates any legacy bubble_themes
 -- entries in (old file kept untouched for safety).
 function Storage.list_chat_themes()
+    -- mtime cache (audit D2): the theme manager + editor re-read per
+    -- paint. The one-time bubble-themes migration below WRITES this file,
+    -- which bumps the mtime and re-loads the cache - no staleness.
     local path = data_dir() .. "/chat_themes.json"
-    local themes = read_json_file(path)
+    local themes = cached_table(path, function()
+        return read_json_file(path)
+    end)
     if themes then return themes end
     -- One-time migration: bubble themes -> full chat themes (new keys
     -- stay unset = inherit). The old file survives for a rollback.
@@ -550,16 +565,23 @@ function Storage.worlds_dir()
 end
 
 function Storage.list_worlds()
+    -- mtime cache keyed on the DIRECTORY (audit D2): every in-app world
+    -- write is temp+rename (os.rename rewrites the dir entry) and every
+    -- delete is os.remove - both update the dir mtime on POSIX, and a
+    -- file-manager copy does too, so the cache cannot go stale.
     local lfs = require("libs/libkoreader-lfs")
     local dir = Storage.worlds_dir()
-    local out = {}
-    for name in lfs.dir(dir) do
-        local file = name:match("^(.+)%.json$")
-        if file then
-            table.insert(out, file)
+    local out = cached_table(dir, function()
+        local names = {}
+        for name in lfs.dir(dir) do
+            local file = name:match("^(.+)%.json$")
+            if file then
+                table.insert(names, file)
+            end
         end
-    end
-    table.sort(out)
+        table.sort(names)
+        return names
+    end)
     return out
 end
 
