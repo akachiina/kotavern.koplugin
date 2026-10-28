@@ -281,12 +281,29 @@ a { color: %s !important; text-decoration: none !important; }
 .muted { color: %s; }
 .center { text-align: center; }
 .right { text-align: right; }
-/* PATTERN: pills are full-width bars, not compact buttons - MuPDF
-   stretches inline-block to the content width (probe-verified) and the
-   hit layer spans the painted bar to match. Do not chase compact form
-   here; side-by-side pills go in table cells. */
+/* PATTERN (probe-backed): a lone inline-block <a> stretches to the FULL
+   line width in MuPDF - bars, not compact buttons. Compact side-by-side
+   pills require the table pattern below (shrink-wrapped cells): one
+   <tr> per row, one <td class=\"pcell\"> per pill. The hit layer spans
+   both shapes (bar for .pill, cell for .pcell bars), so taps match
+   paint in either form. */
 .pill { display: inline-block; border: 1px solid %s; padding: 10px 16px; margin: 0 4px 6px 0; font-weight: bold; text-align: center; }
 .pill.primary { background: %s; color: %s !important; }
+/* Compact pill rows: cells shrink-wrap their text; border-spacing is the
+   pill gap. Variants ride the cell class (color on the <a> needs
+   !important - same UA-sheet rule as every anchor). */
+table.prow { border-collapse: separate; border-spacing: 5px 0; margin: 0 0 6px 0; }
+table.prow td.pcell { border: 1px solid %s; background: %s; padding: 10px 16px; text-align: center; font-weight: bold; }
+table.prow td.pcell a { color: %s !important; text-decoration: none !important; }
+table.prow td.pcell.primary { background: %s; }
+table.prow td.pcell.primary a { color: %s !important; }
+table.prow td.pcell.secondary { background: %s; }
+table.prow td.pcell.ghost { border: none; }
+table.prow td.plain { border: none; background: none; padding: 0 8px; vertical-align: middle; }
+/* NOTE: cell class is 'chipc', NOT 'chip' - .chip carries
+   display:inline-block (span chips) which, applied to a td, busts the
+   table layout (cells stack full-width; probe-verified). */
+table.prow td.pcell.chipc { padding: 2px 8px; font-weight: normal; color: %s; }
 table.fila { width: 100%%; margin: 0 0 6px 0; }
 table.fila td { vertical-align: middle; padding: 2px 6px 2px 0; }
 code { background: %s; padding: 0 4px; font-family: monospace; }
@@ -305,6 +322,13 @@ img { vertical-align: middle; }
         KtHTML.css_hex(Theme.muted, "#666666"),
         KtHTML.css_hex(Theme.button_bg, "#000000"),
         KtHTML.css_hex(Theme.button_text, "#ffffff"),
+        KtHTML.css_hex(Theme.border, "#000000"),
+        KtHTML.css_hex(Theme.panel, "#ffffff"),
+        KtHTML.css_hex(Theme.ink, "#000000"),
+        KtHTML.css_hex(Theme.button_bg, "#000000"),
+        KtHTML.css_hex(Theme.button_text, "#ffffff"),
+        KtHTML.css_hex(Theme.panel, "#ffffff"),
+        KtHTML.css_hex(Theme.muted, "#666666"),
         KtHTML.css_hex(Theme.soft, "#cccccc"),
         KtHTML.css_hex(Theme.soft, "#cccccc"),
         KtHTML.css_hex(Theme.soft, "#cccccc"))
@@ -1221,14 +1245,14 @@ KtHTML.HTML_SKELETON = [[
 </div>
 <div class="card">
   <h2>Componentes (pills kt:)</h2>
-  <p><a class="pill primary" href="kt:action:shot">Capturar tela</a> <a class="pill" href="kt:action:reload">Recarregar</a></p>
+  <table class="prow"><tr><td class="pcell primary"><a href="kt:action:shot">Capturar tela</a></td><td class="pcell"><a href="kt:action:reload">Recarregar</a></td></tr></table>
   <p class="muted">Todos os botoes acima sao pills CSS puras - de proposito. O MuPDF ignora border-radius (provado por probe), entao cantos sao retos aqui, como nos dialogos nativos do KOReader. Existiu um overlay nativo (kt:btn) com capsula real, aposentado por custar timer/hitbox/geometria para zero ganho de comportamento.</p>
   <p><a class="pill {{c:settings.debug_mode:on}}" href="kt:toggle:settings.debug_mode">debug: {{s:settings.debug_mode}}</a></p>
   <p class="muted">Toggle real (liga/desliga e salva). Avatar: <img src="sonic_debug.gif" style="width: 48px;"/></p>
 </div>
 <div class="card">
   <h2>Botoes (variantes)</h2>
-  <p><a class="pill primary" href="kt:action:shot">Primario</a> <a class="pill secondary" href="kt:action:reload">Secundario</a> <a class="pill ghost" href="kt:action:reload">Fantasma</a> <span class="pill nonlink">Desligado</span></p>
+  <table class="prow"><tr><td class="pcell primary"><a href="kt:action:shot">Primario</a></td><td class="pcell secondary"><a href="kt:action:reload">Secundario</a></td><td class="pcell ghost"><a href="kt:action:reload">Fantasma</a></td><td class="pcell muted">Desligado</td></tr></table>
   <p><a class="pill" href="kt:action:shot"><img src="camera.svg" style="width: 14px;"/> Capturar</a></p>
   <p class="muted">Desligado nao tem href: sem link, intocavel por construcao. Icone SVG embutido: a confirmar no aparelho.</p>
 </div>
@@ -1240,7 +1264,7 @@ KtHTML.HTML_SKELETON = [[
 </div>
 <div class="card">
   <h2>Chips, segmentos, progresso, avatar</h2>
-  <p><span class="chip">humano</span><span class="chip">mago</span><span class="chip">1234 tok</span></p>
+  <table class="prow"><tr><td class="pcell chipc">humano</td><td class="pcell chipc">mago</td><td class="pcell chipc">1234 tok</td></tr></table>
   <table class="seg"><tr><td class="{{c:sandbox.segA:on}}"><a href="kt:toggle:sandbox.segA">A</a></td><td class="{{c:sandbox.segB:on}}"><a href="kt:toggle:sandbox.segB">B</a></td><td class="{{c:sandbox.segC:on}}"><a href="kt:toggle:sandbox.segC">C</a></td></tr></table>
   <div class="pbar"><div class="pfill" style="width: {{px:sandbox.conta:10}};"></div></div>
   <p class="muted">Barra ligada no contador do Playground (0..9 vira 0..90%). Avatar: <img class="avatar round" src="sonic_debug.gif"/> (circulo se o MuPDF honrar border-radius).</p>
@@ -1255,9 +1279,9 @@ KtHTML.HTML_SKELETON = [[
   <h2>Playground (estado vivo)</h2>
   <p><a class="pill {{c:sandbox.ligado:on}}" href="kt:toggle:sandbox.ligado">Lampada (troca de cor no toque)</a></p>
   <p class="muted">Apagado = contorno, aceso = solido.</p>
-  <p><a class="pill" href="kt:action:step:-1">-1</a> <b>{{s:sandbox.conta}}</b> <a class="pill" href="kt:action:step:1">+1</a></p>
+  <table class="prow"><tr><td class="pcell"><a href="kt:action:step:-1">-1</a></td><td class="plain"><b>{{s:sandbox.conta}}</b></td><td class="pcell"><a href="kt:action:step:1">+1</a></td></tr></table>
   <p class="muted">Contador com trava 0..9.</p>
-  <p><a class="pill" href="kt:action:move:-1">esq</a> <a class="pill" href="kt:action:move:1">dir</a></p>
+  <table class="prow"><tr><td class="pcell"><a href="kt:action:move:-1">esq</a></td><td class="pcell"><a href="kt:action:move:1">dir</a></td></tr></table>
   <p><img src="sonic_debug.gif" style="width: 40px; margin-left: {{px:sandbox.pos:24}};"/></p>
   <p class="muted">esq/dir movem o sonic (margin-left calculado em Lua). Sem animacao aqui: estado discreto por toque.</p>
 </div>
@@ -1271,7 +1295,7 @@ KtHTML.HTML_SKELETON = [[
 <hr/>
 <div class="card">
   <h2>Acoes (kt:action)</h2>
-  <p><a class="pill" href="kt:action:reload">Recarregar</a> <a class="pill" href="kt:action:shot">Capturar tela</a> <a class="pill" href="kt:action:voar">Acao inexistente (vira erro)</a></p>
+  <table class="prow"><tr><td class="pcell"><a href="kt:action:reload">Recarregar</a></td><td class="pcell"><a href="kt:action:shot">Capturar tela</a></td><td class="pcell"><a href="kt:action:voar">Erro (vira erro)</a></td></tr></table>
   <p><a class="pill" href="kt:unknown:coisa">Esquema inexistente (vira erro)</a></p>
 </div>
 <br/>
