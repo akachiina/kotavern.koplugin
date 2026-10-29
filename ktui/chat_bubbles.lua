@@ -1304,6 +1304,12 @@ local function block_entries(blocks, width, app, show_inline, view, body_face)
                 table.insert(entries, {
                     kind = "html", widget = doc.widget,
                     h = doc.height, doc_key = doc.key, pad = 0, offset = 0,
+                    -- Stripped plain text rides along so draw_blocks can
+                    -- fall back to canvas if the doc widget dies/blit
+                    -- fails on some paint (otherwise the panel bg painted
+                    -- right before would ERASE the previous frame's text -
+                    -- the "balões apagados durante a geração" report).
+                    fallback = block.text:gsub("<[^>]->", ""),
                 })
             else
                 local fallback = block.text:gsub("<[^>]->", "")
@@ -1439,6 +1445,20 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                     end)
                     if okp then
                         view.dithered = true
+                    else
+                        -- Widget died mid-blit (MuPDF OOM on device, freed
+                        -- doc): without fill the panel bg painted right
+                        -- above keeps the band empty (fb had the old text
+                        -- overwritten - the "balões apagados" report).
+                        -- Canvas paragraph fills the band; the next full
+                        -- re-measure rebuilds the doc from cache on its own.
+                        if entry.fallback then
+                            P.scrollable_paragraph(bb, entry.fallback, cx, top,
+                                width, band_h, "default", math.max(0, top - entry_y),
+                                { color = color, bgcolor = bg })
+                        end
+                        require("logger").warn("chat html blit failed, canvas fallback; widget=",
+                            tostring(entry.widget), "doc=", tostring(entry.widget and entry.widget.document), "bb=", tostring(entry.widget and entry.widget.bb))
                     end
                     -- Tap zone for links + spoiler reveals (message bodies
                     -- only - hit_ctx is nil for system/reasoning draws).

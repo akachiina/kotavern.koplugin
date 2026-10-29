@@ -5193,7 +5193,15 @@ function App:_refresh_streaming()
     local view = self.view
     local region = view and view.chat_region or nil
     if region then
-        UIManager:setDirty(view, "ui", Geom:new(region))
+        -- "partial", not "ui": on Kindle "ui" resolves to GC16_FAST - a
+        -- heavy grayscale waveform designed for one-shot UI updates - and
+        -- with chat_html_render on it fired every stream tick over the whole
+        -- chat, where the repeated waves degraded the already-frozen bubbles'
+        -- text (the "balões apagados só no Kindle" report; the PC/SDL build
+        -- keeps identical pixels either way). The device's own partial lane
+        -- (REAGL/GL16_FAST) is what its reader pages use for fast, protected
+        -- redraws; code-identical dialog painting still rides "ui".
+        UIManager:setDirty(view, "partial", Geom:new(region))
     else
         self:refresh()
     end
