@@ -77,7 +77,7 @@ local function paragraphs(text)
 end
 
 -- Build the embedded stylesheet. Only what the reader cannot do natively:
--- the message bubble tint, the name row, the colophon button grid.
+-- the message bubble tint and the name row.
 local function stylesheet(look)
     local colors = look.colors or {}
     local function c(key, fallback)
@@ -105,11 +105,6 @@ local function stylesheet(look)
         -- so it is shown muted under the body (the book is a reading view).
         "div.ktreason { font-size: 85%; color: " .. ink .. "; opacity: 0.65;",
         "  margin: 0.4em 0 0 0; }",
-        -- Colophon: the action page at the end.
-        "section.ktcolophon { margin: 2em 0 0 0; border-top: 1px solid " .. border .. ";",
-        "  padding-top: 1em; }",
-        "h1.ktcolophon-title { font-size: 110%; margin: 0 0 0.6em 0; }",
-        "p.kthint { font-size: 85%; opacity: 0.7; margin: 0.6em 0 0 0; }",
     }, "\n")
 end
 
@@ -140,22 +135,6 @@ local function message_html(msg, opts)
     return table.concat(out, "\n")
 end
 
--- The colophon: what the user sees after the last page. It is a regular HTML
--- section so it flows in the same document (no overlay, no widget); its
--- "buttons" are links to the native sheet the plugin installs, which is the
--- only interactive surface crengine can host.
-local function colophon_html(opts)
-    return table.concat({
-        '<section class="ktcolophon">',
-        "<h1>Continua a conversa</h1>",
-        '<p>Escreva a proxima mensagem, ou escolha uma acao abaixo.</p>',
-        "<p>Escolha uma acao no menu do leitor (KOTavern),",
-        " ou volte para a lista de chats.</p>",
-        '<p class="kthint">Dica: ao chegar ao fim do livro, o painel de acoes abre sozinho.</p>',
-        "</section>",
-    }, "\n")
-end
-
 -- Full document.
 function Book.html_from_chat(chat, opts)
     opts = opts or {}
@@ -169,16 +148,13 @@ function Book.html_from_chat(chat, opts)
     for _, msg in ipairs(chat.messages or {}) do
         parts[#parts + 1] = message_html(msg, opts)
     end
-    if opts.colophon ~= false then
-        parts[#parts + 1] = colophon_html(opts)
-    end
 
     parts[#parts + 1] = "</body></html>"
     return table.concat(parts, "\n")
 end
 
 -- Write the book file for a chat and return its path (nil on failure).
--- `opts`: { look, character_name, persona_name, colophon }
+-- `opts`: { look, character_name, persona_name }
 function Book.write(chat_path, opts)
     local chat = Storage.load_chat(chat_path)
     if not chat or not chat.messages or #chat.messages == 0 then

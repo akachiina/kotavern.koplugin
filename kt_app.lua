@@ -2364,11 +2364,7 @@ function App:open_book(chat_path)
     end
 
     local ok, path = pcall(function()
-        return Book.write(chat_path, {
-            look = self:chat_look(),
-            character_name = self.state.current_character or "KOTavern",
-            persona_name = self:_active_persona_name(),
-        })
+        return self:_book_write(chat_path)
     end)
     if not ok or not path then
         UIManager:show(InfoMessage:new{
@@ -2418,6 +2414,49 @@ function App:close_book_reader()
     if ReaderUI.instance then
         ReaderUI.instance:onClose()
     end
+end
+
+-- Regenerate the book HTML for a chat (current look / names). Returns the
+-- path, or nil.
+function App:_book_write(chat_path)
+    local Book = require("kt_book")
+    local ok, path = pcall(function()
+        return Book.write(chat_path, {
+            look = self:chat_look(),
+            character_name = self.state.current_character or "KOTavern",
+            persona_name = self:_active_persona_name(),
+        })
+    end)
+    if ok then return path end
+    return nil
+end
+
+-- Live-refresh hook: called after a mutation to the chat is PERSISTED while
+-- the book reader may be open (user message sent, reply landed, message
+-- deleted). Debounced so chained landings (auto-continue, stream finalize)
+-- coalesce into one reload.
+function App:_book_generation_landed(chat_path)
+    if not chat_path or chat_path ~= self.state.current_chat_path then return end
+    local ok_a, BookActions = pcall(require, "kt_book_actions")
+    if not ok_a or not BookActions.is_active() then return end
+    if self._book_refresh_scheduled then return end
+    self._book_refresh_scheduled = true
+    UIManager:scheduleIn(0.5, function()
+        self._book_refresh_scheduled = nil
+        self:refresh_open_book()
+    end)
+end
+
+-- Rewrite the book file and reload the open reader document in place.
+function App:refresh_open_book()
+    local ok_a, BookActions = pcall(require, "kt_book_actions")
+    if not ok_a or not BookActions.is_active() then return end
+    local path = self.state.current_chat_path
+    if not path then return end
+    local new_path = self:_book_write(path)
+    if not new_path then return end
+    self.state.book_path = new_path
+    BookActions.reload_book()
 end
 
 -- === Message Flow ===
@@ -4981,6 +5020,8 @@ function App:_do_send_message(text)
 
     -- Save user message to JSONL
     Storage.append_message(self.state.current_chat_path, "user", text, nil, "User")
+    -- Book mode: show the user's bubble while the reply streams in.
+    self:_book_generation_landed(self.state.current_chat_path)
 
     -- Scroll to the new message
     self.state.scroll[self:scroll_key()] = 999999
@@ -5207,6 +5248,9 @@ function App:_do_generate(api_messages, opts)
                             self_ref.state.scroll[key] = 999999
                         end
                     end
+                    -- Book mode live refresh: the reply is persisted, reload
+                    -- the open book to the last page.
+                    self_ref:_book_generation_landed(path)
                 else
                     if opts.regenerate or opts.continue_into then
                         self_ref:_restore_reused_message(opts.regenerate or opts.continue_into, opts.msg_index, path)
@@ -5650,6 +5694,10 @@ function App:_do_stream_message(api_messages, opts)
                     end
                 end
             end
+            -- Book mode live refresh: the reply is persisted, reload the
+            -- open book to the last page (debounced; auto-continue chains
+            -- coalesce into one reload).
+            self_ref:_book_generation_landed(path)
 
             -- Cut-response hint / Auto-Continue (ST parity: finish_reason ==
             -- length means max_tokens was hit; Continue finishes it - the

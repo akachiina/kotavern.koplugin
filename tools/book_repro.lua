@@ -240,6 +240,34 @@ UIManager:scheduleIn(2.2, function()
     dump_out("hash after forceRePaint=" .. tostring(screen_hash()))
     ascii_screen("force-repaint")
 end)
+UIManager:scheduleIn(1.7, function()
+    dump_out("--- direct sheet show + forceRePaint ---")
+    local BookActions = require("kt_book_actions")
+    BookActions.show_sheet(app)
+    UIManager:forceRePaint()
+    ascii_screen("sheet-direct")
+    -- If the repaint path skipped it, paint the sheet straight into the bb.
+    local top = UIManager._window_stack[#UIManager._window_stack]
+    if top and top.widget and top.widget.name == "kotavern_booksheet" then
+        top.widget:paintTo(Screen.bb, 0, 0)
+        ascii_screen("sheet-directpaint")
+    else
+        dump_out("no booksheet on top at t1.7")
+    end
+end)
+UIManager:scheduleIn(2.6, function()
+    -- Leave the sheet open briefly, then dismiss it through its Cancel hit
+    -- rect (bottom of the panel) to also exercise the tap dispatch.
+    local top = UIManager._window_stack[#UIManager._window_stack]
+    if top and top.widget and top.widget.name == "kotavern_booksheet" then
+        local hits = top.widget._hits
+        dump_out("sheet hits registered: " .. tostring(hits and #hits or 0))
+        if hits and #hits > 0 then
+            hits[#hits].cb() -- last registered = Cancel
+        end
+    end
+    dump("t2.6-sheet-dismissed")
+end)
 UIManager:scheduleIn(3.0, function()
     dump_out("--- forward page turn #1 ---")
     local ui = ReaderUI.instance
@@ -253,12 +281,58 @@ UIManager:scheduleIn(3.6, function()
     else dump_out("no ReaderUI.instance at t3.6") end
 end)
 UIManager:scheduleIn(4.8, function() dump("t4.8-after-turns") end)
-UIManager:scheduleIn(6.0, function()
+UIManager:scheduleIn(4.9, function() ascii_screen("colophon-sheet") end)
+UIManager:scheduleIn(5.1, function()
+    dump_out("--- dismiss sheet; simulated swipe north (interposed) ---")
+    local top = UIManager._window_stack[#UIManager._window_stack]
+    if top and top.widget and top.widget.name == "kotavern_booksheet" then
+        UIManager:close(top.widget)
+    else
+        dump_out("no painted sheet on top (expected in the new flow)")
+    end
+    local Geom = require("ui/geometry")
+    local ui = ReaderUI.instance
+    if ui then
+        ui:handleEvent(Event:new("Gesture", {
+            ges = "swipe", direction = "north", distance = 200,
+            pos = Geom:new{ x = 300, y = 400, w = 0, h = 0 },
+        }))
+        dump_out("swipe north dispatched")
+    end
+end)
+UIManager:scheduleIn(5.4, function() dump("t5.4-after-swipe") end)
+UIManager:scheduleIn(5.6, function()
+    dump_out("--- close sheet; open in-book composer ---")
+    local top = UIManager._window_stack[#UIManager._window_stack]
+    if top and top.widget and top.widget.name == "kotavern_booksheet" then
+        UIManager:close(top.widget)
+    end
+    local BookActions = require("kt_book_actions")
+    BookActions.compose_in_book(app)
+end)
+UIManager:scheduleIn(6.0, function() dump("t6.0-composer") end)
+UIManager:scheduleIn(6.2, function()
+    dump_out("--- close composer; user message + landing hook ---")
+    for i = #UIManager._window_stack, 1, -1 do
+        local w = UIManager._window_stack[i].widget
+        if w.name ~= "kotavern_booksheet" and w ~= ReaderUI.instance then
+            UIManager:close(w)
+            break
+        end
+    end
+    Storage.append_message(chat_path, "user", "mensagem de teste do repro", nil, "User")
+    app:_book_generation_landed(chat_path)
+end)
+UIManager:scheduleIn(7.4, function()
+    dump_out("--- after live reload (debounce 0.5s -> refresh_open_book) ---")
+    dump("t7.4-after-reload")
+end)
+UIManager:scheduleIn(8.2, function()
     dump_out("--- closing reader via app:close_book_reader ---")
     app:close_book_reader()
 end)
-UIManager:scheduleIn(7.5, function() dump("t7.5-after-close") end)
-UIManager:scheduleIn(9.0, function()
+UIManager:scheduleIn(9.4, function() dump("t9.4-after-close") end)
+UIManager:scheduleIn(10.4, function()
     dump_out("--- quitting ---")
     UIManager:quit()
 end)
