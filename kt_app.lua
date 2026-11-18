@@ -2385,7 +2385,12 @@ function App:open_book(chat_path)
     -- list (the canvas chat is not the book's parent).
     self.state.book_return_page = "chats"
 
+    -- SetupShowReader is REQUIRED before showReader: without it KOReader
+    -- opens the document and tears it down immediately (the book flashed and
+    -- closed). Same broadcast rakuyomi does before opening a chapter.
+    local Event = require("ui/event")
     local ReaderUI = require("apps/reader/readerui")
+    UIManager:broadcastEvent(Event:new("SetupShowReader"))
     ReaderUI:showReader(path)
     -- showReader defers the actual open; attach on the next tick so the
     -- ReaderUI instance exists.
