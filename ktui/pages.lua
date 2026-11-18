@@ -1447,6 +1447,16 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
           subtext = _("Render assistant bubbles with MuPDF (experimental)"),
           value = function() return app.state.settings.chat_html_render == true end,
           callback = function() app:toggle_setting("chat_html_render") end },
+        { text = _("Book mode"), icon = "book", toggle = true,
+          subtext = _("Open chats as a native KOReader book (experimental)"),
+          value = function() return app.state.settings.chat_mode == "book" end,
+          callback = function()
+              local mode = (app.state.settings.chat_mode == "book")
+                  and "list" or "book"
+              app.state.settings.chat_mode = mode
+              app:save_setting("chat_mode", mode)
+              app:refresh(true)
+          end },
         { text = _("Show RAM and CPU in the header"), icon = "info-circle", toggle = true,
           subtext = _("Plugin and device usage beside the title dots"),
           value = function() return app.state.settings.debug_header_stats == true end,

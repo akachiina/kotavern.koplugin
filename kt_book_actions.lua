@@ -237,6 +237,18 @@ function BookActions.attach(app, reader_ui)
         end
     end
 
+    -- CRITICAL: HTML documents are paginated by crengine (readerrolling), and
+    -- ReaderHighlight:onTap does `#self.view.highlight.visible_boxes` without
+    -- a nil guard. `visible_boxes` starts nil and only becomes {} inside
+    -- ReaderView:drawSavedHighlight (readerpaging); for rolling documents the
+    -- first tap can land before that runs, crashing the reader with
+    -- "attempt to get length of field 'visible_boxes' (a nil value)".
+    -- Guarantee the field is always a table for our book.
+    local view = reader_ui.view
+    if view and view.highlight and view.highlight.visible_boxes == nil then
+        view.highlight.visible_boxes = {}
+    end
+
     -- End of book -> the colophon sheet (one shot per open).
     local ReaderUI = reader_ui
     local eventListener = require("ui/widget/container/widgetcontainer"):new{}

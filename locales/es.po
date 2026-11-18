@@ -1836,3 +1836,9 @@ msgstr "Volver a la lista de chats"
 
 msgid "Fim do chat. O que voce quer fazer agora?"
 msgstr "Fin del chat. ¿Qué quieres hacer ahora?"
+
+msgid "Book mode"
+msgstr "Modo libro"
+
+msgid "Open chats as a native KOReader book (experimental)"
+msgstr "Abrir chats como un libro nativo de KOReader (experimental)"

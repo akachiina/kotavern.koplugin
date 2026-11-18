@@ -2262,6 +2262,14 @@ function App:_start_new_chat(char_path, char_name, connection, character, chat_n
     self.state.scroll["chat_" .. chat_info.id] = 999999
     self:refresh_chats_index()
 
+    -- Honor the display mode for freshly created chats too. open_chat() is
+    -- NOT reused here: it reloads the chat from disk and resets the state we
+    -- just built, and the headless fixtures do not carry _cancel_generation.
+    if self.state.settings.chat_mode == "book" then
+        self:open_book(chat_info.path)
+        return
+    end
+
     self:navigate("chat")
 end
 
