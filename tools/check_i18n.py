@@ -15,7 +15,10 @@ EMPTY = re.compile(r'msgstr \"\"')
 def main():
     ids = set()
     for path in glob.glob("**/*.lua", recursive=True):
-        if path.startswith("tools/") or "/data/" in path:
+        # Skip our own tooling, per-device data and the reference clones under
+        # ref/ (they are not part of the plugin and have their own i18n).
+        if (path.startswith("tools/") or "/data/" in path
+                or path.startswith("ref/") or "/ref/" in path):
             continue
         with open(path, encoding="utf-8", errors="replace") as f:
             ids.update(PAT.findall(f.read()))

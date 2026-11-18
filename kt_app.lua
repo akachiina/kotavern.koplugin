@@ -37,6 +37,11 @@ local SETTINGS_DEFAULTS = {
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
+    chat_book_mode = false,    -- experimental "book" mode: open the chat as a
+                               -- paginated HTML document in KOReader's native
+                               -- reader (crengine), with a colophon at the end
+    chat_mode = "list",        -- list | book (Appearance > Chat; book only in
+                               -- Debug until it leaves the experimental stage)
     debug_header_stats = false, -- Debug: plugin/device RAM+CPU beside the header dots
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
@@ -2325,7 +2330,81 @@ function App:open_chat(char_name, chat_path, connection)
     self.state.chat_first_mes = ""
     self.state.scroll["chat_" .. self.state.current_chat_id] = 999999
 
+    -- Book mode (experimental): instead of the canvas chat, open the chat as
+    -- a paginated HTML document in KOReader's native reader. The plugin steps
+    -- aside: the reader owns the typography, and every action comes back here
+    -- through kt_book_actions.
+    if self.state.settings.chat_mode == "book" then
+        self:open_book(chat_path)
+        return
+    end
+
     self:navigate("chat")
+end
+
+-- Open the current chat as a "book" in the native reader (crengine).
+function App:open_book(chat_path)
+    local Book = require("kt_book")
+    local BookActions = require("kt_book_actions")
+    local chat_data = Storage.load_chat(chat_path)
+    if not chat_data or #chat_data.messages == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("Nothing to show in book mode yet."),
+            timeout = 3,
+        })
+        return
+    end
+
+    local ok, path = pcall(function()
+        return Book.write(chat_path, {
+            look = self:chat_look(),
+            character_name = self.state.current_character or "KOTavern",
+            persona_name = self:_active_persona_name(),
+        })
+    end)
+    if not ok or not path then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not create the book file."),
+            timeout = 3,
+        })
+        return
+    end
+
+    self.state.current_chat_path = chat_path
+    self.state.book_path = path
+
+    -- Remember where we came from so closing the book returns to the chat
+    -- list (the canvas chat is not the book's parent).
+    self.state.book_return_page = "chats"
+
+    local ReaderUI = require("apps/reader/readerui")
+    ReaderUI:showReader(path)
+    -- showReader defers the actual open; attach on the next tick so the
+    -- ReaderUI instance exists.
+    UIManager:nextTick(function()
+        if ReaderUI.instance then
+            BookActions.attach(self, ReaderUI.instance)
+        end
+    end)
+end
+
+-- Called by kt_book_actions when the reader closes. Returns to the plugin.
+function App:on_book_closed()
+    self.state.book_path = nil
+    -- Back to the chat list: the book was a view of one chat, and the canvas
+    -- chat is always one tap away.
+    self.state.previous_page = nil
+    self.state.page = "chats"
+    self:refresh_chats_index()
+    self:refresh(true)
+end
+
+-- Close the book reader (if open) and land back on the chat list.
+function App:close_book_reader()
+    local ReaderUI = require("apps/reader/readerui")
+    if ReaderUI.instance then
+        ReaderUI.instance:onClose()
+    end
 end
 
 -- === Message Flow ===

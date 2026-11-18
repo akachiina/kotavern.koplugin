@@ -3637,17 +3637,18 @@ do
         Pages.settings_appearance_chat(view_b6, bb_b6, 0, 0, VW, VH, 0)
     end)
     ok(okp_b6, "b6 launcher: paints without crashing")
-    -- Launcher = 3 rows (New theme / Themes… / Default theme), no knobs.
+    -- Launcher = 4 rows (Display mode + New theme / Themes… / Default theme),
+    -- no knobs.
     local tap_count = #view_b6.hitboxes
-    ok(tap_count == 3, "b6 launcher: exactly 3 tappable rows (got " .. tap_count .. ")")
-    -- Tap each row by position: 1=New, 2=Themes…, 3=Default.
-    view_b6.hitboxes[1].callback(0, 0)
-    ok(app_b6._created == true, "b6 launcher: row 1 creates a theme")
+    ok(tap_count == 4, "b6 launcher: exactly 4 tappable rows (got " .. tap_count .. ")")
+    -- Tap each row by position: 1=Display mode, 2=New, 3=Themes…, 4=Default.
     view_b6.hitboxes[2].callback(0, 0)
-    ok(app_b6._nav == "settings_bubble_themes",
-        "b6 launcher: row 2 routes to the Themes manager")
+    ok(app_b6._created == true, "b6 launcher: row 2 creates a theme")
     view_b6.hitboxes[3].callback(0, 0)
-    ok(app_b6._picked_default == true, "b6 launcher: row 3 opens the default picker")
+    ok(app_b6._nav == "settings_bubble_themes",
+        "b6 launcher: row 3 routes to the Themes manager")
+    view_b6.hitboxes[4].callback(0, 0)
+    ok(app_b6._picked_default == true, "b6 launcher: row 4 opens the default picker")
 
     -- Manager in SETTINGS mode: user themes first, CREATE, builtins last.
     local app_mgr = fake_app({ page = "settings_bubble_themes",

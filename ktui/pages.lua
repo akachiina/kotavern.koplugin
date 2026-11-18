@@ -492,6 +492,39 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     end
 
     local rows = {
+        { section = true, text = _("Chat mode") },
+        {
+            text = _("Display mode"),
+            icon = "comments",
+            subtext = _("List (SillyTavern) or Book (experimental)"),
+            value = function()
+                return (app.state.settings.chat_mode == "book")
+                    and _("Book") or _("List")
+            end,
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                local current = app.state.settings.chat_mode
+                Sheets.show(app, {
+                    title = _("Display mode"),
+                    actions = {
+                        { label = _("List"), icon = "list",
+                          checked = (current ~= "book"),
+                          on_tap = function()
+                              app.state.settings.chat_mode = "list"
+                              app:save_setting("chat_mode", "list")
+                              app:refresh(true)
+                          end },
+                        { label = _("Book"), icon = "book",
+                          checked = (current == "book"),
+                          on_tap = function()
+                              app.state.settings.chat_mode = "book"
+                              app:save_setting("chat_mode", "book")
+                              app:refresh(true)
+                          end },
+                    },
+                })
+            end,
+        },
         { section = true, text = _("Themes") },
         {
             text = _("New theme"),

@@ -1773,3 +1773,66 @@ msgstr "Mostrar RAM e CPU no cabeçalho"
 
 msgid "Plugin and device usage beside the title dots"
 msgstr "Uso do plugin e do dispositivo ao lado dos três pontinhos"
+
+msgid "Chat mode"
+msgstr "Modo do chat"
+
+msgid "Display mode"
+msgstr "Modo de exibição"
+
+msgid "List (SillyTavern) or Book (experimental)"
+msgstr "Lista (SillyTavern) ou Livro (experimental)"
+
+msgid "Book"
+msgstr "Livro"
+
+msgid "Could not create the book file."
+msgstr "Não foi possível criar o arquivo do livro."
+
+msgid "Nothing to show in book mode yet."
+msgstr "Nada para mostrar no modo livro ainda."
+
+msgid "Conversa"
+msgstr "Conversa"
+
+msgid "Contexto"
+msgstr "Contexto"
+
+msgid "Visual"
+msgstr "Visual"
+
+msgid "Navegacao"
+msgstr "Navegação"
+
+msgid "Escrever proxima mensagem"
+msgstr "Escrever próxima mensagem"
+
+msgid "Regenerar ultima resposta"
+msgstr "Regenerar última resposta"
+
+msgid "Trocar persona"
+msgstr "Trocar persona"
+
+msgid "Trocar conexao"
+msgstr "Trocar conexão"
+
+msgid "Apagar ultima mensagem"
+msgstr "Apagar última mensagem"
+
+msgid "Apagar a ultima mensagem?"
+msgstr "Apagar a última mensagem?"
+
+msgid "Apagar"
+msgstr "Apagar"
+
+msgid "Aparencia"
+msgstr "Aparência"
+
+msgid "Voltar ao modo lista"
+msgstr "Voltar ao modo lista"
+
+msgid "Voltar para a lista de chats"
+msgstr "Voltar para a lista de chats"
+
+msgid "Fim do chat. O que voce quer fazer agora?"
+msgstr "Fim do chat. O que você quer fazer agora?"
