@@ -41,10 +41,21 @@
 -- the chat state, generation and storage stay owned by the app.
 
 local UIManager = require("ui/uimanager")
+local InfoMessage = require("ui/widget/infomessage")
 local logger = require("logger")
 local _ = require("gettext")
 
 local BookActions = {}
+
+-- Reused guard toast: the canvas UI has inline "generating" state, but the
+-- book is static HTML - without a toast, blocked actions look broken ("I
+-- tapped regenerate and nothing happened").
+local function toast(text, timeout)
+    UIManager:show(InfoMessage:new{
+        text = text,
+        timeout = timeout or 2,
+    })
+end
 
 -- Which widget instance is the active book reader (so we can close it and
 -- return to the plugin exactly once).
@@ -75,7 +86,6 @@ end
 -- The action list. Mutating actions (write / regenerate / delete) stay in
 -- the book; only canvas pickers close it first.
 function BookActions.sections(app)
-    local st = app and app.state or {}
     local out = {}
 
     out[#out + 1] = {
@@ -84,10 +94,7 @@ function BookActions.sections(app)
             { label = _("Escrever proxima mensagem"), icon = "edit",
               cb = function() BookActions.compose_in_book(app) end },
             { label = _("Regenerar ultima resposta"), icon = "refresh",
-              cb = function()
-                  if st.is_generating then return end
-                  BookActions.regenerate(app)
-              end },
+              cb = function() BookActions.regenerate(app) end },
             { label = _("Apagar ultima mensagem"), icon = "trash",
               cb = function() BookActions.delete_last(app) end },
             { label = _("Trocar persona"), icon = "user",
@@ -202,7 +209,10 @@ end
 function BookActions.send_composed(app, text)
     if not app then return end
     local st = app.state or {}
-    if st.is_generating then return end
+    if st.is_generating then
+        toast(_("Already generating. Stop the current response first."))
+        return
+    end
     text = tostring(text or "")
     if text:gsub("%s+", "") == "" then
         local placeholder = st.settings and st.settings.send_if_empty
@@ -217,7 +227,11 @@ end
 function BookActions.compose_in_book(app)
     if not app then return end
     local st = app.state or {}
-    if st.is_generating then return end
+    if st.is_generating then
+        toast(_("Already generating. Stop the current response first."))
+        return
+    end
+    logger.info("kotavern/book: composer opened")
     local InputDialog = require("ui/widget/inputdialog")
     local dialog
     dialog = InputDialog:new{
@@ -255,8 +269,26 @@ end
 function BookActions.regenerate(app)
     if not app then return end
     local st = app.state or {}
-    if st.is_generating then return end
-    if app.regenerate_last then app:regenerate_last() end
+    if st.is_generating then
+        toast(_("Already generating. Stop the current response first."))
+        return
+    end
+    -- Visible refusal instead of a silent no-op: regenerate only works on a
+    -- trailing assistant reply (canvas parity in App:regenerate_last).
+    local msgs = st.messages or {}
+    if #msgs == 0 or msgs[#msgs].role ~= "assistant" then
+        toast(_("Nothing to regenerate."))
+        return
+    end
+    logger.info("kotavern/book: regenerate requested")
+    if app.regenerate_last then
+        app:regenerate_last()
+        if st.is_generating then
+            -- The book only reloads when the reply lands (App:
+            -- _book_generation_landed); until then tell the user it started.
+            toast(_("Regenerating response..."))
+        end
+    end
 end
 
 function BookActions.choose_persona(app)
@@ -278,7 +310,11 @@ function BookActions.delete_last(app)
         ok_text = _("Apagar"),
         ok_callback = function()
             local path = st.current_chat_path
-            if app.state and app.state.is_generating then return end
+            if app.state and app.state.is_generating then
+                toast(_("Already generating. Stop the current response first."))
+                return
+            end
+            logger.info("kotavern/book: delete last confirmed")
             table.remove(app.state.messages, #app.state.messages)
             if path then
                 local Storage = require("kt_storage")
@@ -396,13 +432,16 @@ function BookActions.reload_book()
     if not ui or not ui.document then return end
     local Event = require("ui/event")
     local doc = ui.document
-    local ok = pcall(function()
+    local ok, err = pcall(function()
         doc:invalidateCacheFile()
         doc:loadDocument()
         doc:render()
         doc:_readMetadata()
     end)
-    if not ok then return end
+    if not ok then
+        logger.info("kotavern/book: reload failed: ", tostring(err))
+        return
+    end
     pcall(function()
         if ui.rolling then
             ui.rolling:updatePos(true)

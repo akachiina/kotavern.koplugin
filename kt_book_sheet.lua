@@ -16,6 +16,7 @@
 local UIManager = require("ui/uimanager")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Geom = require("ui/geometry")
+local logger = require("logger")
 local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
 local Icons = require("ktui/icons")
@@ -44,6 +45,15 @@ function BookSheet:init()
     }
     self.covers_fullscreen = true
     self.modal = true
+    -- MODAL CONTRACT: consume EVERY gesture while the sheet is up.
+    -- InputContainer:onGesture only stops propagation when a registered
+    -- touch zone matches the gesture TYPE - gestures we do not register
+    -- (double_tap, pinch, spread, hold_release, pan_release, multiswipe,
+    -- two_finger_*) would otherwise fall through the window stack and reach
+    -- the reader underneath (page turns, highlight menus, Gestures-plugin
+    -- actions like "close book"). That was the reported "taps sometimes
+    -- send me back to the plugin" leak. stop_events_propagation closes it.
+    self.stop_events_propagation = true
     -- Hit rects are rebuilt on every paint; taps walk them in REVERSE order
     -- (last registered wins, same dispatch contract as the canvas hitboxes).
     self._hits = {}
@@ -78,8 +88,14 @@ function BookSheet:init()
     })
 end
 
+-- Small vertical drifts (fat-fingered taps) must not dismiss: a real close
+-- gesture is a deliberate flick. GestureDetector reports swipe distance in
+-- pixels.
+local SWIPE_MIN = 40
+
 function BookSheet:dismiss()
     if current == self then current = nil end
+    logger.info("kotavern/sheet: dismiss")
     UIManager:close(self)
 end
 
@@ -89,6 +105,7 @@ function BookSheet:onTap(ges)
     for i = #self._hits, 1, -1 do
         local hit = self._hits[i]
         if P.contains(hit, pos.x, pos.y) then
+            logger.info("kotavern/sheet: row tap at y=", pos.y)
             hit.cb()
             return true
         end
@@ -105,6 +122,7 @@ end
 
 function BookSheet:onSwipe(ges)
     local direction = ges and ges.direction
+    local distance = tonumber(ges and ges.distance) or 0
     local max_scroll = self._max_scroll or 0
     local step = math.floor((self._list_h or Theme.scale(200)) * 0.8)
     if direction == "north" then
@@ -115,7 +133,9 @@ function BookSheet:onSwipe(ges)
         return true
     elseif direction == "south" then
         if (self.scroll or 0) <= 0 then
-            self:dismiss()
+            if distance >= SWIPE_MIN then
+                self:dismiss()
+            end
         else
             self.scroll = math.max(0, (self.scroll or 0) - step)
             UIManager:setDirty(self, "partial")

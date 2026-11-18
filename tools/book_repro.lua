@@ -301,6 +301,39 @@ UIManager:scheduleIn(5.1, function()
     end
 end)
 UIManager:scheduleIn(5.4, function() dump("t5.4-after-swipe") end)
+UIManager:scheduleIn(5.5, function()
+    dump_out("--- double_tap while sheet open (modal leak regression) ---")
+    local top = UIManager._window_stack[#UIManager._window_stack]
+    local sheet_open = top and top.widget and top.widget.name == "kotavern_booksheet"
+    local Geom = require("ui/geometry")
+    local Event = require("ui/event")
+    local ui = ReaderUI.instance
+    local page_before = ui and ui.view and ui.view.state
+        and tostring(ui.view.state.page)
+    if sheet_open then
+        -- sendEvent is what the device really does: if the sheet does not
+        -- consume the gesture, it walks DOWN the window stack into the
+        -- reader (pre-stop_events_propagation bug).
+        UIManager:sendEvent(Event:new("Gesture", {
+            ges = "double_tap",
+            pos = Geom:new{ x = 300, y = 300, w = 0, h = 0 },
+        }))
+        local top2 = UIManager._window_stack[#UIManager._window_stack]
+        local still_sheet = top2 and top2.widget
+            and top2.widget.name == "kotavern_booksheet"
+        local page_after = ui and ui.view and ui.view.state
+            and tostring(ui.view.state.page)
+        if still_sheet then
+            dump_out("OK: sheet still on top after double_tap (page "
+                .. tostring(page_before) .. " -> " .. tostring(page_after) .. ")")
+        else
+            dump_out("FAIL: sheet lost after double_tap (top="
+                .. tostring(top2 and top2.widget and top2.widget.name) .. ")")
+        end
+    else
+        dump_out("SKIP: sheet not on top at t5.5")
+    end
+end)
 UIManager:scheduleIn(5.6, function()
     dump_out("--- close sheet; open in-book composer ---")
     local top = UIManager._window_stack[#UIManager._window_stack]

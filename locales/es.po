@@ -1792,6 +1792,12 @@ msgstr "No se pudo crear el archivo del libro."
 msgid "Nothing to show in book mode yet."
 msgstr "Nada que mostrar en modo libro todavía."
 
+msgid "Nothing to regenerate."
+msgstr "Nada que regenerar."
+
+msgid "Regenerating response..."
+msgstr "Regenerando la respuesta..."
+
 msgid "Conversa"
 msgstr "Conversación"
 
