@@ -6,3 +6,5 @@ data/
 # temp files
 *.tmp
 .DS_Store
+# local deploy helper (machine-specific paths)
+/tools/deploy_koreader.sh

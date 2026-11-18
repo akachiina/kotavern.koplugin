@@ -770,7 +770,73 @@ function Pages.theme_edit(view, bb, x, y, w, h, scroll)
         }
     end
 
+    -- Theme actions FIRST (author call): rename/default/duplicate/export/delete
+    -- used to be the LAST section, so a destructive tap meant scrolling past
+    -- every appearance knob. The whole block now sits at the top, and Delete
+    -- gets the standard confirm sheet (all other deletes have one) since it
+    -- is now one tap from the top.
     local rows = {
+        { section = true, text = _("Theme") },
+        {
+            text = _("Theme actions…"),
+            icon = "sliders",
+            subtext = _("Rename, default, duplicate, export, delete"),
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                local _ = require("gettext")
+                local self_ref = app
+                local is_default = (app.state.settings.bubble_theme_id == editing_id)
+                local actions = {
+                    { label = is_default and _("Unset default") or _("Set as default"),
+                      icon = "star",
+                      on_tap = function()
+                          self_ref:save_setting("bubble_theme_id",
+                              is_default and "" or editing_id)
+                          self_ref:refresh_bubble_theme()
+                          self_ref:refresh(true)
+                      end },
+                    { label = _("Rename"), icon = "edit",
+                      on_tap = function()
+                          local Modals = require("ktui/modals")
+                          Modals.input(_("Theme name"), theme_name or "",
+                              _("Theme name"), _("Save"), function(text)
+                                  self_ref:rename_bubble_theme(editing_id, text)
+                              end)
+                      end },
+                    { label = _("Duplicate"), icon = "copy",
+                      on_tap = function()
+                          self_ref:duplicate_bubble_theme(editing_id)
+                          self_ref:refresh(true)
+                      end },
+                    { label = _("Export theme"), icon = "upload",
+                      on_tap = function()
+                          self_ref:export_bubble_theme(editing_id)
+                      end },
+                    { label = _("Delete"), icon = "trash", danger = true,
+                      on_tap = function()
+                          local Sheets2 = require("ktui/sheets")
+                          Sheets2.confirm(self_ref, {
+                              title = _("Delete theme"),
+                              text = _("Delete this theme permanently?"),
+                              ok_label = _("Delete"), danger = true,
+                              on_ok = function()
+                                  self_ref:delete_bubble_theme(editing_id)
+                              end,
+                          })
+                      end },
+                }
+                if app.state.in_chat_context == true then
+                    table.insert(actions, 1, {
+                        label = _("Apply to this chat"), icon = "check",
+                        on_tap = function()
+                            self_ref:set_chat_bubble_theme(editing_id)
+                            self_ref:navigate("chat")
+                        end,
+                    })
+                end
+                Sheets.show(app, { title = theme_name or _("Themes"), actions = actions })
+            end,
+        },
         { section = true, text = _("Chat") },
         pick_row(_("Chat style"), style_labels[look.style] or look.style, {
             { label = _("Bubbles"), value = "bubbles" },
@@ -881,59 +947,6 @@ function Pages.theme_edit(view, bb, x, y, w, h, scroll)
                 app:edit_chat_theme_key("chat_footer",
                     not (look.chat_footer == true))
                 app:refresh(true)
-            end,
-        },
-        { section = true, text = _("Theme") },
-        {
-            text = _("Theme actions…"),
-            icon = "sliders",
-            subtext = _("Rename, default, duplicate, export, delete"),
-            callback = function()
-                local Sheets = require("ktui/sheets")
-                local _ = require("gettext")
-                local self_ref = app
-                local is_default = (app.state.settings.bubble_theme_id == editing_id)
-                local actions = {
-                    { label = is_default and _("Unset default") or _("Set as default"),
-                      icon = "star",
-                      on_tap = function()
-                          self_ref:save_setting("bubble_theme_id",
-                              is_default and "" or editing_id)
-                          self_ref:refresh_bubble_theme()
-                          self_ref:refresh(true)
-                      end },
-                    { label = _("Rename"), icon = "edit",
-                      on_tap = function()
-                          local Modals = require("ktui/modals")
-                          Modals.input(_("Theme name"), theme_name or "",
-                              _("Theme name"), _("Save"), function(text)
-                                  self_ref:rename_bubble_theme(editing_id, text)
-                              end)
-                      end },
-                    { label = _("Duplicate"), icon = "copy",
-                      on_tap = function()
-                          self_ref:duplicate_bubble_theme(editing_id)
-                          self_ref:refresh(true)
-                      end },
-                    { label = _("Export theme"), icon = "upload",
-                      on_tap = function()
-                          self_ref:export_bubble_theme(editing_id)
-                      end },
-                    { label = _("Delete"), icon = "trash", danger = true,
-                      on_tap = function()
-                          self_ref:delete_bubble_theme(editing_id)
-                      end },
-                }
-                if app.state.in_chat_context == true then
-                    table.insert(actions, 1, {
-                        label = _("Apply to this chat"), icon = "check",
-                        on_tap = function()
-                            self_ref:set_chat_bubble_theme(editing_id)
-                            self_ref:navigate("chat")
-                        end,
-                    })
-                end
-                Sheets.show(app, { title = theme_name or _("Themes"), actions = actions })
             end,
         },
     }

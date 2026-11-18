@@ -108,6 +108,18 @@ function Theme.get_theme()
     return current_theme
 end
 
+-- Scrollbar thumb color (hybrid, by theme):
+--   light theme    -> Theme.ink (black): the thumb must read as chrome, not
+--                     as washed secondary text (the gray-thumb report).
+--   inverted theme -> chat_muted (or muted): a black thumb would vanish on
+--                     the dark surface (the original reason it was muted).
+function Theme.scroll_thumb_color()
+    if current_theme == "light" then
+        return Theme.ink
+    end
+    return Theme.chat_muted or Theme.muted
+end
+
 function Theme.set_density(value)
     Theme.state_version = Theme.state_version + 1
     if value == "compact" then

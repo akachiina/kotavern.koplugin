@@ -372,6 +372,9 @@ msgstr "Excluir preset"
 msgid "Delete script"
 msgstr "Excluir script"
 
+msgid "Delete theme"
+msgstr "Excluir tema"
+
 msgid "Delete this character and all its chats?"
 msgstr "Excluir este personagem e todos os seus chats?"
 
@@ -395,6 +398,10 @@ msgstr "Excluir este preset permanentemente?"
 
 msgid "Delete this regex script?"
 msgstr "Excluir este script de regex?"
+
+msgid "Delete this theme permanently?"
+msgstr "Excluir este tema permanentemente?"
+
 msgid "Depth"
 msgstr "Profundidade"
 
