@@ -40,6 +40,9 @@ msgstr "Conexões de API"
 msgid "API Error: "
 msgstr "Erro de API: "
 
+msgid "API connection"
+msgstr "Conexão da API"
+
 msgid "About / version"
 msgstr "Sobre / versão"
 
@@ -91,6 +94,9 @@ msgstr "Aplicar a"
 msgid "Artifact (commits)"
 msgstr "Artifact (commits)"
 
+msgid "Assistant"
+msgstr "Assistente"
+
 msgid "Author's Note"
 msgstr "Nota do autor"
 
@@ -124,6 +130,8 @@ msgstr "Comportamento"
 msgid "Blank = built-in default"
 msgstr "Em branco = padrão interno"
 
+msgid "Book actions"
+msgstr "Ações do livro"
 
 msgid "Both"
 msgstr "Ambos"
@@ -133,6 +141,7 @@ msgstr "Ramificação criada: "
 
 msgid "Branch from here"
 msgstr "Ramificar daqui"
+
 msgid "Calm"
 msgstr "Suave"
 
@@ -183,6 +192,7 @@ msgstr "Nome do chat"
 
 msgid "Chat Options"
 msgstr "Opções do chat"
+
 msgid "Chat exported to "
 msgstr "Chat exportado para "
 
@@ -215,6 +225,9 @@ msgstr "Limpar"
 
 msgid "Clear Note"
 msgstr "Limpar nota"
+
+msgid "Close book"
+msgstr "Fechar livro"
 
 msgid "Collapse newlines"
 msgstr "Recolher quebras de linha"
@@ -254,6 +267,9 @@ msgstr "Continuar"
 
 msgid "Continue Nudge Prompt"
 msgstr "Prompt de incentivo do Continuar"
+
+msgid "Continue last reply"
+msgstr "Continuar última resposta"
 
 msgid "Cooldown (messages)"
 msgstr "Espera (mensagens)"
@@ -296,6 +312,9 @@ msgstr "Não foi possível salvar a imagem."
 
 msgid "Could not save the lorebook."
 msgstr "Não foi possível salvar o lorebook."
+
+msgid "Could not update the book."
+msgstr "Não foi possível atualizar o livro."
 
 msgid "Covers"
 msgstr "Capas"
@@ -410,6 +429,7 @@ msgstr "Descrição"
 
 msgid "Description (sent as context to AI)"
 msgstr "Descrição (enviada como contexto à IA)"
+
 msgid "Developed by akachiina · GitHub"
 msgstr "Desenvolvido por akachiina · GitHub"
 
@@ -487,6 +507,9 @@ msgstr "Edite sua mensagem e toque Enviar"
 
 msgid "Empty to disable"
 msgstr "Vazio para desativar"
+
+msgid "End of chat"
+msgstr "Fim da conversa"
 
 msgid "English"
 msgstr "Inglês"
@@ -596,10 +619,20 @@ msgstr "Tamanho da fonte"
 msgid "From this character card"
 msgstr "Deste card de personagem"
 
+msgid "Generating…"
+msgstr "Gerando…"
+
 msgid "Generation prompts"
 msgstr "Prompts de geração"
+
 msgid "Give the lorebook a name first."
 msgstr "Dê um nome ao lorebook primeiro."
+
+msgid "Go to last message"
+msgstr "Ir para a última mensagem"
+
+msgid "Go to the end"
+msgstr "Ir para o final"
 
 msgid "Greeting"
 msgstr "Saudação"
@@ -618,6 +651,9 @@ msgstr "Oculta"
 
 msgid "Hide"
 msgstr "Ocultar"
+
+msgid "Hide reasoning"
+msgstr "Ocultar raciocínio"
 
 msgid "History trimmed to fit the model's context window."
 msgstr "Histórico aparado para caber na janela de contexto do modelo."
@@ -717,6 +753,7 @@ msgstr "Grande"
 
 msgid "Light"
 msgstr "Claro"
+
 msgid "List"
 msgstr "Lista"
 
@@ -755,6 +792,9 @@ msgstr "Ações da mensagem"
 
 msgid "Message info"
 msgstr "Info da mensagem"
+
+msgid "Message no longer exists."
+msgstr "A mensagem não existe mais."
 
 msgid "Model ID contains…"
 msgstr "ID do modelo contém…"
@@ -894,6 +934,9 @@ msgstr "Sem saudação"
 msgid "No lorebooks yet. Lorebooks inject context when keywords match the conversation."
 msgstr "Sem lorebooks ainda. Lorebooks injetam contexto quando palavras-chave combinam com a conversa."
 
+msgid "No messages yet."
+msgstr "Ainda sem mensagens."
+
 msgid "No model list. Use Search Model."
 msgstr "Sem lista de modelos. Use Buscar modelo."
 
@@ -923,6 +966,7 @@ msgstr "Sem respostas rápidas. Gerencie em Configurações → Dados."
 
 msgid "No regex scripts. They find/replace text in AI output or prompts (Lua patterns)."
 msgstr "Sem scripts de regex. Eles localizam/substituem texto na saída da IA ou nos prompts (padrões Lua)."
+
 msgid "None"
 msgstr "Nenhum"
 
@@ -940,6 +984,9 @@ msgstr "Posição da nota"
 
 msgid "Note role"
 msgstr "Papel da nota"
+
+msgid "Nothing is being generated."
+msgstr "Nada está sendo gerado."
 
 msgid "Nothing to edit."
 msgstr "Nada para editar."
@@ -968,6 +1015,9 @@ msgstr "Abrir"
 msgid "Open a chat first to activate a lorebook."
 msgstr "Abra um chat primeiro para ativar um lorebook."
 
+msgid "Open in list view"
+msgstr "Abrir na visualização em lista"
+
 msgid "Operation failed: "
 msgstr "Operação falhou: "
 
@@ -976,6 +1026,7 @@ msgstr "Opções"
 
 msgid "Outline user bubbles"
 msgstr "Contornar bolhas do usuário"
+
 msgid "Past Chats"
 msgstr "Chats passados"
 
@@ -1072,8 +1123,14 @@ msgstr "Raciocínio"
 msgid "Reasoning auto-parse"
 msgstr "Raciocínio auto-extraído"
 
+msgid "Reasoning hidden in the book."
+msgstr "Raciocínio ocultado no livro."
+
 msgid "Reasoning prefix"
 msgstr "Prefixo do raciocínio"
+
+msgid "Reasoning shown in the book."
+msgstr "Raciocínio exibido no livro."
 
 msgid "Reasoning suffix"
 msgstr "Sufixo do raciocínio"
@@ -1090,11 +1147,15 @@ msgstr "Atualizar"
 msgid "Regenerate"
 msgstr "Regenerar"
 
+msgid "Regenerate last reply"
+msgstr "Regenerar última resposta"
+
 msgid "Regex Scripts"
 msgstr "Scripts de regex"
 
 msgid "Regex scripts"
 msgstr "Scripts de regex"
+
 msgid "Remove Favorite"
 msgstr "Remover favorito"
 
@@ -1103,11 +1164,13 @@ msgstr "Remover padrão global"
 
 msgid "Remove Image"
 msgstr "Remover imagem"
+
 msgid "Rename"
 msgstr "Renomear"
 
 msgid "Rename Chat"
 msgstr "Renomear chat"
+
 msgid "Rename lorebook"
 msgstr "Renomear lorebook"
 
@@ -1150,10 +1213,33 @@ msgstr "Tentativas (429/5xx)"
 msgid "Retry"
 msgstr "Tentar de novo"
 
+msgid "Show reasoning"
+msgstr "Mostrar raciocínio"
+
+msgid "Stop generating"
+msgstr "Parar de gerar"
+
+msgid "System"
+msgstr "Sistema"
+
+msgid "Thinking…"
+msgstr "Pensando…"
+
+msgid "Turn"
+msgstr "Turno"
+
+msgid "Write next message"
+msgstr "Escrever próxima mensagem"
+
+msgid "You"
+msgstr "Você"
+
 msgid "Next"
 msgstr "Avançar"
+
 msgid "Role"
 msgstr "Papel"
+
 msgid "Role @ depth"
 msgstr "Papel @ profundidade"
 
@@ -1252,6 +1338,7 @@ msgstr "Mostrar horários"
 
 msgid "Show token counts"
 msgstr "Mostrar contagem de tokens"
+
 msgid "Small"
 msgstr "Pequeno"
 
@@ -1266,6 +1353,7 @@ msgstr "Ordenar personagens"
 
 msgid "Sort chats"
 msgstr "Ordenar chats"
+
 msgid "Spanish"
 msgstr "Espanhol"
 
@@ -1355,6 +1443,7 @@ msgstr "Tema"
 
 msgid "This profile's connection no longer exists."
 msgstr "A conexão deste perfil não existe mais."
+
 msgid "Tokens & creator"
 msgstr "Tokens e criador"
 
@@ -1477,8 +1566,10 @@ msgstr "tok"
 
 msgid "user"
 msgstr "usuário"
+
 msgid "Could not save the screenshot"
 msgstr "Não foi possível salvar a captura de tela"
+
 msgid "Danger zone"
 msgstr "Zona de perigo"
 
@@ -1493,21 +1584,28 @@ msgstr "Modo Debug ativado"
 
 msgid "Debug Mode active - experimental features enabled."
 msgstr "Modo Debug ativo - recursos experimentais habilitados."
+
 msgid "Experimental"
 msgstr "Experimental"
+
 msgid "Reload"
 msgstr "Recarregar"
+
 msgid "Shot"
 msgstr "Captura"
+
 msgid "Turning it off hides this category and the CSS overlay."
 msgstr "Desligar oculta esta categoria e a sobreposição de CSS."
+
 msgid "You are in Debug Mode!"
 msgstr "Você está no modo Debug Mode!"
+
 msgid "Debug Mode disabled"
 msgstr "Modo Debug desativado"
 
 msgid "Screenshot saved"
 msgstr "Captura salva"
+
 msgid "Test HTML"
 msgstr "Testar HTML"
 
@@ -1543,6 +1641,7 @@ msgstr "HTML recarregado"
 
 msgid "HTML problems:"
 msgstr "Problemas no HTML:"
+
 msgid "HTML chat renderer"
 msgstr "Renderizador HTML do chat"
 
@@ -1554,6 +1653,7 @@ msgstr "Mensagens"
 
 msgid "Text"
 msgstr "Texto"
+
 msgid "Chat font"
 msgstr "Fonte do chat"
 
@@ -1568,8 +1668,10 @@ msgstr "Seguir o tamanho base"
 
 msgid "0 follows the base font size"
 msgstr "0 segue o tamanho da fonte base"
+
 msgid "Theme name"
 msgstr "Nome do tema"
+
 msgid "Please select a .json theme file."
 msgstr "Selecione um arquivo de tema .json."
 
@@ -1578,6 +1680,7 @@ msgstr "Falha na importação: arquivo de tema inválido."
 
 msgid "Theme imported!"
 msgstr "Tema importado!"
+
 msgid "Set as default"
 msgstr "Definir como padrão"
 
@@ -1589,6 +1692,7 @@ msgstr "Aplicar a este chat"
 
 msgid "Themes"
 msgstr "Temas"
+
 msgid "Show QR code"
 msgstr "Mostrar código QR"
 
@@ -1636,11 +1740,13 @@ msgstr "Falha na exportação."
 
 msgid "Theme not found."
 msgstr "Tema não encontrado."
+
 msgid "Rectangular"
 msgstr "Retangular"
 
 msgid "Chat theme"
 msgstr "Tema do chat"
+
 msgid "Bubble radius"
 msgstr "Raio das bolhas"
 
@@ -1712,6 +1818,7 @@ msgstr "Não foi possível copiar o arquivo de fonte."
 
 msgid "Font installed"
 msgstr "Fonte instalada"
+
 msgid "Default look"
 msgstr "Visual padrão"
 
@@ -1732,6 +1839,7 @@ msgstr "Para todos os chats"
 
 msgid "Theme for this chat"
 msgstr "Tema para este chat"
+
 msgid "New theme"
 msgstr "Novo tema"
 

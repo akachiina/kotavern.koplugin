@@ -37,11 +37,8 @@ local SETTINGS_DEFAULTS = {
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
-    chat_book_mode = false,    -- experimental "book" mode: open the chat as a
-                               -- paginated HTML document in KOReader's native
-                               -- reader (crengine), with a colophon at the end
-    chat_mode = "list",        -- list | book (Appearance > Chat; book only in
-                               -- Debug until it leaves the experimental stage)
+    book_show_reasoning = false, -- book mode: render the reasoning blocks
+    chat_mode = "list",        -- list | book (Appearance > Chat)
     debug_header_stats = false, -- Debug: plugin/device RAM+CPU beside the header dots
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
@@ -892,6 +889,12 @@ function App:refresh(full, region)
     if not self.view then
         return
     end
+    -- The canvas sits underneath the book reader. Repainting it on every
+    -- message mutation/generation tick is wasted work (and can dirty the
+    -- screen under the reader); the book session paints the visible page.
+    if self.state.book_active then
+        return
+    end
     if region then
         -- Sheet is modal: the page pixels behind the scrim are (a) stale from
         -- before the sheet opened and (b) hidden on purpose. A tap inside the
@@ -978,6 +981,9 @@ end
 -- Forced flash: theme/font/language changes and explicit deep cleans.
 function App:refresh_flash()
     self._flash_pending = nil
+    if self.state.book_active then
+        return
+    end
     if self.view then
         UIManager:setDirty(self.view, "full")
     end
@@ -1781,6 +1787,9 @@ function App:delete_character(item)
     end
     -- remove chats
     Storage.delete_chats_for(name)
+    -- Every generated book belongs to a chat that just went away: drop the
+    -- whole cache (it is regenerated on demand).
+    self:_book_forget(nil)
     -- remove card file
     os.remove(path)
     if self.state._card_cache then
@@ -1945,6 +1954,7 @@ function App:set_chat_persona(persona_id)
             Storage.save_chat(path, chat_data.header, chat_data.messages)
         end
     end
+    self:_book_mutated({ kind = "mutation" })
     self:refresh(true)
 end
 
@@ -2273,19 +2283,13 @@ function App:_start_new_chat(char_path, char_name, connection, character, chat_n
     self:navigate("chat")
 end
 
--- Enter an existing chat
-function App:open_chat(char_name, chat_path, connection)
-    -- Cancel any generation still running for the previous chat: its reply
-    -- would otherwise land in this chat's in-memory message list (or block
-    -- Send here until it finished).
-    self:_cancel_generation()
+-- Load one chat into App.state (character, persona, preset, connection,
+-- messages). Shared by the canvas chat and book mode so both always drive the
+-- same live state; a book refresh never has to re-read the disk.
+function App:_load_chat_state(char_name, chat_path, connection)
     local chat_data = Storage.load_chat(chat_path)
     if not chat_data then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not load chat."),
-            timeout = 2,
-        })
-        return
+        return nil
     end
 
     local metadata = chat_data.header and chat_data.header.chat_metadata or {}
@@ -2337,12 +2341,28 @@ function App:open_chat(char_name, chat_path, connection)
     self.state.messages = chat_data.messages or {}
     self.state.chat_first_mes = ""
     self.state.scroll["chat_" .. self.state.current_chat_id] = 999999
+    return chat_data
+end
 
-    -- Book mode (experimental): instead of the canvas chat, open the chat as
-    -- a paginated HTML document in KOReader's native reader. The plugin steps
-    -- aside: the reader owns the typography, and every action comes back here
-    -- through kt_book_actions.
-    if self.state.settings.chat_mode == "book" then
+-- Enter an existing chat
+function App:open_chat(char_name, chat_path, connection)
+    -- Cancel any generation still running for the previous chat: its reply
+    -- would otherwise land in this chat's in-memory message list (or block
+    -- Send here until it finished).
+    self:_cancel_generation()
+    local chat_data = self:_load_chat_state(char_name, chat_path, connection)
+    if not chat_data then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not load chat."),
+            timeout = 2,
+        })
+        return
+    end
+
+    -- Book mode: the chat opens as a book in KOReader's native reader. The
+    -- canvas stays underneath (untouched) and is back when the reader closes;
+    -- force_list is the explicit "open in list view" escape hatch.
+    if self.state.settings.chat_mode == "book" and not self.state.force_list then
         self:open_book(chat_path)
         return
     end
@@ -2350,113 +2370,101 @@ function App:open_chat(char_name, chat_path, connection)
     self:navigate("chat")
 end
 
--- Open the current chat as a "book" in the native reader (crengine).
+-- Open a chat as a "book" in the native reader (crengine).
 function App:open_book(chat_path)
-    local Book = require("kt_book")
-    local BookActions = require("kt_book_actions")
-    local chat_data = Storage.load_chat(chat_path)
-    if not chat_data or #chat_data.messages == 0 then
-        UIManager:show(InfoMessage:new{
-            text = _("Nothing to show in book mode yet."),
-            timeout = 3,
-        })
-        return
+    if not chat_path then return end
+    if self.state.current_chat_path ~= chat_path or not self.state.messages then
+        if not self:_load_chat_state(nil, chat_path, self.state.current_connection) then
+            UIManager:show(InfoMessage:new{
+                text = _("Could not load chat."),
+                timeout = 2,
+            })
+            return
+        end
     end
 
-    local ok, path = pcall(function()
-        return self:_book_write(chat_path)
-    end)
-    if not ok or not path then
+    local Session = require("kt_book_session")
+    local path, err = Session.open(self, chat_path)
+    if not path then
+        require("logger").warn("kotavern/book: open failed:", tostring(err))
         UIManager:show(InfoMessage:new{
             text = _("Could not create the book file."),
             timeout = 3,
         })
         return
     end
-
-    self.state.current_chat_path = chat_path
-    self.state.book_path = path
-
-    -- Remember where we came from so closing the book returns to the chat
-    -- list (the canvas chat is not the book's parent).
-    self.state.book_return_page = "chats"
-
-    -- SetupShowReader is REQUIRED before showReader: without it KOReader
-    -- opens the document and tears it down immediately (the book flashed and
-    -- closed). Same broadcast rakuyomi does before opening a chapter.
-    local Event = require("ui/event")
-    local ReaderUI = require("apps/reader/readerui")
-    UIManager:broadcastEvent(Event:new("SetupShowReader"))
-    ReaderUI:showReader(path)
-    -- showReader defers the actual open; attach on the next tick so the
-    -- ReaderUI instance exists.
-    UIManager:nextTick(function()
-        if ReaderUI.instance then
-            BookActions.attach(self, ReaderUI.instance)
-        end
-    end)
+    self.state.book_active = true
 end
 
--- Called by kt_book_actions when the reader closes. Returns to the plugin.
+-- Called by the book session when the reader closes. The canvas app was
+-- sitting underneath the whole time: return to the exact page it was on.
 function App:on_book_closed()
+    self.state.book_active = nil
     self.state.book_path = nil
-    -- Back to the chat list: the book was a view of one chat, and the canvas
-    -- chat is always one tap away.
-    self.state.previous_page = nil
-    self.state.page = "chats"
     self:refresh_chats_index()
     self:refresh(true)
 end
 
--- Close the book reader (if open) and land back on the chat list.
+-- Close the book reader (if open).
 function App:close_book_reader()
-    local ReaderUI = require("apps/reader/readerui")
-    if ReaderUI.instance then
-        ReaderUI.instance:onClose()
+    require("kt_book_session").close()
+end
+
+-- Force the canvas chat for one navigation (book mode's "open in list view").
+function App:open_chat_in_list(chat_path)
+    self.state.force_list = true
+    local ok, err = pcall(function()
+        self:open_chat(self.state.current_character, chat_path, self.state.current_connection)
+    end)
+    self.state.force_list = nil
+    if not ok then
+        require("logger").warn("kotavern/book: open in list failed:", tostring(err))
     end
 end
 
--- Regenerate the book HTML for a chat (current look / names). Returns the
--- path, or nil.
-function App:_book_write(chat_path)
-    local Book = require("kt_book")
-    local ok, path = pcall(function()
-        return Book.write(chat_path, {
-            look = self:chat_look(),
-            character_name = self.state.current_character or "KOTavern",
-            persona_name = self:_active_persona_name(),
-        })
-    end)
-    if ok then return path end
-    return nil
+-- Book mode live hooks. All of them are no-ops unless a book session is
+-- active for the current chat, so the canvas code paths stay untouched.
+function App:_book_mutated(opts)
+    local ok, Session = pcall(require, "kt_book_session")
+    if ok and Session.is_active() then
+        Session.on_chat_changed(self.state.current_chat_path, opts or { kind = "mutation" })
+    end
 end
 
--- Live-refresh hook: called after a mutation to the chat is PERSISTED while
--- the book reader may be open (user message sent, reply landed, message
--- deleted). Debounced so chained landings (auto-continue, stream finalize)
--- coalesce into one reload.
-function App:_book_generation_landed(chat_path)
-    if not chat_path or chat_path ~= self.state.current_chat_path then return end
-    local ok_a, BookActions = pcall(require, "kt_book_actions")
-    if not ok_a or not BookActions.is_active() then return end
-    if self._book_refresh_scheduled then return end
-    self._book_refresh_scheduled = true
-    UIManager:scheduleIn(0.5, function()
-        self._book_refresh_scheduled = nil
-        self:refresh_open_book()
-    end)
+-- Drop the generated book cache for one chat (or all of them) and close the
+-- reader if it is showing that same book.
+function App:_book_forget(chat_path)
+    local ok, Session = pcall(require, "kt_book_session")
+    if ok and Session.is_active() then
+        local open = Session.chat_path()
+        if chat_path == nil or open == chat_path then
+            Session.close()
+        end
+    end
+    local ok_book, Book = pcall(require, "kt_book")
+    if not ok_book then return end
+    if chat_path then
+        pcall(Book.remove, chat_path)
+    else
+        pcall(Book.clear)
+    end
 end
 
--- Rewrite the book file and reload the open reader document in place.
-function App:refresh_open_book()
-    local ok_a, BookActions = pcall(require, "kt_book_actions")
-    if not ok_a or not BookActions.is_active() then return end
-    local path = self.state.current_chat_path
-    if not path then return end
-    local new_path = self:_book_write(path)
-    if not new_path then return end
-    self.state.book_path = new_path
-    BookActions.reload_book()
+function App:_book_generation(active)
+    local ok, Session = pcall(require, "kt_book_session")
+    if not ok or not Session.is_active() then return end
+    if active then
+        Session.on_generation_start(self)
+    else
+        Session.on_generation_end()
+    end
+end
+
+-- Streaming preview for the book HUD (one call per chunk).
+function App:_book_stream_tick(text)
+    local ok, Session = pcall(require, "kt_book_session")
+    if not ok or not Session.is_active() then return end
+    Session.on_stream_tick(text, (text and text ~= "") and "generating" or "thinking")
 end
 
 -- === Message Flow ===
@@ -2547,6 +2555,7 @@ function App:cycle_swipe(msg_index, direction)
     if path then
         Storage.update_message(path, msg_index, msg)
     end
+    self:_book_mutated({ kind = "mutation", anchor = "#m" .. msg_index })
     self:refresh(true)
 end
 
@@ -2689,6 +2698,7 @@ function App:edit_message(msg_index)
         if path then
             Storage.update_message(path, msg_index, msg)
         end
+        self_ref:_book_mutated({ kind = "mutation", anchor = "#m" .. msg_index })
         self_ref:refresh(true)
     end)
 end
@@ -2724,6 +2734,7 @@ function App:edit_and_resend(msg_index)
         local persona_desc = self_ref:_active_persona_description()
         local character = self_ref:_resolve_character_data()
         local api_messages = self_ref:_build_api_messages(msgs)
+        self_ref:_book_mutated({ kind = "mutation", tail = true })
         self_ref:_do_generate(api_messages)
     end)
 end
@@ -2753,6 +2764,10 @@ function App:delete_message(msg_index, from_here)
             end
         end
         self_ref.state.scroll[self_ref:scroll_key()] = 999999
+        self_ref:_book_mutated({
+            kind = "mutation",
+            anchor = "#m" .. math.max(1, math.min(msg_index, #msgs)),
+        })
         self_ref:refresh(true)
     end)
 end
@@ -2774,6 +2789,7 @@ function App:hide_message(msg_index)
     msg._orig_role = msg.role
     msg.hidden = true
     self:persist_message(msg_index)
+    self:_book_mutated({ kind = "mutation", anchor = "#m" .. msg_index })
     self:refresh(true)
 end
 
@@ -2789,6 +2805,7 @@ function App:unhide_message(msg_index)
     end
     msg._orig_role = nil
     self:persist_message(msg_index)
+    self:_book_mutated({ kind = "mutation", anchor = "#m" .. msg_index })
     self:refresh(true)
 end
 
@@ -2808,6 +2825,7 @@ function App:add_system_note()
                 Storage.save_chat(self_ref.state.current_chat_path, chat_data.header, self_ref.state.messages)
             end
             self_ref.state.scroll[self_ref:scroll_key()] = 999999
+            self_ref:_book_mutated({ kind = "mutation", tail = true })
             self_ref:refresh(true)
         end
     end, true)
@@ -3072,6 +3090,7 @@ function App:move_message(msg_index, dir)
             Storage.save_chat(path, chat_data.header, msgs)
         end
     end
+    self:_book_mutated({ kind = "mutation", anchor = "#m" .. j })
     self:refresh(true)
 end
 
@@ -3138,6 +3157,7 @@ function App:delete_chat(path, on_done)
             if path and self_ref.state.current_chat_path == path then
                 self_ref:_cancel_generation()
             end
+            self_ref:_book_forget(path)
             os.remove(path or "")
             self_ref:refresh_chats_index()
             self_ref:refresh(true)
@@ -3223,6 +3243,10 @@ function App:open_past_chat(chat)
     -- open_chat/_start_new_chat.
     self.state.scroll["chat_" .. tostring(self.state.current_chat_id)] = 999999
     self:refresh_chats_index()
+    if self.state.settings.chat_mode == "book" and not self.state.force_list then
+        self:open_book(chat.path)
+        return
+    end
     self:navigate("chat")
 end
 
@@ -3234,6 +3258,7 @@ function App:delete_past_chat(chat)
         text = _("Delete ") .. (chat.name or _("this chat")) .. "?",
         ok_label = _("Delete"), danger = true,
         on_ok = function()
+            self:_book_forget(chat.path)
             os.remove(chat.path)
             self:show_past_chats() -- re-list
         end,
@@ -4075,6 +4100,23 @@ function App:set_chat_preset(preset_id)
         local chat_data = Storage.load_chat(path)
         if chat_data and chat_data.header and chat_data.header.chat_metadata then
             chat_data.header.chat_metadata.preset_id = preset_id
+            Storage.save_chat(path, chat_data.header, chat_data.messages)
+        end
+    end
+    self:_book_mutated({ kind = "mutation" })
+    self:refresh(true)
+end
+
+-- Per-chat API connection override (book mode has no Sheets, but the canvas
+-- Chat Options keeps its own inline picker; this is the shared setter).
+function App:set_chat_connection(connection)
+    if not connection then return end
+    self.state.current_connection = connection
+    local path = self.state.current_chat_path
+    if path then
+        local chat_data = Storage.load_chat(path)
+        if chat_data and chat_data.header and chat_data.header.chat_metadata then
+            chat_data.header.chat_metadata.connection_id = connection.id
             Storage.save_chat(path, chat_data.header, chat_data.messages)
         end
     end
@@ -5020,8 +5062,9 @@ function App:_do_send_message(text)
 
     -- Save user message to JSONL
     Storage.append_message(self.state.current_chat_path, "user", text, nil, "User")
-    -- Book mode: show the user's bubble while the reply streams in.
-    self:_book_generation_landed(self.state.current_chat_path)
+    -- Book mode: show the user's message immediately; the reply streams into
+    -- the HUD and lands as a reload.
+    self:_book_mutated({ kind = "user", tail = true })
 
     -- Scroll to the new message
     self.state.scroll[self:scroll_key()] = 999999
@@ -5129,11 +5172,13 @@ function App:_do_generate(api_messages, opts)
     end
 
     if use_streaming then
+        self:_book_generation(true)
         self:_do_stream_message(api_messages, opts)
     else
         -- Non-streaming: always run curl in the background + poll by timer so
         -- the UI never freezes (Fase E). A "thinking" bubble is shown instead
         -- of a static full-screen loader and is repainted regionally.
+        self:_book_generation(true)
         self.state.is_generating = true
         self._gen_t0 = os.clock()
         self.state.loading = nil
@@ -5248,9 +5293,6 @@ function App:_do_generate(api_messages, opts)
                             self_ref.state.scroll[key] = 999999
                         end
                     end
-                    -- Book mode live refresh: the reply is persisted, reload
-                    -- the open book to the last page.
-                    self_ref:_book_generation_landed(path)
                 else
                     if opts.regenerate or opts.continue_into then
                         self_ref:_restore_reused_message(opts.regenerate or opts.continue_into, opts.msg_index, path)
@@ -5268,6 +5310,9 @@ function App:_do_generate(api_messages, opts)
                         timeout = 5,
                     })
                 end
+                -- Book mode: the reply (or its failure) is settled; the
+                -- generation-end hook hides the HUD and reloads the book.
+                self_ref:_book_generation(false)
                 -- Cut-response hint / Auto-Continue on the sync path too (the
                 -- stream path handles its own; parity for sync backends).
                 if content and finish == "length"
@@ -5318,6 +5363,11 @@ end
 local STREAM_PARTIALS_PER_FLASH = 20
 
 function App:_refresh_streaming()
+    -- Book mode: the streaming HUD owns the screen updates; the canvas chat
+    -- underneath is frozen until the reader closes.
+    if self.state.book_active then
+        return
+    end
     self._stream_partial_count = (self._stream_partial_count or 0) + 1
     if self._stream_partial_count >= STREAM_PARTIALS_PER_FLASH then
         self._stream_partial_count = 0
@@ -5438,6 +5488,7 @@ function App:_cancel_generation()
     if was_generating then
         self.state.is_generating = false
         self.state.stream_buffer = ""
+        self:_book_generation(false)
     end
 end
 
@@ -5608,6 +5659,9 @@ function App:_do_stream_message(api_messages, opts)
                 assistant_msg.reasoning = accumulated_reasoning
             end
             self_ref.state.stream_buffer = accumulated
+            -- Book mode: the streaming HUD previews the reply at the bottom
+            -- of the reader page.
+            self_ref:_book_stream_tick(accumulated)
             -- Auto-follow only while the user has not scrolled up to read;
             -- a manual scroll sets user_scrolled_up (see AppView). Position
             -- tracks every chunk even when the repaint below is throttled.
@@ -5694,10 +5748,10 @@ function App:_do_stream_message(api_messages, opts)
                     end
                 end
             end
-            -- Book mode live refresh: the reply is persisted, reload the
-            -- open book to the last page (debounced; auto-continue chains
-            -- coalesce into one reload).
-            self_ref:_book_generation_landed(path)
+            -- Book mode: the reply is persisted; the generation-end hook
+            -- hides the HUD and reloads the book (debounced, so auto-continue
+            -- chains coalesce into one reload).
+            self_ref:_book_generation(false)
 
             -- Cut-response hint / Auto-Continue (ST parity: finish_reason ==
             -- length means max_tokens was hit; Continue finishes it - the
@@ -5757,6 +5811,7 @@ function App:_do_stream_message(api_messages, opts)
                 },
                 timeout = 4,
             })
+            self_ref:_book_generation(false)
             self_ref:refresh(true)
         end
     )
@@ -5783,6 +5838,7 @@ function App:_do_stream_message(api_messages, opts)
             text = _("Failed to start streaming."),
             timeout = 4,
         })
+        self_ref:_book_generation(false)
         self_ref:refresh(true)
     end
 end
@@ -5851,6 +5907,7 @@ function App:stop_generation()
 
     self.state.stream_buffer = ""
     self.state.scroll[self:scroll_key()] = 999999
+    self:_book_generation(false)
     self:refresh(true)
 end
 
