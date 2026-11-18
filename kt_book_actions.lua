@@ -3,21 +3,35 @@
 -- The generated HTML is static (crengine cannot host our widgets), so every
 -- action lives here, in native KOReader widgets drawn on top of the reader:
 --
---   1. The reader's own menu (registered via registerToMainMenu) gets a
---      "KOTavern" entry -> the action sheet.
---   2. A swipe-up gesture on the reader opens the same sheet.
---   3. Reaching the end of the book (onEndOfBook) opens the colophon sheet:
+--   1. The reader's own menu gets a "KOTavern" entry -> the action sheet.
+--   2. Reaching the end of the book (onEndOfBook) opens the colophon sheet:
 --      "write next message", regenerate, persona, back.
 --
--- All of it is plain KOReader (ButtonDialog / ConfirmBox / InputDialog) so it
--- inherits the reader's font, size and theme - nothing from the canvas app.
+-- All of it is plain KOReader (ButtonDialog / ConfirmBox) so it inherits the
+-- reader's font, size and theme - nothing from the canvas app. Labels are
+-- plain text: our SVG assets and nerd glyphs can't render inside native
+-- widgets, and emoji are banned by design.
+--
+-- ReaderUI integration notes (both learned the hard way, see the repro
+-- harness tools/book_repro.lua):
+--
+--   * WidgetContainer:paintTo forwards painting to the FIRST CHILD ONLY.
+--     The event listener must therefore be inserted at position 2 (after
+--     readerview, which is child 1) - at position 1 it hijacks the paint
+--     chain and the book renders as a blank screen forever. Events still
+--     reach us first among siblings because propagateEvent walks children
+--     in order. (rakuyomi's MangaReader does the same insert-at-2.)
+--   * Menu entries are registered through ReaderMenu:registerToMainMenu,
+--     the official plugin hook - overriding reader_ui.addToMainMenu after
+--     init does nothing.
+--   * The hook is deferred via registerPostInitCallback when init is still
+--     running (attach fires on a nextTick that can land mid-init, before
+--     reader_ui.menu even exists).
 --
 -- The host (kt_app) passes itself in; every callback goes back through it so
 -- the chat state, generation and storage stay owned by the app.
 
 local UIManager = require("ui/uimanager")
-local InfoMessage = require("ui/widget/infomessage")
-local InputDialog = require("ui/widget/inputdialog")
 local logger = require("logger")
 
 local BookActions = {}
@@ -26,60 +40,73 @@ local BookActions = {}
 -- return to the plugin exactly once).
 local active = nil
 
--- ---------------------------------------------------------------------------
--- Sheet construction (sections of icon+label rows, our SVG assets via the
--- app's Icons module - never emoji, crengine has no emoji font on device).
--- ---------------------------------------------------------------------------
-
-local function icon_label(Icons, name, text)
-    if Icons and Icons.inline_label then
-        return Icons.inline_label(name, text)
+local function is_shown(widget)
+    for _, win in ipairs(UIManager._window_stack) do
+        if win.widget == widget then return true end
     end
-    return text
+    return false
 end
 
--- Build the action rows for a section. `actions` = { {icon, label, cb}, ... }
-local function build_rows(app, actions)
-    local Icons = app and app.Icons
-    local rows = {}
+-- True while the colophon dialog is on screen (EndOfBook can fire again on
+-- the next forward swipe; don't stack dialogs).
+local colophon_dialog = nil
+
+local function get(_w, name)
+    return _w and _w[name]
+end
+
+-- ---------------------------------------------------------------------------
+-- Sheet construction (plain text rows; sections as non-clickable bold rows)
+-- ---------------------------------------------------------------------------
+
+-- Build the action rows for a section. `actions` = { {label, cb}, ... }
+-- Every row closes the dialog first: ButtonDialog does NOT close itself when
+-- a button is tapped (only taps outside the panel do).
+local function rows(dialog, actions)
+    local out = {}
     for _, a in ipairs(actions) do
-        rows[#rows + 1] = {
-            text = icon_label(Icons, a.icon, a.label),
+        out[#out + 1] = {
+            text = a.label,
             callback = function()
-                UIManager:close()
+                UIManager:close(dialog)
                 if a.cb then a.cb() end
             end,
         }
     end
-    return rows
+    return out
 end
 
--- The full action sheet (swipe up / reader menu).
+-- The full action sheet (reader menu entry).
 function BookActions.show_sheet(app)
     if not app then return end
     local sections = BookActions.sections(app)
 
-    -- KOReader's ButtonDialog: one button per row, grouped by section labels.
-    -- A section is a non-clickable bold row (text only).
+    local dialog
     local buttons = {}
     for _, sec in ipairs(sections) do
         if sec.title then
             buttons[#buttons + 1] = { { text = sec.title, bold = true, } }
         end
         for _, a in ipairs(sec.actions) do
-            buttons[#buttons + 1] = build_rows(app, { a })
+            local row = rows(dialog, { a })[1]
+            buttons[#buttons + 1] = { row }
         end
     end
     buttons[#buttons + 1] = { { text = _("Cancel") } }
 
-    UIManager:show(require("ui/widget/buttondialog"):new{
+    dialog = require("ui/widget/buttondialog"):new{
         title = _("KOTavern"),
         buttons = buttons,
         shrink_unneeded_width = true,
-    })
+    }
+    -- rows() closes `dialog` via the upvalue, so bind before showing.
+    UIManager:show(dialog)
 end
 
 -- The action list. Kept in one place so the colophon and the sheet agree.
+-- Mutating actions close the book first: the generated HTML is a snapshot,
+-- so anything that changes the chat must hand control back to the canvas
+-- (which regenerates the book on the next open).
 function BookActions.sections(app)
     local _ = app and app._ or function(s) return s end
     local st = app and app.state or {}
@@ -88,43 +115,50 @@ function BookActions.sections(app)
     out[#out + 1] = {
         title = _("Conversa"),
         actions = {
-            { icon = "edit", label = _("Escrever proxima mensagem"),
-              cb = function() BookActions.write_next(app) end },
-            { icon = "refresh", label = _("Regenerar ultima resposta"),
-              cb = function() BookActions.regenerate(app) end },
-            { icon = "user", label = _("Trocar persona"),
-              cb = function() BookActions.choose_persona(app) end },
-            { icon = "trash", label = _("Apagar ultima mensagem"),
-              cb = function() BookActions.delete_last(app) end },
+            { label = _("Escrever proxima mensagem"),
+              cb = function() BookActions.leave_book(app) BookActions.write_next(app) end },
+            { label = _("Regenerar ultima resposta"),
+              cb = function() BookActions.leave_book(app) BookActions.regenerate(app) end },
+            { label = _("Trocar persona"),
+              cb = function() BookActions.leave_book(app) BookActions.choose_persona(app) end },
+            { label = _("Apagar ultima mensagem"),
+              cb = function() BookActions.leave_book(app) BookActions.delete_last(app) end },
         },
     }
 
     out[#out + 1] = {
         title = _("Contexto"),
         actions = {
-            { icon = "plug", label = _("Trocar conexao"),
-              cb = function() BookActions.change_connection(app) end },
-            { icon = "sliders", label = _("Preset"),
-              cb = function() if app.show_preset_picker then app:show_preset_picker() end end },
-            { icon = "book", label = _("Lorebook"),
-              cb = function() if app.show_lorebooks then app:show_lorebooks() end end },
+            { label = _("Trocar conexao"),
+              cb = function() BookActions.leave_book(app) BookActions.change_connection(app) end },
+            { label = _("Preset"),
+              cb = function()
+                  BookActions.leave_book(app)
+                  if get(app, "show_preset_picker") then app:show_preset_picker() end
+              end },
+            { label = _("Lorebook"),
+              cb = function()
+                  BookActions.leave_book(app)
+                  if get(app, "show_lorebooks") then app:show_lorebooks() end
+              end },
         },
     }
 
     out[#out + 1] = {
         title = _("Visual"),
         actions = {
-            { icon = "magic", label = _("Aparencia"),
-              cb = function() app:navigate("settings_appearance") end },
-            { icon = "list", label = _("Voltar ao modo lista"),
-              cb = function() BookActions.leave_book(app) end },
+            { label = _("Aparencia"),
+              cb = function()
+                  BookActions.leave_book(app)
+                  if app.navigate then app:navigate("settings_appearance") end
+              end },
         },
     }
 
     out[#out + 1] = {
         title = _("Navegacao"),
         actions = {
-            { icon = "back", label = _("Voltar para a lista de chats"),
+            { label = _("Voltar para a lista de chats"),
               cb = function() BookActions.leave_book(app) end },
         },
     }
@@ -137,32 +171,38 @@ end
 -- ---------------------------------------------------------------------------
 
 function BookActions.show_colophon(app)
-    if not app then return end
+    if not app or is_shown(colophon_dialog) then return end
     local _ = app._ or function(s) return s end
+    local dialog
     local buttons = {
         { { text = _("Escrever proxima mensagem"), callback = function()
-            UIManager:close()
+            UIManager:close(dialog)
+            BookActions.leave_book(app)
             BookActions.write_next(app)
         end } },
         { { text = _("Regenerar ultima resposta"), callback = function()
-            UIManager:close()
+            UIManager:close(dialog)
+            BookActions.leave_book(app)
             BookActions.regenerate(app)
         end } },
         { { text = _("Trocar persona"), callback = function()
-            UIManager:close()
+            UIManager:close(dialog)
+            BookActions.leave_book(app)
             BookActions.choose_persona(app)
         end } },
         { { text = _("Voltar para a lista de chats"), callback = function()
-            UIManager:close()
+            UIManager:close(dialog)
             BookActions.leave_book(app)
         end } },
     }
-    UIManager:show(require("ui/widget/buttondialog"):new{
+    dialog = require("ui/widget/buttondialog"):new{
         title = _("KOTavern"),
         text = _("Fim do chat. O que voce quer fazer agora?"),
         buttons = buttons,
         shrink_unneeded_width = true,
-    })
+    }
+    colophon_dialog = dialog
+    UIManager:show(dialog)
 end
 
 -- ---------------------------------------------------------------------------
@@ -210,7 +250,7 @@ end
 
 function BookActions.leave_book(app)
     if not app then return end
-    -- Close the reader (if ours) and go back to the chat list.
+    -- Close the reader (if ours); on_book_closed repaints the canvas.
     if app.close_book_reader then
         app:close_book_reader()
     elseif app.go_back then
@@ -222,45 +262,58 @@ end
 -- Reader integration (called by kt_app when the book reader is up)
 -- ---------------------------------------------------------------------------
 
--- Register the reader menu entry + swipe-up gesture on the given ReaderUI.
+-- Register the reader menu entry + end-of-book hook on the given ReaderUI.
 function BookActions.attach(app, reader_ui)
+    if reader_ui._kt_book_listener then return end -- already attached
     active = { app = app, ui = reader_ui }
     local _ = app and app._ or function(s) return s end
-
-    -- Reader menu entry: "KOTavern" -> the action sheet.
-    if reader_ui.registerToMainMenu then
-        reader_ui.addToMainMenu = function(menu_items)
-            menu_items.kotavern_book = {
-                text = _("KOTavern"),
-                callback = function() BookActions.show_sheet(app) end,
-            }
-        end
-    end
 
     -- CRITICAL: HTML documents are paginated by crengine (readerrolling), and
     -- ReaderHighlight:onTap does `#self.view.highlight.visible_boxes` without
     -- a nil guard. `visible_boxes` starts nil and only becomes {} inside
-    -- ReaderView:drawSavedHighlight (readerpaging); for rolling documents the
-    -- first tap can land before that runs, crashing the reader with
-    -- "attempt to get length of field 'visible_boxes' (a nil value)".
-    -- Guarantee the field is always a table for our book.
+    -- ReaderView:drawSavedHighlight; for rolling documents the first tap can
+    -- land before that runs. Guarantee the field is always a table.
     local view = reader_ui.view
     if view and view.highlight and view.highlight.visible_boxes == nil then
         view.highlight.visible_boxes = {}
     end
 
-    -- End of book -> the colophon sheet (one shot per open).
-    local ReaderUI = reader_ui
-    local eventListener = require("ui/widget/container/widgetcontainer"):new{}
-    eventListener.onEndOfBook = function()
-        BookActions.show_colophon(app)
-        return true
+    local function hook()
+        if reader_ui._kt_book_listener then return end
+
+        -- Reader menu entry through the official plugin registration.
+        if reader_ui.menu then
+            reader_ui.menu:registerToMainMenu({
+                addToMainMenu = function(menu_items)
+                    menu_items.kotavern_book = {
+                        text = _("KOTavern"),
+                        callback = function() BookActions.show_sheet(app) end,
+                    }
+                end,
+            })
+        end
+
+        local eventListener = require("ui/widget/container/widgetcontainer"):new{}
+        eventListener.onEndOfBook = function()
+            BookActions.show_colophon(app)
+            return true -- consume: ReaderStatus must not mark the book finished
+        end
+        eventListener.onCloseWidget = function()
+            BookActions.on_close(app)
+        end
+        -- Position 2, NOT 1: WidgetContainer:paintTo forwards painting to the
+        -- first child only; child 1 is readerview and must stay there.
+        table.insert(reader_ui, 2, eventListener)
+        reader_ui._kt_book_listener = eventListener
     end
-    eventListener.onCloseWidget = function()
-        BookActions.on_close(app)
+
+    -- attach() runs on a nextTick that can land in the middle of ReaderUI
+    -- init (before reader_ui.menu exists): defer until post-init if possible.
+    if reader_ui.postInitCallback then
+        reader_ui:registerPostInitCallback(hook)
+    else
+        hook()
     end
-    -- Insert as the FIRST child so we see the event before other widgets.
-    table.insert(ReaderUI, 1, eventListener)
 
     logger.info("kotavern/book: reader attached")
 end

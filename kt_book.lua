@@ -149,9 +149,9 @@ local function colophon_html(opts)
         '<section class="ktcolophon">',
         "<h1>Continua a conversa</h1>",
         '<p>Escreva a proxima mensagem, ou escolha uma acao abaixo.</p>',
-        "<p>Escolha uma acao no menu do leitor (Gestos &gt; Action sheet),",
+        "<p>Escolha uma acao no menu do leitor (KOTavern),",
         " ou volte para a lista de chats.</p>",
-        '<p class="kthint">Dica: arraste para cima para abrir as acoes.</p>',
+        '<p class="kthint">Dica: ao chegar ao fim do livro, o painel de acoes abre sozinho.</p>',
         "</section>",
     }, "\n")
 end
