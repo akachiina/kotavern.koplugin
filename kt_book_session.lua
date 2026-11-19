@@ -203,7 +203,11 @@ local function finish_reload(pos)
     local follow_tail = pos.tail
 
     local done = false
-    local function goto(handler, arg)
+    -- NOTE: 'goto' is a reserved word in LuaJIT 2.1 (the Lua 5.2 syntax), and
+    -- the CI runner's luajit build rejects it as an identifier even though the
+    -- device runtime accepts it. Name it navigate to keep every LuaJIT
+    -- version's parser happy.
+    local function navigate(handler, arg)
         if done then return end
         done = true
         pcall(function()
@@ -212,23 +216,23 @@ local function finish_reload(pos)
     end
 
     if #(data.messages or {}) == 0 then
-        goto("GotoPage", 1)
+        navigate("GotoPage", 1)
     elseif follow_tail then
-        goto("GotoPage", page_count(ui))
+        navigate("GotoPage", page_count(ui))
     elseif pos.anchor then
         local ok, in_doc = pcall(function() return doc:isXPointerInDocument(pos.anchor) end)
         if ok and in_doc then
-            goto("GotoXPointer", pos.anchor)
+            navigate("GotoXPointer", pos.anchor)
         end
     end
     if not done and pos.old_xp and pos.old_xp ~= "" then
         local ok, in_doc = pcall(function() return doc:isXPointerInDocument(pos.old_xp) end)
         if ok and in_doc then
-            goto("GotoXPointer", pos.old_xp)
+            navigate("GotoXPointer", pos.old_xp)
         end
     end
     if not done then
-        goto("GotoPage", 1)
+        navigate("GotoPage", 1)
     end
 
     -- The old reader widget (and with it the HUD) was closed by the reload.

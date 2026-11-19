@@ -11,7 +11,11 @@ jobs:
         run: |
           fail=0
           for f in $(find . -name '*.lua' -not -path './data/*'); do
-            luajit -bl "$f" > /dev/null 2>&1 || { echo "FAIL: $f"; fail=1; }
+            if ! luajit -bl "$f" > /dev/null 2>&1; then
+              echo "FAIL: $f"
+              luajit -bl "$f" 2>&1 | sed -n '1,20p'
+              fail=1
+            fi
           done
           exit $fail
       - name: i18n coverage (pt_BR + es)
