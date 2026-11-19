@@ -368,12 +368,151 @@ function BookUI.regenerate_last(app)
     app:regenerate_last()
 end
 
+function BookUI.quick_replies(app)
+    if not app then return end
+    if app.state.is_generating then
+        toast(_("Already generating. Stop the current response first."))
+        return
+    end
+    local replies = (app.state.settings and app.state.settings.quick_replies) or {}
+    if #replies == 0 then
+        toast(_("No quick replies. Manage them in Settings → Data."), 3)
+        return
+    end
+
+    local rows = {}
+    for index = 1, #replies do
+        local reply = replies[index]
+        rows[#rows + 1] = {
+            text = reply.label or "?",
+            icon = "bolt",
+            callback = function()
+                if app.state.current_chat_path and not app.state.is_generating then
+                    app:_do_send_message(reply.text or "")
+                end
+            end,
+        }
+    end
+    Modals.actions(_("Quick Reply"), rows)
+end
+
 function BookUI.stop_generation(app)
     if not (app and app.state and app.state.is_generating) then
         toast(_("Nothing is being generated."), 2)
         return
     end
     app:stop_generation()
+end
+
+-- Native counterpart of the canvas Author's Note sheet. The storage writer is
+-- shared with list mode; only the menus differ because Sheets cannot sit over
+-- ReaderUI.
+function BookUI.authors_note(app)
+    local path = app and app.state and app.state.current_chat_path
+    if not path then return end
+    local chat_data = Storage.load_chat(path)
+    local meta = (chat_data and chat_data.header and chat_data.header.chat_metadata) or {}
+    local note = meta.note_prompt
+    local depth = tonumber(meta.note_depth) or 4
+    local interval = tonumber(meta.note_interval) or 1
+    local position = tonumber(meta.note_position) or 1
+    local role = tonumber(meta.note_role) or 0
+
+    local rows = {
+        {
+            text = _("Edit Note"),
+            icon = "edit",
+            callback = function()
+                Modals.input(_("Author's Note"), note or "",
+                    _("Injected into the AI context"), _("Save"), function(text)
+                        app:set_authors_note_field("note_prompt",
+                            (text and text ~= "") and text or nil)
+                    end, nil, true)
+            end,
+        },
+        {
+            text = _("Depth"),
+            icon = "sliders",
+            callback = function()
+                local choices = {}
+                for value = 0, 8 do
+                    choices[#choices + 1] = {
+                        text = tostring(value),
+                        checked_func = function() return depth == value end,
+                        callback = function() app:set_authors_note_field("note_depth", value) end,
+                    }
+                end
+                Modals.actions(_("Insert at depth"), choices)
+            end,
+        },
+        {
+            text = _("Interval"),
+            icon = "refresh",
+            callback = function()
+                local choices = {}
+                for value = 1, 10 do
+                    choices[#choices + 1] = {
+                        text = tostring(value),
+                        checked_func = function() return interval == value end,
+                        callback = function() app:set_authors_note_field("note_interval", value) end,
+                    }
+                end
+                Modals.actions(_("Every N user messages"), choices)
+            end,
+        },
+        {
+            text = _("Position"),
+            icon = "list",
+            callback = function()
+                local choices = {
+                    { text = _("In-chat @ depth"), value = 1 },
+                    { text = _("In prompt"), value = 0 },
+                    { text = _("Before scenario"), value = 2 },
+                }
+                for index = 1, #choices do
+                    local choice = choices[index]
+                    choice.checked_func = function() return position == choice.value end
+                    choice.callback = function()
+                        app:set_authors_note_field("note_position", choice.value)
+                    end
+                end
+                Modals.actions(_("Note position"), choices)
+            end,
+        },
+        {
+            text = _("Role"),
+            icon = "user",
+            callback = function()
+                local choices = {
+                    { text = "system", value = 0 },
+                    { text = "user", value = 1 },
+                    { text = "assistant", value = 2 },
+                }
+                for index = 1, #choices do
+                    local choice = choices[index]
+                    choice.checked_func = function() return role == choice.value end
+                    choice.callback = function()
+                        app:set_authors_note_field("note_role", choice.value)
+                    end
+                end
+                Modals.actions(_("Note role"), choices)
+            end,
+        },
+        {
+            text = _("Clear Note"),
+            icon = "trash",
+            callback = function() app:set_authors_note_field("note_prompt", nil) end,
+        },
+    }
+    Modals.actions(_("Author's Note"), rows)
+end
+
+function BookUI.rename_chat(app)
+    local path = app and app.state and app.state.current_chat_path
+    if not path then return end
+    app:rename_chat(path, function()
+        session().on_chat_changed(path, { kind = "mutation" })
+    end)
 end
 
 -- === Pickers (native; the canvas sheets cannot be used over the reader) ===
@@ -476,6 +615,11 @@ function BookUI.global_actions(app)
             callback = function() BookUI.write_next(app) end,
         },
         {
+            text = _("Quick Reply"),
+            icon = "bolt",
+            callback = function() BookUI.quick_replies(app) end,
+        },
+        {
             text = _("Continue last reply"),
             icon = "forward",
             callback = function() BookUI.continue_last(app) end,
@@ -505,6 +649,21 @@ function BookUI.global_actions(app)
         callback = function() BookUI.toggle_reasoning(app) end,
     }
     rows[#rows + 1] = {
+        text = _("Author's Note"),
+        icon = "edit",
+        callback = function() BookUI.authors_note(app) end,
+    }
+    rows[#rows + 1] = {
+        text = _("Add System Note"),
+        icon = "info-circle",
+        callback = function() app:add_system_note() end,
+    }
+    rows[#rows + 1] = {
+        text = _("Impersonate"),
+        icon = "user",
+        callback = function() app:impersonate() end,
+    }
+    rows[#rows + 1] = {
         text = _("Persona"),
         icon = "user",
         callback = function() BookUI.choose_persona(app) end,
@@ -518,6 +677,21 @@ function BookUI.global_actions(app)
         text = _("API connection"),
         icon = "plug",
         callback = function() BookUI.choose_connection(app) end,
+    }
+    rows[#rows + 1] = {
+        text = _("Rename Chat"),
+        icon = "edit",
+        callback = function() BookUI.rename_chat(app) end,
+    }
+    rows[#rows + 1] = {
+        text = _("Export Chat"),
+        icon = "upload",
+        callback = function() app:export_chat() end,
+    }
+    rows[#rows + 1] = {
+        text = _("Export TXT"),
+        icon = "file",
+        callback = function() app:export_chat_txt() end,
     }
     rows[#rows + 1] = {
         text = _("Open in list view"),
@@ -540,6 +714,11 @@ function BookUI.end_of_book(app)
             text = _("Write next message"),
             icon = "edit",
             callback = function() BookUI.write_next(app) end,
+        },
+        {
+            text = _("Quick Reply"),
+            icon = "bolt",
+            callback = function() BookUI.quick_replies(app) end,
         },
         {
             text = _("Continue last reply"),
@@ -578,6 +757,7 @@ function BookUI.add_to_main_menu(menu_items)
             local busy = app.state and app.state.is_generating
             local items = {
                 menu_item(_("Write next message"), function() BookUI.write_next(app) end),
+                menu_item(_("Quick Reply"), function() BookUI.quick_replies(app) end),
                 menu_item(_("Continue last reply"), function() BookUI.continue_last(app) end),
                 menu_item(_("Regenerate last reply"), function() BookUI.regenerate_last(app) end),
             }
@@ -599,12 +779,24 @@ function BookUI.add_to_main_menu(menu_items)
                     end)
                 end,
             }
+            items[#items + 1] = menu_item(_("Author's Note"),
+                function() BookUI.authors_note(app) end)
+            items[#items + 1] = menu_item(_("Add System Note"),
+                function() app:add_system_note() end)
+            items[#items + 1] = menu_item(_("Impersonate"),
+                function() app:impersonate() end)
             items[#items + 1] = menu_item(_("Persona"),
                 function() BookUI.choose_persona(app) end)
             items[#items + 1] = menu_item(_("Preset"),
                 function() BookUI.choose_preset(app) end)
             items[#items + 1] = menu_item(_("API connection"),
                 function() BookUI.choose_connection(app) end)
+            items[#items + 1] = menu_item(_("Rename Chat"),
+                function() BookUI.rename_chat(app) end)
+            items[#items + 1] = menu_item(_("Export Chat"),
+                function() app:export_chat() end)
+            items[#items + 1] = menu_item(_("Export TXT"),
+                function() app:export_chat_txt() end)
             items[#items + 1] = menu_item(_("Open in list view"),
                 function() BookUI.open_in_list(app) end)
             items[#items + 1] = menu_item(_("Close book"),

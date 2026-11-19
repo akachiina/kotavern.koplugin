@@ -15,15 +15,16 @@ local Storage = {}
 -- pages call these loaders per row per paint (chats list, dashboard favorites,
 -- lorebooks). Invalidation is automatic - any save bumps the mtime.
 local _read_cache = {}
-local function cached_table(path, loader)
+local function cached_table(path, loader, cache_key)
+    cache_key = cache_key or path
     local ok_mt, mtime = pcall(lfs.attributes, path, "modification")
-    local ent = _read_cache[path]
+    local ent = _read_cache[cache_key]
     if ent and ent.mtime == mtime then
         return ent.value
     end
     local value = loader()
     if ok_mt then
-        _read_cache[path] = { mtime = mtime, value = value }
+        _read_cache[cache_key] = { mtime = mtime, value = value }
     end
     return value
 end
@@ -210,6 +211,9 @@ local function write_jsonl(path, items)
     f:write(table.concat(lines, "\n"), "\n")
     f:close()
     os.rename(tmp, path)
+    -- mtime has one-second granularity on some targets: a rewrite in the same
+    -- second must still invalidate the header cache used by book rebuilds.
+    _read_cache[tostring(path) .. "#header"] = nil
     return true
 end
 
@@ -835,9 +839,9 @@ end
 
 -- Header line of a chat file (mtime-cached; cheap enough for per-paint use).
 function Storage.chat_header(path)
-    return cached_table(tostring(path) .. "#header", function()
+    return cached_table(path, function()
         return read_jsonl_header(path)
-    end)
+    end, tostring(path) .. "#header")
 end
 
 function Storage.load_chat(path)

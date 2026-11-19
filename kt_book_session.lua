@@ -95,7 +95,10 @@ local function collect()
         local header = chat and chat.header and chat.header.chat_metadata or {}
         character_name = character_name or header.character_name
     end
-    local meta = state.meta or {}
+    -- Rename Chat can change the header without reopening the session. Read it
+    -- for every build so immediate and generation-deferred reloads both see it.
+    local meta = read_meta(state.chat_path)
+    state.meta = meta
     return {
         messages = messages,
         chat_name = meta.chat_name or character_name,

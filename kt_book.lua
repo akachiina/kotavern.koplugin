@@ -476,11 +476,8 @@ function Book.build(data)
     -- Chapters
     local turns = split_turns(messages)
     for turn_number, turn in ipairs(turns) do
-        local preview = turn_preview(turn)
-        local title = _("Turn") .. " " .. turn_number
-        if preview ~= "" then
-            title = title .. " — " .. preview
-        end
+        local title = turn_preview(turn)
+        if title == "" then title = _("Chat") end
         out[#out + 1] = '<h1 class="chapter" id="turn-' .. turn_number .. '">'
             .. esc(title) .. "</h1>"
         for _, entry in ipairs(turn.messages) do

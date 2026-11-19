@@ -1965,9 +1965,35 @@ end
 
 -- === Export / Import ===
 
-function App:choose_export_dir(on_pick)
+-- PathChooser:init() ignores a ui passed in its options and resolves the
+-- current ReaderUI/FileManager singleton itself. After our book closes both
+-- can be nil, so give it a minimal real-shortcuts-backed host only while the
+-- constructor runs, then restore the singleton immediately.
+local function new_path_chooser(options)
     local PathChooser = require("ui/widget/pathchooser")
-    local dir_chooser = PathChooser:new{
+    local ReaderUI = require("apps/reader/readerui")
+    local FileManager = require("apps/filemanager/filemanager")
+    if ReaderUI.instance or FileManager.instance then
+        return PathChooser:new(options)
+    end
+
+    local FileManagerShortcuts = require("apps/filemanager/filemanagershortcuts")
+    local FileManagerBookInfo = require("apps/filemanager/filemanagerbookinfo")
+    local host = {
+        selected_files = {},
+        handleEvent = function() end,
+    }
+    host.folder_shortcuts = FileManagerShortcuts:new{ ui = host }
+    host.bookinfo = FileManagerBookInfo:new{ ui = host }
+    ReaderUI.instance = host
+    local ok, chooser = pcall(PathChooser.new, PathChooser, options)
+    ReaderUI.instance = nil
+    if not ok then error(chooser, 0) end
+    return chooser
+end
+
+function App:choose_export_dir(on_pick)
+    local dir_chooser = new_path_chooser{
         select_directory = true,
         select_file = false,
         path = "/home",
@@ -2870,7 +2896,7 @@ function App:add_system_note()
             self_ref:_book_mutated({ kind = "mutation", tail = true })
             self_ref:refresh(true)
         end
-    end, true)
+    end, nil, true)
 end
 
 -- Branch: snapshot messages [1..msg_index] into a new chat (ST checkpoint).
@@ -2950,7 +2976,7 @@ function App:show_authors_note()
                 on_tap = function()
                     Modals.input(_("Author's Note"), note or "", _("Injected into the AI context"), _("Save"), function(text)
                         self_ref:set_authors_note_field("note_prompt", (text and text ~= "") and text or nil)
-                    end, true)
+                    end, nil, true)
                 end },
             { label = _("Depth"), icon = "sliders", sublabel = tostring(depth), on_tap = function()
                 local actions = {}
@@ -3461,6 +3487,7 @@ function App:impersonate()
     self._stream_partial_count = 0
     self._last_stream_paint = nil
     self:_start_thinking_pulse()
+    self:_book_generation(true)
     self:refresh(true)
 
     local Client = require("kt_client")
@@ -3477,6 +3504,7 @@ function App:impersonate()
             if self_ref._gen_token ~= token then return end
             self_ref:_stop_thinking_pulse()
             self_ref.state.is_generating = false
+            self_ref:_book_generation(false)
             if content then
                 content = self_ref:_postprocess_ai(content)
                     Modals.input(_("Write as ") .. user_name, content,
@@ -5957,14 +5985,13 @@ end
 
 -- Generic file picker (PathChooser) for the plugin.
 function App:choose_file_path(callback, start_dir)
-    local PathChooser = require("ui/widget/pathchooser")
     local start_path = start_dir or "/home"
     if pcall(function() return os.execute("test -d /mnt/onboard") end) then
         start_path = "/mnt/onboard"
     elseif pcall(function() return os.execute("test -d /mnt/us") end) then
         start_path = "/mnt/us"
     end
-    local file_chooser = PathChooser:new{
+    local file_chooser = new_path_chooser{
         select_directory = false,
         select_file = true,
         path = start_path,
@@ -6574,8 +6601,7 @@ function App:refresh_storage()
 end
 
 function App:choose_import_file(on_pick)
-    local PathChooser = require("ui/widget/pathchooser")
-    local file_chooser = PathChooser:new{
+    local file_chooser = new_path_chooser{
         select_directory = false,
         select_file = true,
         path = "/home",

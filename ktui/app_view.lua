@@ -74,7 +74,12 @@ end
 
 -- === Gesture handlers ===
 
+local function book_owns_input(self)
+    return self.app and self.app.state and self.app.state.book_active
+end
+
 function AppView:onTapKotavern(_, ges)
+    if book_owns_input(self) then return false end
     local x, y = ges.pos.x, ges.pos.y
     -- Sheets are modal: only the sheet's own panel content is tappable while
     -- one is open. Sheet hits must be filtered BEFORE the generic hitbox loop
@@ -128,6 +133,7 @@ end
 -- everything else keeps today's fallthrough behavior (return false).
 -- While a sheet is open nothing underneath reacts (modal).
 function AppView:onHoldKotavern(_, ges)
+    if book_owns_input(self) then return false end
     if Sheets.active(self.app) then
         return true
     end
@@ -206,6 +212,7 @@ function AppView:show_koreader_menu_from_gesture(ges, kind)
 end
 
 function AppView:onSwipeKotavern(_, ges)
+    if book_owns_input(self) then return false end
     -- A fast list drag can terminate as a swipe rather than pan_release
     -- (release inside the swipe interval). Finalize it first: the drag is a
     -- flick, so its partial offset is reverted and the normal one-step
@@ -274,6 +281,7 @@ function AppView:onSwipeKotavern(_, ges)
 end
 
 function AppView:onPanKotavern(_, ges)
+    if book_owns_input(self) then return false end
     -- Mouse wheel (SDL / some e-readers): scroll by line steps. Without this
     -- the wheel events fall through to the scrollbar-zone check below and die,
     -- so wheel scrolling would do nothing on every page.
@@ -348,6 +356,7 @@ function AppView:onPanKotavern(_, ges)
 end
 
 function AppView:onPanReleaseKotavern(_, ges)
+    if book_owns_input(self) then return false end
     if self._list_dragging then
         self:_end_list_drag(ges and ges.time)
         return true
@@ -438,6 +447,7 @@ function AppView:_end_list_drag(_, was_flick)
 end
 
 function AppView:onKotavernScroll(steps)
+    if book_owns_input(self) then return false end
     self:_scroll_list(steps, true)
     return true
 end
