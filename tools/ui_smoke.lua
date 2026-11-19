@@ -3620,6 +3620,83 @@ do
     dump(bb_g, "settings_appearance")
 end
 
+-- The display mode (List | Book) is an EXPERIMENTAL feature: its picker
+-- only exists while Debug Mode is armed, and in book mode the chat theme
+-- launcher leaves (KOReader's reader paints the chat, themes have no say).
+do
+    local function appearance_fixture(settings)
+        local app = fake_app({ page = "settings_appearance", settings = settings })
+        function app:navigate(page) self._nav = page end
+        function app:prompt_base_font_size() end
+        function app:choose_setting() end
+        function app:set_chat_mode(mode) self._mode = mode end
+        local view = { app = app, hitboxes = {}, refresh = function() end }
+        local bb = new_bb()
+        local okp = pcall(function()
+            Pages.settings_appearance(view, bb, 0, 0, VW, VH, 0)
+        end)
+        return app, view, okp, bb
+    end
+
+    -- Without Debug Mode: Theme / Font size / Chat themes / Dashboard.
+    local app_nd, view_nd, okp_nd = appearance_fixture({
+        theme = "light", base_font_size = 22, debug_mode = false, chat_mode = "list" })
+    ok(okp_nd, "appearance: paints without Debug Mode")
+    ok(#view_nd.hitboxes == 4,
+        "appearance: without Debug Mode the Display mode row is gone (got "
+        .. #view_nd.hitboxes .. " rows)")
+
+    -- With Debug Mode: the Display mode row joins (5 rows) and opens the
+    -- List/Book sheet.
+    local app_d, view_d, okp_d, bb_d = appearance_fixture({
+        theme = "light", base_font_size = 22, debug_mode = true, chat_mode = "list" })
+    ok(okp_d, "appearance: paints with Debug Mode")
+    ok(#view_d.hitboxes == 5,
+        "appearance: with Debug Mode the Display mode row shows (got "
+        .. #view_d.hitboxes .. " rows)")
+    dump(bb_d, "appearance_debug_list")
+    view_d.hitboxes[3].callback(0, 0)
+    local sheet = app_d.state.sheet
+    ok(sheet ~= nil and #sheet.actions == 2,
+        "appearance: the Display mode row opens the List/Book sheet")
+    if sheet and sheet.actions[2] then
+        sheet.actions[2].on_tap()
+        ok(app_d._mode == "book",
+            "appearance: the Book action switches the display mode")
+    end
+
+    -- Book mode: the chat theme launcher leaves (4 rows, no themes).
+    local app_b, view_b, okp_b, bb_b = appearance_fixture({
+        theme = "light", base_font_size = 22, debug_mode = true, chat_mode = "book" })
+    ok(okp_b, "appearance: paints in book mode")
+    ok(#view_b.hitboxes == 4,
+        "appearance: book mode hides the chat theme launcher (got "
+        .. #view_b.hitboxes .. " rows)")
+    dump(bb_b, "appearance_debug_book")
+end
+
+-- The experimental book switch lives in the Debug category (Experimental
+-- section, first row) - the Appearance picker only shows while Debug Mode
+-- is armed.
+do
+    local app_dbg = fake_app({ page = "settings_debug",
+        settings = { debug_mode = true, chat_mode = "list" } })
+    function app_dbg:toggle_book_mode() self._toggled = true end
+    function app_dbg:toggle_setting(key) self._toggled_key = key end
+    function app_dbg:navigate(page) self._nav = page end
+    local view_dbg = { app = app_dbg, hitboxes = {}, refresh = function() end }
+    local bb_dbg = new_bb()
+    local okp_dbg = pcall(function()
+        Pages.settings_debug(view_dbg, bb_dbg, 0, 0, VW, VH, 0)
+    end)
+    ok(okp_dbg, "debug: page paints with the book mode toggle")
+    -- The book toggle is the FIRST row of the Experimental section.
+    view_dbg.hitboxes[1].callback(0, 0)
+    ok(app_dbg._toggled == true,
+        "debug: the first experimental row toggles book mode")
+    dump(bb_dbg, "settings_debug_page")
+end
+
 -- B6: the three-screen theme model. Launcher census, manager ordering +
 -- in-chat context gate, and the theme editor end to end (create -> edit
 -- a knob -> the saved theme carries it).
@@ -3637,18 +3714,18 @@ do
         Pages.settings_appearance_chat(view_b6, bb_b6, 0, 0, VW, VH, 0)
     end)
     ok(okp_b6, "b6 launcher: paints without crashing")
-    -- Launcher = 4 rows (Display mode + New theme / Themes… / Default theme),
-    -- no knobs.
+    -- Launcher = 3 rows (New theme / Themes… / Default theme), no knobs:
+    -- the Display mode picker moved up to Appearance (Debug Mode only).
     local tap_count = #view_b6.hitboxes
-    ok(tap_count == 4, "b6 launcher: exactly 4 tappable rows (got " .. tap_count .. ")")
-    -- Tap each row by position: 1=Display mode, 2=New, 3=Themes…, 4=Default.
+    ok(tap_count == 3, "b6 launcher: exactly 3 tappable rows (got " .. tap_count .. ")")
+    -- Tap each row by position: 1=New, 2=Themes…, 3=Default.
+    view_b6.hitboxes[1].callback(0, 0)
+    ok(app_b6._created == true, "b6 launcher: row 1 creates a theme")
     view_b6.hitboxes[2].callback(0, 0)
-    ok(app_b6._created == true, "b6 launcher: row 2 creates a theme")
-    view_b6.hitboxes[3].callback(0, 0)
     ok(app_b6._nav == "settings_bubble_themes",
-        "b6 launcher: row 3 routes to the Themes manager")
-    view_b6.hitboxes[4].callback(0, 0)
-    ok(app_b6._picked_default == true, "b6 launcher: row 4 opens the default picker")
+        "b6 launcher: row 2 routes to the Themes manager")
+    view_b6.hitboxes[3].callback(0, 0)
+    ok(app_b6._picked_default == true, "b6 launcher: row 3 opens the default picker")
 
     -- Manager in SETTINGS mode: user themes first, CREATE, builtins last.
     local app_mgr = fake_app({ page = "settings_bubble_themes",

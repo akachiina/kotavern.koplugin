@@ -464,36 +464,12 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             value = function() return tostring(app.state.settings.base_font_size) end,
             callback = function() app:prompt_base_font_size() end,
         },
-        {
-            text = _("Chat"),
-            callback = function() app:navigate("settings_appearance_chat") end,
-        },
-        { text = _("Dashboard"), callback = function() app:navigate("settings_dashboard") end },
     }
-    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
-end
-
--- Settings > Appearance > Chat: everything the message stream renders
--- (style, background, avatars, metadata toggles, custom chat font).
-function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
-    -- B6 LAUNCHER: the knobs moved into the per-theme editor
-    -- (Pages.theme_edit); this page only routes - create, manage, and
-    -- the global default picker.
-    local app = view.app
-
-    -- Global default (the dialog picks it): show the global name, not the
-    -- chat-resolved one (the two states reading as one value was its own
-    -- print report).
-    local global_id = app.state.settings.bubble_theme_id
-    local global_name = nil
-    if type(global_id) == "string" and global_id ~= "" then
-        local _, nm = app:find_chat_theme(global_id)
-        global_name = nm
-    end
-
-    local rows = {
-        { section = true, text = _("Chat mode") },
-        {
+    -- Display mode (List | Book). Book mode is an experimental feature, so
+    -- the picker only exists while Debug Mode is armed (the switch itself
+    -- lives in Settings > Debug > Experimental).
+    if app.state.settings.debug_mode then
+        rows[#rows + 1] = {
             text = _("Display mode"),
             icon = "comments",
             subtext = _("List (SillyTavern) or Book (experimental)"),
@@ -510,21 +486,62 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
                         { label = _("List"), icon = "list",
                           checked = (current ~= "book"),
                           on_tap = function()
-                              app.state.settings.chat_mode = "list"
-                              app:save_setting("chat_mode", "list")
-                              app:refresh(true)
+                              app:set_chat_mode("list")
                           end },
                         { label = _("Book"), icon = "book",
                           checked = (current == "book"),
                           on_tap = function()
-                              app.state.settings.chat_mode = "book"
-                              app:save_setting("chat_mode", "book")
-                              app:refresh(true)
+                              app:set_chat_mode("book")
                           end },
                     },
                 })
             end,
-        },
+        }
+    end
+    -- Chat themes paint the LIST view only. In book mode the chat is
+    -- rendered by KOReader's own reader, so there is nothing for the theme
+    -- knobs to customize: the row leaves instead of lying around greyed.
+    if app.state.settings.chat_mode ~= "book" then
+        rows[#rows + 1] = {
+            text = _("Chat themes"),
+            icon = "sliders",
+            callback = function() app:navigate("settings_appearance_chat") end,
+        }
+    end
+    rows[#rows + 1] = {
+        text = _("Dashboard"), callback = function() app:navigate("settings_dashboard") end }
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+-- Settings > Appearance > Chat themes: the theme launcher. The display
+-- mode (List | Book) moved up to Appearance (it only shows with Debug Mode
+-- armed) and the theme knobs live in the per-theme editor, so this page
+-- only routes - create, manage, and the global default picker.
+function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
+    -- B6 LAUNCHER: the knobs moved into the per-theme editor
+    -- (Pages.theme_edit); this page only routes - create, manage, and
+    -- the global default picker.
+    local app = view.app
+
+    -- Book mode renders the chat in KOReader's own reader: the theme
+    -- launcher has nothing to customize. Bounce back to Appearance instead
+    -- of showing a page whose rows do nothing.
+    if app.state.settings.chat_mode == "book" then
+        app:navigate("settings_appearance")
+        return 0
+    end
+
+    -- Global default (the dialog picks it): show the global name, not the
+    -- chat-resolved one (the two states reading as one value was its own
+    -- print report).
+    local global_id = app.state.settings.bubble_theme_id
+    local global_name = nil
+    if type(global_id) == "string" and global_id ~= "" then
+        local _, nm = app:find_chat_theme(global_id)
+        global_name = nm
+    end
+
+    local rows = {
         { section = true, text = _("Themes") },
         {
             text = _("New theme"),
@@ -1427,6 +1444,10 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
     local app = view.app
     local rows = {
         { section = true, text = _("Experimental") },
+        { text = _("Book mode"), icon = "book", toggle = true,
+          subtext = _("Open chats as a native KOReader book (experimental)"),
+          value = function() return app.state.settings.chat_mode == "book" end,
+          callback = function() app:toggle_book_mode() end },
         { text = _("Test HTML"), icon = "eye",
           subtext = _("Sandbox page painted by MuPDF from HTML"),
           callback = function() app:navigate("html_test") end },

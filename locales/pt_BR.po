@@ -205,6 +205,9 @@ msgstr "Chat sem configuração completa."
 msgid "Chat style"
 msgstr "Estilo do chat"
 
+msgid "Chat themes"
+msgstr "Temas do chat"
+
 msgid "Chat, character or message"
 msgstr "Chat, personagem ou mensagem"
 

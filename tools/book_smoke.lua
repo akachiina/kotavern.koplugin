@@ -20,6 +20,9 @@
 --   T14 close: closing the reader tears the session down
 --   T15 hud: the streaming HUD appears and disappears
 --   T16 links: the tap interception resolves the kt: link on screen
+--   T17 mode: Book -> List closes the reader and stores the mode
+--   T18 mode: List -> Book opens the book for the chat on screen
+--   T19 mode: disabling Debug Mode forces the mode back to List
 --
 -- Run with KOReader's runtime (the reader needs the real crengine):
 --   mkdir -p /tmp/kotavern_ko/settings/kotavern/{chats,characters,books}
@@ -275,14 +278,37 @@ UIManager:scheduleIn(5.2, function()
 end)
 
 UIManager:scheduleIn(6.2, function()
-    -- T14: closing the reader tears the session down.
-    app:close_book_reader()
+    -- T14 + T17: the Book -> List transition closes the reader and tears
+    -- the session down (the display mode switch does it for us).
+    app:set_chat_mode("list")
     UIManager:scheduleIn(0.4, function()
         ok(not Session.is_active() and app.state.book_active == nil,
             "T14: closing the reader tears the session down")
-        print(string.format("\n%d checks, %d failures", checks, fails))
-        UIManager:quit()
-        os.exit(fails == 0 and 0 or 1)
+        ok(app.state.settings.chat_mode == "list",
+            "T17: Book -> List closes the reader and stores the mode")
+        -- T18: List -> Book opens the book again for the chat on screen.
+        app:navigate("chat")
+        app:set_chat_mode("book")
+        UIManager:scheduleIn(1.8, function()
+            local ui2 = ReaderUI.instance
+            ok(ui2 ~= nil and ui2.document ~= nil
+                and ui2.document.file == Book.path_for(chat_path),
+                "T18: List -> Book opens the book for the chat on screen")
+            -- T19: leaving Debug Mode takes the experimental book mode with
+            -- it (otherwise the switch would be stranded without a UI).
+            app.state.settings.debug_mode = true
+            app:set_chat_mode("book")
+            app:disable_debug_mode()
+            ok(app.state.settings.chat_mode == "list"
+                and app.state.settings.debug_mode == false,
+                "T19: disabling Debug Mode forces the display mode back to List")
+            app:close_book_reader()
+            UIManager:scheduleIn(0.4, function()
+                print(string.format("\n%d checks, %d failures", checks, fails))
+                UIManager:quit()
+                os.exit(fails == 0 and 0 or 1)
+            end)
+        end)
     end)
 end)
 

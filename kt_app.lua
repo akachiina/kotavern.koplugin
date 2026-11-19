@@ -38,7 +38,7 @@ local SETTINGS_DEFAULTS = {
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
     book_show_reasoning = false, -- book mode: render the reasoning blocks
-    chat_mode = "list",        -- list | book (Appearance > Chat)
+    chat_mode = "list",        -- list | book (Debug > Experimental; Appearance > Display mode)
     debug_header_stats = false, -- Debug: plugin/device RAM+CPU beside the header dots
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
@@ -718,6 +718,11 @@ end
 
 function App:disable_debug_mode()
     self.state.settings.debug_mode = false
+    -- Book mode is an experimental feature gated by Debug Mode: leaving it
+    -- armed would strand the user in a mode whose switch just disappeared.
+    if self.state.settings.chat_mode == "book" then
+        self:set_chat_mode("list")
+    end
     Storage.save_settings(self.state.settings)
     self:apply_settings()
     -- Leaving a debug page? Back to Settings so the (now hidden) category
@@ -2420,6 +2425,43 @@ function App:open_chat_in_list(chat_path)
     if not ok then
         require("logger").warn("kotavern/book: open in list failed:", tostring(err))
     end
+end
+
+-- Switch the global display mode (list | book). Book mode is an
+-- EXPERIMENTAL feature: its switch lives in the Debug category and the
+-- Appearance picker only shows while Debug Mode is armed. Both entries
+-- land here so there is a single writer for chat_mode.
+--
+-- The switch is visible AT ONCE: Book -> List closes the reader (the
+-- canvas chat underneath comes back), List -> Book opens the book for the
+-- chat on screen. Off the chat page the mode simply applies to the next
+-- chat opened.
+function App:set_chat_mode(mode)
+    if mode ~= "list" and mode ~= "book" then
+        mode = "list"
+    end
+    if self.state.settings.chat_mode == mode then
+        self:refresh(true)
+        return
+    end
+    self.state.settings.chat_mode = mode
+    Storage.save_settings(self.state.settings)
+    self:apply_settings()
+
+    local Session = require("kt_book_session")
+    if mode == "list" then
+        if Session.is_active() then
+            Session.close()
+        end
+    elseif self.state.current_chat_path and self.state.page == "chat" then
+        self:open_book(self.state.current_chat_path)
+    end
+    self:refresh(true)
+end
+
+-- Debug Mode toggle: book mode on/off.
+function App:toggle_book_mode()
+    self:set_chat_mode(self.state.settings.chat_mode == "book" and "list" or "book")
 end
 
 -- Book mode live hooks. All of them are no-ops unless a book session is
