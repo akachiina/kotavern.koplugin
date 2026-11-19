@@ -1123,6 +1123,85 @@ do
     UIManager.setDirty = real_dirty
 end
 
+-- === 4i2. Regenerate streams via the real path (HTML renderer on) ============
+-- Drives App:regenerate_last() -> _do_generate() -> _do_stream_message()
+-- with stubbed Client + Storage and live stream_refresh="live".
+-- Asserts: (a) each chunk paints the reused message with its content;
+-- (b) every chunk fires exactly one "partial" dirty; (c) done restores an
+-- HTML entry and appends the new swipe.
+do
+    local App = require("kt_app")
+    local Store = require("kt_storage")
+    local ck_key = "kt_client"
+    local real_client = package.loaded[ck_key]
+    local captured = {}
+    package.loaded[ck_key] = {
+        new = function()
+            return {
+                set_poll_interval = function() end,
+                set_timeouts = function() end,
+                set_retries = function() end,
+                start_stream = function(self, msgs, conn, preset, on_chunk, on_done, on_error)
+                    captured = { on_chunk = on_chunk, on_done = on_done, on_error = on_error }
+                    return 4242
+                end,
+            }
+        end,
+    }
+    local real_create, real_append_fn = Store.create_chat, Store.append_message
+    local real_getap, real_getp = Store.get_active_persona, Store.get_persona
+    local real_load, real_save = Store.load_chat, Store.save_chat
+    Store.create_chat = function() return { id = "t1", path = "/tmp/smoke_t1.jsonl" } end
+    Store.append_message = function() end
+    Store.load_chat = function()
+        return { header = { chat_metadata = {} }, messages = {} }
+    end
+    Store.save_chat = function() end
+    local paints = {}
+    local real_dirty = UIManager.setDirty
+    UIManager.setDirty = function(...) paints[#paints + 1] = { ... }; return true end
+
+    local old_msg = { role = "assistant", content = "old reply",
+        swipes = { "old reply" }, swipe_id = 1 }
+    local a = setmetatable({
+        state = { settings = { stream_refresh = "live", chat_html_render = true },
+            messages = { { role = "user", content = "hi", name = "You" }, old_msg },
+            scroll = {}, page = "chat", current_chat_id = "c9",
+            current_chat_path = "/tmp/smoke_t1.jsonl",
+            current_character = "Aria",
+            current_connection = { base_url = "http://x/v1", api_key = "k" } },
+    }, { __index = App })
+    a.view = { chat_region = { x = 0, y = 0, w = VW, h = VH }, app = a, hitboxes = {} }
+
+    Store.get_active_persona = function() return nil end
+    a:regenerate_last()
+    ok(captured.on_chunk ~= nil, "regen: regenerate_last reaches _do_stream_message")
+    ok(old_msg.is_streaming == true, "regen: message marked streaming")
+    ok(old_msg.content == "", "regen: old content cleared immediately")
+
+    paints = {}
+    captured.on_chunk("wor", "wor")
+    ok(old_msg.content == "wor", "regen: chunk 1 updates content")
+    captured.on_chunk("ld", "world")
+    ok(old_msg.content == "world", "regen: chunk 2 accumulates")
+    ok(#paints == 2, "regen: live mode repaints per chunk (got " .. #paints .. ")")
+
+    local okp = pcall(function()
+        captured.on_done("world", nil, nil, nil)
+    end)
+    ok(okp, "regen: on_done completes without crashing")
+    ok(not old_msg.is_streaming and old_msg.content == "world",
+        "regen: done clears streaming, keeps final text")
+    ok(#(old_msg.swipes or {}) == 2 and old_msg.swipes[2] == "world",
+        "regen: done appends new swipe")
+
+    package.loaded[ck_key] = real_client
+    Store.create_chat, Store.append_message = real_create, real_append_fn
+    Store.get_active_persona, Store.get_persona = real_getap, real_getp
+    Store.load_chat, Store.save_chat = real_load, real_save
+    UIManager.setDirty = real_dirty
+end
+
 -- === 4j. User avatar never borrows the character card ==========================
 do
     -- Solid black card fixture: unmistakable in pixel counts.
