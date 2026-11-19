@@ -36,7 +36,6 @@ local SETTINGS_DEFAULTS = {
     chat_font_size = 0,        -- custom chat text size (0 = follow base_font_size)
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
-    chat_html_render = false,  -- experimental MuPDF HTML render (Debug toggle)
     book_show_reasoning = false, -- book mode: render the reasoning blocks
     chat_mode = "list",        -- list | book (Debug > Experimental; Appearance > Display mode)
     debug_header_stats = false, -- Debug: plugin/device RAM+CPU beside the header dots
@@ -5451,12 +5450,12 @@ function App:_refresh_streaming()
     if region then
         -- "partial", not "ui": on Kindle "ui" resolves to GC16_FAST - a
         -- heavy grayscale waveform designed for one-shot UI updates - and
-        -- with chat_html_render on it fired every stream tick over the whole
-        -- chat, where the repeated waves degraded the already-frozen bubbles'
-        -- text (the "balões apagados só no Kindle" report; the PC/SDL build
-        -- keeps identical pixels either way). The device's own partial lane
-        -- (REAGL/GL16_FAST) is what its reader pages use for fast, protected
-        -- redraws; code-identical dialog painting still rides "ui".
+        -- it fired every stream tick over the whole chat, where the repeated
+        -- waves degraded the already-frozen bubbles' text (the "balões
+        -- apagados só no Kindle" report; the PC/SDL build keeps identical
+        -- pixels either way). The device's own partial lane (REAGL/GL16_FAST)
+        -- is what its reader pages use for fast, protected redraws;
+        -- code-identical dialog painting still rides "ui".
         UIManager:setDirty(view, "partial", Geom:new(region))
     else
         self:refresh()

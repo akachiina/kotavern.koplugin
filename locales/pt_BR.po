@@ -1645,12 +1645,6 @@ msgstr "HTML recarregado"
 msgid "HTML problems:"
 msgstr "Problemas no HTML:"
 
-msgid "HTML chat renderer"
-msgstr "Renderizador HTML do chat"
-
-msgid "Render assistant bubbles with MuPDF (experimental)"
-msgstr "Renderizar bolhas do assistente com MuPDF (experimental)"
-
 msgid "Messages"
 msgstr "Mensagens"
 

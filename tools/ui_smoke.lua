@@ -398,7 +398,7 @@ do
     -- HTML-mode reasoning: expanded block renders through the same MuPDF doc
     -- path as bodies, with the muted overlay, and holds a live widget.
     local app_h = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria", send_date = os.time(),
               content = "Resposta final.",
@@ -1164,7 +1164,7 @@ do
     local old_msg = { role = "assistant", content = "old reply",
         swipes = { "old reply" }, swipe_id = 1 }
     local a = setmetatable({
-        state = { settings = { stream_refresh = "live", chat_html_render = true },
+        state = { settings = { stream_refresh = "live" },
             messages = { { role = "user", content = "hi", name = "You" }, old_msg },
             scroll = {}, page = "chat", current_chat_id = "c9",
             current_chat_path = "/tmp/smoke_t1.jsonl",
@@ -2585,13 +2585,13 @@ do
         "avatar: tap opens the photo fullscreen")
 end
 
--- Experimental HTML chat renderer (Debug toggle): the MuPDF doc must start
+-- HTML chat renderer: the MuPDF doc must start
 -- AT the bubble's content top (no @page top-margin dead space - the crooked
 -- chat report) and a multi-line message must keep its rows (no newline
 -- collapse into one paragraph).
 do
     local app = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "user", content = "ping", name = "You", send_date = os.time() },
             { role = "assistant", name = "Aria", send_date = os.time(),
@@ -2639,11 +2639,9 @@ do
             "chat html: multi-line message keeps its rows (h="
             .. tostring(doc.height) .. ")")
     end
-    dump(b, "chat_html_render")
 end
 
--- Doc sweep (the "Alto uso de memória" fix): with HTML render on, the docs
--- of OFFSCREEN messages release their widget (tall bitmap + MuPDF document
+-- Doc sweep (the "Alto uso de memória" fix): the docs of OFFSCREEN messages release their widget (tall bitmap + MuPDF document
 -- with its fz_context + font cache); visible docs keep theirs. Heights stay
 -- cached and scrolling back rebuilds in place through the same entry.
 do
@@ -2656,7 +2654,7 @@ do
             content = table.concat(lines, "\n"), send_date = 1000 + i }
     end
     local app = fake_app({ page = "chat",
-        settings = { chat_html_render = true }, scroll = {}, messages = msgs })
+        settings = {}, scroll = {}, messages = msgs })
     local view = { app = app, hitboxes = {}, refresh = function() end }
     local function count_docs()
         local with_w, without_w = 0, 0
@@ -3119,7 +3117,7 @@ do
     msgs[#msgs + 1] = { role = "assistant", name = "Aria",
         content = long_content, send_date = now }
     local app = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = msgs })
     local view = { app = app, hitboxes = {}, refresh = function() end }
 
@@ -3263,7 +3261,7 @@ do
             .. "\nTAILMARKER omega psi chi",
         send_date = now2 + 100 }
     local app2 = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = msgs2 })
     local view2 = { app = app2, hitboxes = {}, refresh = function() end }
     local function paint2(scroll)
@@ -3489,7 +3487,7 @@ end
 do
     local now3 = os.time()
     local app3 = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria",
               content = "before ||secret|| after", send_date = now3 },
@@ -3952,7 +3950,7 @@ end
 -- carry no chat hitboxes.
 do
     local app_e = fake_app({ page = "settings_appearance_chat",
-        settings = { chat_html_render = true } })
+        settings = {} })
     local view_e = { app = app_e, hitboxes = {}, refresh = function() end }
     local bb_e = new_bb()
     local okp_e = pcall(function()
@@ -4003,7 +4001,7 @@ do
 
     -- Message IDs + gen timer in the name row (bubbles mode).
     local app_ids = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria", gen_ms = 2340,
               content = "timed reply", send_date = now_b2 + 2 },
@@ -4024,7 +4022,7 @@ do
 
     -- Footer band: clock/msgs/model row above the composer.
     local app_f = fake_app({ page = "chat",
-        settings = { chat_footer = true, chat_html_render = true },
+        settings = { chat_footer = true },
         messages = {
             { role = "assistant", name = "Aria", content = "body", send_date = now_b2 + 3 },
         } })
@@ -4085,7 +4083,7 @@ do
         content = twinA, swipes = { twinA, twinB }, swipe_id = 1,
     }
     local app_sw = fake_app({ page = "chat",
-        settings = { chat_html_render = false },
+        settings = {},
         messages = { msg_sw } })
     local view_sw = { app = app_sw, hitboxes = {}, refresh = function() end }
     local bb_sw = new_bb()
@@ -4108,6 +4106,9 @@ do
     if lay2 and lay2.entries then
         for _se, e in ipairs(lay2.entries) do
             if type(e.text) == "string" then body_txt = body_txt .. e.text end
+            -- HTML entries carry the stripped text in `fallback`; the raw
+            -- markdown is the doc source (checked via the widget in other tests).
+            if type(e.fallback) == "string" then body_txt = body_txt .. e.fallback end
         end
     end
     ok(body_txt:find("BRAVO", 1, true) ~= nil,
@@ -4115,7 +4116,7 @@ do
 
     -- 2. Doc bg per style: flat paints surface behind assistant docs.
     local app_fl = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria", send_date = os.time(),
               content = "flat body text" },
@@ -4164,7 +4165,7 @@ do
     -- 3. Dark footer band: the status bar above the composer follows the
     -- theme (the nil-locals order bug painted it palette white).
     local app_ft = fake_app({ page = "chat",
-        settings = { chat_html_render = true, chat_footer = true },
+        settings = { chat_footer = true },
         messages = {
             { role = "assistant", name = "Aria", send_date = os.time(),
               content = "footer band probe" },
@@ -4215,7 +4216,7 @@ do
         if b.id == "builtin:celestial" then celestial = b.theme end
     end
     local app_r = { state = { page = "chat",
-        settings = { chat_html_render = true }, scroll = {},
+        settings = {}, scroll = {},
         messages = {
             { role = "user", name = "You", content = "hello!", send_date = os.time() - 1 },
             { role = "assistant", name = "Aria",
@@ -4305,7 +4306,7 @@ end
 do
     local ChatTheme = require("ktui/chat_theme")
     local app_d = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria", send_date = os.time(),
               content = "Dark room body text with *emphasis* in it." },
@@ -4427,7 +4428,7 @@ do
     Device.openLink = function(_s, url) opened[#opened + 1] = url end
     local now4 = os.time()
     local app4 = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria",
               content = "see [txt](https://x.com) here", send_date = now4 },
@@ -4493,7 +4494,7 @@ end
 do
     local now5 = os.time()
     local app5 = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria",
               content = "<details><summary>Thoughts</summary>hidden body</details>",
@@ -4613,7 +4614,7 @@ end
 do
     local now_u = os.time()
     local app_u = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "user", name = "You", send_date = now_u,
               content = "*it* and ||secret|| and [l](https://x.com)" },
@@ -4645,7 +4646,7 @@ do
     local now_w = os.time()
     for _cw, cw in ipairs({ "50", "100" }) do
         local app_w = fake_app({ page = "chat",
-            settings = { chat_html_render = true, chat_width = cw },
+            settings = { chat_width = cw },
             messages = {
                 { role = "user", name = "You", content = "hi", send_date = now_w },
                 { role = "assistant", name = "Aria",
@@ -4683,7 +4684,7 @@ end
 do
     local now_c = os.time()
     local app_c = fake_app({ page = "chat",
-        settings = { chat_html_render = true },
+        settings = {},
         messages = {
             { role = "assistant", name = "Aria", send_date = now_c,
               content = "r1", reasoning = "internal thought A" },
@@ -4734,7 +4735,7 @@ do
           send_date = now_v + 1 },
     }
     local app_v = fake_app({ page = "chat",
-        settings = { chat_html_render = false } })
+        settings = {} })
     app_v.state.messages = msgs_v
     local view_v = { app = app_v, hitboxes = {}, refresh = function() end }
     local band_h = 500

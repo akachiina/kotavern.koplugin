@@ -63,10 +63,12 @@ end
 
 -- === Block layout (two-pass: measure, then paint) ===
 
--- HTML mode (experimental, Debug toggle): a message renders as ONE MuPDF
--- document (HtmlBoxWidget via KtHTML, real bold/italic/lists/tables), painted
--- as a single block entry. Measured once per content+width+theme (KtHTML's
--- tall-total scan), clipped per band like every other entry.
+-- Completed message bodies render as ONE MuPDF document (HtmlBoxWidget via
+-- KtHTML, real bold/italic/lists/tables), painted as a single block entry.
+-- Measured once per content+width+theme (KtHTML's tall-total scan), clipped
+-- per band like every other entry. Streaming keeps the plain-text path (a
+-- partial HTML re-layout per chunk is jumpy and costly) and a failed render
+-- falls back to the canvas text path — never a blank message.
 
 -- Compact + re-express the message for MuPDF. Model text is NOT trusted as
 -- HTML: block structure is detected on the RAW line, then the line is
@@ -1539,8 +1541,6 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     -- never carry them, so no fallback chain needed).
     local show_msg_ids = (theme_live and theme_live.show_msg_ids == true) or false
     local show_gen_timer = (theme_live and theme_live.show_gen_timer == true) or false
-    -- Experimental: whole-message HTML render (Debug toggle, false default).
-    local html_render = settings.chat_html_render == true
     local style = effective_style(Theme.get_bubble_style())
     local boxed = (style == "st")
     local panel_mode = (style == "bubbles")
@@ -1713,7 +1713,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
         -- carries a content sample (same-length reasonings of different
         -- messages used to share a doc - the wrong one showed) plus the
         -- reveal sigs, so a spoiler/details toggle rebuilds this doc.
-        if html_render then
+        do
             local ns = reasoning_ns(msg_key)
             local rkey = "html:" .. #reasoning .. ":" .. rtw .. ":"
                 .. reasoning:sub(1, 24) .. ":" .. reasoning:sub(-16)
@@ -1782,8 +1782,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             tostring(tonumber(msg.swipe_id) or 1) .. "/" ..
             tostring(#(msg.swipes or {})) .. ":" ..
             tostring(reasoning_open[msg_key] == true) .. ":" ..
-            tostring(reasoning_full[msg_key] == true) .. ":" ..
-            tostring(settings.chat_html_render == true)
+            tostring(reasoning_full[msg_key] == true)
     end
     -- Regex scripts participate in every message's signature: an edited
     -- script changes rendered text (and often heights) without touching the
@@ -1901,29 +1900,20 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                     and msg._md_regex_sig ~= regex_sig then
                     content_text = require("kt_regex_engine").apply(content_text, scripts, "display")
                 end
-                if msg._md_sig ~= content_text or msg._md_regex_sig ~= regex_sig then
-                    msg._md_sig = content_text
-                    msg._md_blocks = Md.parse(content_text)
-                    msg._md_regex_sig = regex_sig
-                end
-                blocks = msg._md_blocks
-                -- Experimental HTML render (Debug toggle): the plain parse
-                -- stays underneath as fallback; the bubble carries the RAW
-                -- content as one html block (see block_entries' html branch).
-                -- Streaming keeps the plain path (partial HTML re-layouts per
-                -- chunk are jumpy and 10x the cost). USER messages render
-                -- through it too (their markdown/links/spoilers deserve the
-                -- same treatment); system/narrator lines keep the canvas
-                -- centered-muted style. The message identity and the
-                -- revealed-spoiler set ride along: the doc body re-renders
-                -- per reveal state, and the tap layer keys reveals by msg_key.
-                if html_render then
-                    blocks = { { kind = "html", text = content_text,
-                        role = is_user and "user" or "ai",
-                        msg_key = msg_key,
-                        revealed = ChatBubbles.spoiler_state(view.app, msg_key),
-                        det_revealed = ChatBubbles.details_state(view.app, msg_key) } }
-                end
+                -- Completed bodies render as ONE MuPDF document (no canvas
+                -- markdown path remains). The bubble carries the RAW content
+                -- as one html block (see block_entries' html branch). USER
+                -- messages render through it too (their markdown/links/
+                -- spoilers deserve the same treatment); system/narrator lines
+                -- keep the canvas centered-muted style. The message identity
+                -- and the revealed-spoiler set ride along: the doc body
+                -- re-renders per reveal state, and the tap layer keys reveals
+                -- by msg_key.
+                blocks = { { kind = "html", text = content_text,
+                    role = is_user and "user" or "ai",
+                    msg_key = msg_key,
+                    revealed = ChatBubbles.spoiler_state(view.app, msg_key),
+                    det_revealed = ChatBubbles.details_state(view.app, msg_key) } }
             end
             local entries, content_h, block_gap = block_entries(blocks, text_w, view.app, show_inline, view, body_face)
             layout.kind = boxed and "boxed" or style
