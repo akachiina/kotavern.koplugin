@@ -6,12 +6,11 @@
 --
 -- Layout:
 --   cover (title, character, persona, date)
---   <h1 class="chapter" id="turn-N">...</h1>   one chapter per turn (TOC)
---   <section class="msg" id="mN">...</section> one message, with an action link
+--   <section class="msg" id="mN">...</section> one continuous message section
 --   colophon (compose / continue / menu links)
 --
--- Only our chapter <h1>s are headings; model markdown headings are demoted to
--- styled paragraphs so they cannot pollute the native TOC.
+-- Model markdown headings are demoted to styled paragraphs so they cannot
+-- pollute the native TOC.
 --
 -- Action links use the private `kt:` scheme:
 --   kt:msg/<index>  message actions
@@ -114,49 +113,6 @@ local function esc(value)
     s = s:gsub('"', "&quot;")
     s = s:gsub("'", "&#39;")
     return s
-end
-
--- Truncate without splitting a UTF-8 sequence (byte-based :sub paints tofu).
-local function utf8_truncate(text, max_bytes)
-    text = tostring(text or "")
-    if #text <= max_bytes then return text end
-    local cut = max_bytes
-    while cut > 0 do
-        local b = text:byte(cut)
-        if not b then
-            cut = 0
-            break
-        end
-        if b < 0x80 then
-            break
-        elseif b >= 0xC0 then
-            -- Lead byte at the cut: its continuation bytes fall outside.
-            cut = cut - 1
-            break
-        end
-        cut = cut - 1
-    end
-    if cut < 1 then return "" end
-    return text:sub(1, cut) .. "…"
-end
-
--- Plain text for chapter previews: drop HTML tags and markdown punctuation.
-local function plain_text(value)
-    local s = tostring(value or "")
-    s = s:gsub("<[^>]->", " ")
-    s = s:gsub("```.-```", " ")
-    s = s:gsub("!%[([^%]]*)%]%([^%)]*%)", "%1")
-    s = s:gsub("%[([^%]]*)%]%([^%)]*%)", "%1")
-    s = s:gsub("[*_`#>~|]+", "")
-    s = s:gsub("%s+", " ")
-    s = s:gsub("^%s+", ""):gsub("%s+$", "")
-    return s
-end
-
-local function chapter_preview(value)
-    local s = plain_text(value)
-    if s == "" then return "" end
-    return utf8_truncate(s, 52)
 end
 
 -- === Inline markdown -> HTML ===
@@ -283,7 +239,7 @@ local function render_blocks(text, opts)
             end
         elseif kind == "heading" then
             local level = math.max(1, math.min(6, tonumber(block.level) or 3))
-            -- Demoted on purpose: only chapter <h1>s may reach the TOC.
+            -- Demoted on purpose: model headings must not reach the native TOC.
             out[#out + 1] = '<p class="md-h md-h' .. level .. '">'
                 .. inline_html(block.text) .. "</p>"
         elseif kind == "quote" then
@@ -321,14 +277,19 @@ local function stylesheet()
         ".book-title { font-size: 1.6em; font-weight: bold; }",
         ".book-sub { font-size: 1.1em; margin-top: .6em; }",
         ".book-meta { font-size: .9em; margin-top: .4em; }",
-        ".chapter { page-break-before: always; margin-top: 1.2em; }",
         ".md-h { font-weight: bold; margin: 1em 0 .4em; }",
         ".md-h1 { font-size: 1.25em; }",
         ".md-h2 { font-size: 1.2em; }",
         ".md-h3 { font-size: 1.15em; }",
         ".md-h4, .md-h5, .md-h6 { font-size: 1.05em; }",
-        ".speaker { font-size: .85em; font-weight: bold; letter-spacing: .03em;",
-        "  margin: 1.2em 0 .2em; }",
+        ".message-title { margin: 1.2em 0 .2em; }",
+        ".speaker { font-size: .85em; font-weight: bold; letter-spacing: .03em; }",
+        ".message-meta { font-size: .8em; opacity: .7; margin-left: .6em; }",
+        '.ktemoji { font-family: "Noto Emoji"; }',
+        ".ktdet { font-weight: bold; text-decoration: none !important; }",
+        ".ktspl { display: inline-block; background: #555; color: #555 !important;",
+        "  text-decoration: none !important; }",
+        ".ktsplopen { background: transparent; color: inherit !important; }",
         "blockquote { margin: .2em 0 .8em 0; padding-left: .8em;",
         "  border-left: 2px solid #888; }",
         ".actions { margin: .2em 0 1em; font-size: .85em; }",
@@ -352,6 +313,154 @@ local function speaker_for(msg, data)
     return msg.name or data.character_name or _("Assistant")
 end
 
+local function format_time(ts)
+    if type(ts) ~= "number" or ts <= 0 or ts ~= ts or ts == math.huge then
+        return nil
+    end
+    local ok, value = pcall(os.date, "%H:%M", ts)
+    if ok and type(value) == "string" then return value end
+    return nil
+end
+
+local function has_interactive_markup(text)
+    text = tostring(text or "")
+    return text:find("||", 1, true) ~= nil
+        or text:find("<[dD][eE][tT][aA][iI][lL][sS]%f[^%w]") ~= nil
+end
+
+-- Pure-byte UTF-8 decode (LuaJIT has no utf8 library). Invalid sequences are
+-- copied byte-for-byte by the wrapper instead of being replaced or truncated.
+local function decode_utf8(text, index)
+    local b = text:byte(index)
+    if not b then return nil, index end
+    if b < 0x80 then return b, index end
+    local length, cp
+    if b >= 0xF0 and b <= 0xF4 then
+        length, cp = 4, b % 8
+    elseif b >= 0xE0 then
+        length, cp = 3, b % 16
+    elseif b >= 0xC2 then
+        length, cp = 2, b % 32
+    else
+        return nil, index
+    end
+    for offset = 1, length - 1 do
+        local continuation = text:byte(index + offset)
+        if not continuation or continuation < 0x80 or continuation >= 0xC0 then
+            return nil, index
+        end
+        cp = cp * 64 + continuation % 64
+    end
+    if (length == 2 and cp < 0x80)
+        or (length == 3 and cp < 0x800)
+        or (length == 4 and cp < 0x10000)
+        or (cp >= 0xD800 and cp <= 0xDFFF) or cp > 0x10FFFF then
+        return nil, index
+    end
+    return cp, index + length - 1
+end
+
+local function is_emoji(cp)
+    return (cp >= 0x1F000 and cp <= 0x1FAFF)
+        or (cp >= 0x2600 and cp <= 0x27BF)
+        or (cp >= 0x2B00 and cp <= 0x2BFF)
+        or (cp >= 0x2194 and cp <= 0x2199)
+        or (cp >= 0x21A9 and cp <= 0x21AA)
+        or (cp >= 0x231A and cp <= 0x231B)
+        or (cp >= 0x23E9 and cp <= 0x23F3)
+        or (cp >= 0x23F8 and cp <= 0x23FA)
+        or (cp >= 0x25AA and cp <= 0x25AB)
+        or (cp >= 0x25FB and cp <= 0x25FE)
+        or (cp >= 0x2934 and cp <= 0x2935)
+        or cp == 0x00A9 or cp == 0x00AE or cp == 0x203C or cp == 0x2049
+        or cp == 0x2122 or cp == 0x2139 or cp == 0x25B6 or cp == 0x25C0
+        or cp == 0x3030 or cp == 0x303D or cp == 0x3297 or cp == 0x3299
+end
+
+local function is_emoji_suffix(cp)
+    return (cp >= 0xFE00 and cp <= 0xFE0F)
+        or (cp >= 0x1F3FB and cp <= 0x1F3FF) or cp == 0x20E3
+end
+
+-- Wrap one text node. Joined emoji must share a span: splitting at ZWJ or a
+-- variation selector would break the sequence before crengine shapes it.
+local function emoji_text(text)
+    local out = {}
+    local index = 1
+    while index <= #text do
+        local cp, last = decode_utf8(text, index)
+        local keycap_last = nil
+        if cp and ((cp >= 0x30 and cp <= 0x39) or cp == 0x23 or cp == 0x2A) then
+            local next_cp, next_last = decode_utf8(text, last + 1)
+            if next_cp == 0xFE0F then
+                next_cp, next_last = decode_utf8(text, next_last + 1)
+            end
+            if next_cp == 0x20E3 then keycap_last = next_last end
+        end
+        if cp and (is_emoji(cp) or keycap_last) then
+            local run_end = keycap_last or last
+            -- A regional-indicator flag is one emoji, not two independent runs.
+            if not keycap_last and cp >= 0x1F1E6 and cp <= 0x1F1FF then
+                local next_cp, next_last = decode_utf8(text, last + 1)
+                if next_cp and next_cp >= 0x1F1E6 and next_cp <= 0x1F1FF then
+                    run_end = next_last
+                end
+            end
+            while run_end < #text do
+                local next_cp, next_last = decode_utf8(text, run_end + 1)
+                if next_cp and is_emoji_suffix(next_cp) then
+                    run_end = next_last
+                elseif next_cp == 0x200D then
+                    local joined_cp, joined_last = decode_utf8(text, next_last + 1)
+                    if not joined_cp or not is_emoji(joined_cp) then break end
+                    run_end = joined_last
+                else
+                    break
+                end
+            end
+            out[#out + 1] = '<span class="ktemoji">'
+                .. text:sub(index, run_end) .. "</span>"
+            index = run_end + 1
+        else
+            out[#out + 1] = text:sub(index, cp and last or index)
+            index = cp and (last + 1) or (index + 1)
+        end
+    end
+    return table.concat(out)
+end
+
+-- The encoders have already sanitized/escaped their input. Wrapping only text
+-- outside tags covers normal Book blocks and the shared interactive encoder
+-- without touching URLs, attributes, or element names.
+local function emoji_html(html)
+    local out = {}
+    local position = 1
+    html = tostring(html or "")
+    while position <= #html do
+        local first, last = html:find("<[^>]->", position)
+        if not first then
+            out[#out + 1] = emoji_text(html:sub(position))
+            break
+        end
+        out[#out + 1] = emoji_text(html:sub(position, first - 1))
+        out[#out + 1] = html:sub(first, last)
+        position = last + 1
+    end
+    return table.concat(out)
+end
+
+local function render_body(text, data, link_prefix)
+    local html
+    if has_interactive_markup(text) then
+        html = require("ktui/chat_bubbles").encode_html(
+            text, data.revealed_spoilers, data.revealed_details,
+            { link_prefix = link_prefix })
+    else
+        html = render_blocks(text, data)
+    end
+    return emoji_html(html)
+end
+
 local function message_html(msg, index, data)
     local role = msg.role or "assistant"
     local classes = { "msg", "msg-" .. tostring(role) }
@@ -362,9 +471,15 @@ local function message_html(msg, index, data)
     local out = {}
     out[#out + 1] = '<section class="' .. table.concat(classes, " ")
         .. '" id="m' .. index .. '">'
-    out[#out + 1] = '<div class="speaker">' .. esc(speaker_for(msg, data)) .. "</div>"
+    local meta = "#" .. index
+    local timestamp = format_time(msg.send_date)
+    if timestamp then meta = timestamp .. " · " .. meta end
+    out[#out + 1] = '<div class="message-title">'
+    out[#out + 1] = '<span class="speaker">' .. esc(speaker_for(msg, data)) .. "</span>"
+    out[#out + 1] = '<span class="message-meta">' .. meta .. "</span>"
+    out[#out + 1] = "</div>"
 
-    local body = render_blocks(msg.content, data)
+    local body = render_body(msg.content, data, tostring(index) .. ":")
     if role == "user" then
         out[#out + 1] = "<blockquote>" .. body .. "</blockquote>"
     else
@@ -374,7 +489,7 @@ local function message_html(msg, index, data)
     if data.show_reasoning and type(msg.reasoning) == "string"
         and msg.reasoning ~= "" then
         out[#out + 1] = '<blockquote class="reasoning">'
-            .. render_blocks(msg.reasoning, data) .. "</blockquote>"
+            .. render_body(msg.reasoning, data, tostring(index) .. "r:") .. "</blockquote>"
     end
 
     out[#out + 1] = '<p class="actions"><a href="kt:msg/' .. index .. '">... '
@@ -383,54 +498,11 @@ local function message_html(msg, index, data)
     return table.concat(out, "\n")
 end
 
--- Group messages into turns: a new chapter starts at every user message,
--- except when it is the first message (the greeting and the first user turn
--- belong to the opening chapter).
-local function split_turns(messages)
-    local turns = {}
-    local current = nil
-    for index, msg in ipairs(messages) do
-        local starts = false
-        if current == nil then
-            starts = true
-        elseif msg.role == "user" then
-            -- The first user message joins an opening greeting chapter;
-            -- every later user message opens a new turn.
-            local has_user = false
-            for _, entry in ipairs(current.messages) do
-                if entry.msg.role == "user" then
-                    has_user = true
-                    break
-                end
-            end
-            starts = has_user
-        end
-        if starts then
-            current = { first_index = index, messages = {} }
-            turns[#turns + 1] = current
-        end
-        table.insert(current.messages, { index = index, msg = msg })
-    end
-    return turns
-end
-
-local function turn_preview(turn)
-    for _, entry in ipairs(turn.messages) do
-        if entry.msg.role == "user" then
-            local preview = chapter_preview(entry.msg.content)
-            if preview ~= "" then return preview end
-        end
-    end
-    local first = turn.messages[1] and turn.messages[1].msg
-    local preview = first and chapter_preview(first.content) or ""
-    return preview
-end
-
 -- === Public API ===
 
 -- data = {
 --   messages, chat_name, character_name, persona_name, created_at,
---   show_reasoning
+--   show_reasoning, revealed_spoilers, revealed_details
 -- }
 function Book.build(data)
     data = data or {}
@@ -473,16 +545,9 @@ function Book.build(data)
         .. _("Go to the end") .. "</a></p>"
     out[#out + 1] = "</div>"
 
-    -- Chapters
-    local turns = split_turns(messages)
-    for turn_number, turn in ipairs(turns) do
-        local title = turn_preview(turn)
-        if title == "" then title = _("Chat") end
-        out[#out + 1] = '<h1 class="chapter" id="turn-' .. turn_number .. '">'
-            .. esc(title) .. "</h1>"
-        for _, entry in ipairs(turn.messages) do
-            out[#out + 1] = message_html(entry.msg, entry.index, data)
-        end
+    -- Messages stay in chat order, without generated turn/chapter boundaries.
+    for index, msg in ipairs(messages) do
+        out[#out + 1] = message_html(msg, index, data)
     end
 
     if #messages == 0 then

@@ -234,7 +234,7 @@ s { text-decoration: line-through; }
 i { font-style: italic; color: %s; }
 q { color: %s; }
 .ktcode { font-family: monospace; }
-p.ktfence { background: %s; color: %s; font-family: monospace; }
+p.ktfence { background: %s; color: %s; font-family: monospace; white-space: pre-wrap; }
 .ktspl { display: inline-block; background: %s; color: %s !important; text-decoration: none !important; }
 .ktsplopen { background: %s; color: %s !important; }
 .ktq { color: %s; }

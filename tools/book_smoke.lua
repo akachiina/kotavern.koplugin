@@ -4,7 +4,7 @@
 -- a synthetic chat, opens it through the real App:open_book path (ReaderUI +
 -- crengine), and asserts the integration contract:
 --
---   T1  content: one chapter <h1> per turn
+--   T1  content: continuous message sections, no generated chapters
 --   T2  content: no <script> / no raw markdown leakage
 --   T3  files: the book lives in <data>/books and is recognized as ours
 --   T4  content: the kt: action links are present
@@ -23,11 +23,13 @@
 --   T17 mode: Book -> List closes the reader and stores the mode
 --   T18 mode: List -> Book opens the book for the chat on screen
 --   T19 mode: disabling Debug Mode forces the mode back to List
---   T20 content: chapter titles have no Turn N prefix
+--   T20 content: titles carry speaker, valid local time and message number
 --   T21 actions: native chat actions and quick replies work over the reader
 --   T22 input: the hidden canvas ignores taps, holds, swipes, pans and keys
 --   T23 files: all PathChooser callers work without a host UI instance
 --   T24 review: multiline editors, metadata sorting, rename and busy HUD
+--   T25 disclosures: qualified markup, isolated state and real native taps
+--   T26 emoji: scoped Noto Emoji spans and one-time crengine registration
 --
 -- Run with KOReader's runtime (the reader needs the real crengine):
 --   mkdir -p /tmp/kotavern_ko/settings/kotavern/{chats,characters,books}
@@ -91,18 +93,27 @@ local chat_path = Storage.chat_path(CHAR, "book_smoke_chat")
 local fixture_messages = {
     {
         role = "user",
-        content = "Hello there, this is the **first** user message.",
+        content = "Hello there, this is the **first** user message. "
+            .. "<details><summary>Native more</summary>native hidden body "
+            .. "<a href='https://example.org/\" href=\"kt:continue'>injected action</a>"
+            .. "</details> ||native secret||",
         name = "User",
+        send_date = 1700000000,
     },
     {
         role = "assistant",
-        content = "Hi! I am the assistant.\n\n## A markdown heading\n\n- one\n- two",
+        content = "Hi! I am the assistant.\n\n- one\n- two\n\n"
+            .. "<details><summary>Second native</summary>second hidden body</details> "
+            .. "||second secret||",
         name = CHAR,
     },
     {
         role = "user",
-        content = "Second turn, with a [link](https://example.org) inside.",
+        content = "Second turn, with a [link](https://example.org) inside.\n\n## A markdown heading"
+            .. "\n\n<code>href=\"kt:det:3:999\"</code>",
+        reasoning = "<pre>href=\"kt:spl:3r:999\"</pre>",
         name = "User",
+        send_date = -7,
     },
     {
         role = "assistant",
@@ -118,6 +129,9 @@ Storage.save_chat(chat_path, {
         created_at = os.time(),
     },
 }, fixture_messages)
+-- Infinity cannot be represented in the persisted JSON fixture; exercise it
+-- only in the in-memory build, where an invalid timestamp must stay harmless.
+fixture_messages[4].send_date = math.huge
 
 local function count(html, pattern)
     local n = 0
@@ -133,6 +147,47 @@ local function find_row(rows, text)
     return nil
 end
 
+local function read_generated_book()
+    local f = io.open(Book.path_for(chat_path), "r")
+    if not f then return "" end
+    local body = f:read("*a") or ""
+    f:close()
+    return body
+end
+
+local function current_page(ui)
+    if not ui then return nil end
+    if ui.rolling and ui.rolling.current_page then
+        return tonumber(ui.rolling.current_page)
+    end
+    if ui.document and ui.document.getCurrentPage then
+        return tonumber(ui.document:getCurrentPage())
+    end
+    return nil
+end
+
+-- Exercise the actual crengine link and registered touch-zone handler. The
+-- boolean only proves dispatch; generated-content assertions prove the action.
+local function tap_native_link(ui, uri)
+    if not ui or not ui.document then return false, nil end
+    local links = ui.document:getPageLinks() or {}
+    for index = 1, #links do
+        local link = links[index]
+        if link.uri == uri and link.a_xpointer then
+            local ok_pos, sy, sx = pcall(function()
+                return ui.document:getScreenPositionFromXPointer(link.a_xpointer)
+            end)
+            local zone = ui._zones and ui._zones.kotavern_book_tap
+            if ok_pos and sx and zone and zone.def and zone.def.handler then
+                local before = current_page(ui)
+                local handled = zone.def.handler({ pos = { x = sx, y = sy } })
+                return handled == true, before
+            end
+        end
+    end
+    return false, nil
+end
+
 -- === T1..T7: content + files (no reader needed) ==============================
 
 local html = Book.build({
@@ -142,8 +197,10 @@ local html = Book.build({
     persona_name = "Tester",
 })
 
-ok(count(html, '<h1 class="chapter"') == 2,
-    "T1: one chapter heading per turn (2 turns)")
+ok(count(html, '<section class="msg ') == #fixture_messages
+    and html:find('<h1 class="chapter"', 1, true) == nil
+    and html:find('id="turn-', 1, true) == nil,
+    "T1: messages are continuous sections without generated chapters")
 ok(html:lower():find("<script", 1, true) == nil
     and not html:find("**first**", 1, true)
     and not html:find("## A markdown", 1, true),
@@ -174,13 +231,120 @@ end
 ok(anchors == #fixture_messages,
     "T5: every message has an id=\"mN\" anchor")
 
-ok(count(html, "<h1") == 2 and count(html, "<h2") == 0
+ok(count(html, "<h1") == 0 and count(html, "<h2") == 0
     and html:find('class="md-h', 1, true) ~= nil,
     "T6: model headings are demoted (the native TOC stays clean)")
 
-ok(html:find('<h1 class="chapter" id="turn-1">Hello there, this is the first user message.</h1>', 1, true) ~= nil
-    and html:find('<h1 class="chapter" id="turn-2">Second turn, with a link inside.</h1>', 1, true) ~= nil,
-    "T20: chapter titles use the preview without a Turn N prefix")
+local titles_ok = html:find('<span class="speaker">Tester</span>', 1, true) ~= nil
+    and html:find('<span class="message-meta">'
+        .. os.date("%H:%M", 1700000000) .. ' · #1</span>', 1, true) ~= nil
+for index = 2, #fixture_messages do
+    titles_ok = titles_ok and html:find(
+        '<span class="message-meta">#' .. index .. '</span>', 1, true) ~= nil
+end
+ok(titles_ok,
+    "T20: titles carry speaker, valid local time and one-based message numbers")
+
+local invalid_ok, invalid_html = pcall(Book.build, {
+    messages = {
+        { role = "assistant", content = "string time", send_date = "not-a-time" },
+        { role = "assistant", content = "nan time", send_date = 0 / 0 },
+    },
+})
+ok(invalid_ok
+    and invalid_html:find('<span class="message-meta">#1</span>', 1, true) ~= nil
+    and invalid_html:find('<span class="message-meta">#2</span>', 1, true) ~= nil
+    and invalid_html:find('<span class="message-meta">%d%d:%d%d') == nil,
+    "T20b: string and NaN timestamps omit time without aborting the build")
+
+local interactive_data = {
+    character_name = CHAR,
+    persona_name = "Tester",
+    show_reasoning = true,
+    messages = {
+        {
+            role = "assistant",
+            content = "<details><summary>Body one</summary>body one hidden</details> ||body secret||",
+            reasoning = "<details><summary>Reason one</summary>reason one hidden</details> ||reason secret||",
+        },
+        {
+            role = "user",
+            content = "<details><summary>Body two</summary>body two hidden</details> ||two secret||",
+        },
+    },
+}
+local interactive = Book.build(interactive_data)
+local qualified_links = {
+    "kt:det:1:1", "kt:spl:1:1", "kt:det:1r:1", "kt:spl:1r:1",
+    "kt:det:2:1", "kt:spl:2:1",
+}
+local all_qualified = true
+for index = 1, #qualified_links do
+    all_qualified = all_qualified and interactive:find(
+        'href="' .. qualified_links[index] .. '"', 1, true) ~= nil
+end
+ok(all_qualified
+    and interactive:find("body one hidden", 1, true) == nil
+    and interactive:find("reason one hidden", 1, true) == nil
+    and interactive:find("body two hidden", 1, true) == nil
+    and interactive:find('href="kt:det:1"', 1, true) == nil,
+    "T25a: Book details and spoilers are qualified and start collapsed")
+
+interactive_data.revealed_details = { ["1:1"] = true }
+interactive_data.revealed_spoilers = { ["1r:1"] = true }
+local selectively_open = Book.build(interactive_data)
+ok(selectively_open:find("body one hidden", 1, true) ~= nil
+    and selectively_open:find("reason one hidden", 1, true) == nil
+    and selectively_open:find("body two hidden", 1, true) == nil
+    and selectively_open:find('<span class="ktspl ktsplopen">reason secret</span>', 1, true) ~= nil
+    and selectively_open:find('href="kt:spl:1:1" class="ktspl">body secret</a>', 1, true) ~= nil
+    and selectively_open:find('href="kt:spl:2:1" class="ktspl">two secret</a>', 1, true) ~= nil,
+    "T25b: disclosure state is isolated by message and reasoning channel")
+
+local family_emoji = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}"
+local emoji_html = Book.build({
+    show_reasoning = true,
+    revealed_details = { ["2:1"] = true },
+    revealed_spoilers = { ["2:1"] = true, ["2r:1"] = true },
+    messages = {
+        {
+            role = "assistant",
+            content = "Ordinary **bold** Café 漢字 ✅ 😀 " .. family_emoji,
+        },
+        {
+            role = "assistant",
+            content = "<details><summary>Emoji ✅</summary>hidden 😀</details> "
+                .. "||secret " .. family_emoji .. "||",
+            reasoning = "Reason ✅ ||reason 😀||",
+        },
+    },
+})
+ok(emoji_html:find('.ktemoji { font-family: "Noto Emoji"; }', 1, true) ~= nil
+    and emoji_html:find('Café 漢字 <span class="ktemoji">✅</span> '
+        .. '<span class="ktemoji">😀</span> <span class="ktemoji">'
+        .. family_emoji .. '</span>', 1, true) ~= nil
+    and emoji_html:find('class="ktdet">▾ Emoji <span class="ktemoji">✅</span></a>', 1, true) ~= nil
+    and emoji_html:find('hidden <span class="ktemoji">😀</span>', 1, true) ~= nil
+    and emoji_html:find('<span class="ktspl ktsplopen">secret <span class="ktemoji">'
+        .. family_emoji .. '</span></span>', 1, true) ~= nil
+    and emoji_html:find('Reason <span class="ktemoji">✅</span>', 1, true) ~= nil
+    and emoji_html:find('<span class="ktspl ktsplopen">reason <span class="ktemoji">😀</span></span>', 1, true) ~= nil,
+    "T26a: scoped emoji spans cover both Book renderers and preserve UTF-8/ZWJ text")
+
+local keycaps = "1\u{FE0F}\u{20E3} #\u{FE0F}\u{20E3} *\u{FE0F}\u{20E3}"
+local keycap_html = Book.build({ messages = {{ role = "assistant", content = keycaps }} })
+ok(keycap_html:find('<span class="ktemoji">1\u{FE0F}\u{20E3}</span> '
+        .. '<span class="ktemoji">#\u{FE0F}\u{20E3}</span> '
+        .. '<span class="ktemoji">*\u{FE0F}\u{20E3}</span>', 1, true) ~= nil,
+    "T26e: digit, hash and asterisk keycaps stay in one Noto Emoji span")
+
+local overlong_emoji = "\240\130\156\133" -- overlong U+2705, invalid UTF-8
+local invalid_html = Book.build({ messages = {{
+    role = "assistant", content = "invalid " .. overlong_emoji,
+}} })
+ok(invalid_html:find(overlong_emoji, 1, true) ~= nil
+    and invalid_html:find('<span class="ktemoji">' .. overlong_emoji .. '</span>', 1, true) == nil,
+    "T26f: invalid overlong UTF-8 is preserved without emoji classification")
 
 Book.remove(chat_path)
 ok(not Book.exists(chat_path), "T7: Book.remove drops the generated file")
@@ -198,9 +362,26 @@ app:show()
 -- The chat fixture must be the app's live chat (the book reads the live
 -- message list first).
 app:_load_chat_state(CHAR, chat_path, nil)
+app.state.settings.book_show_reasoning = true
 
 local reader_before = nil
 local reload_seen = false
+
+-- Count successful registrations of only the bundled emoji face. All other
+-- crengine fonts continue through the real function unchanged.
+local cre = require("libs/libkoreader-cre")
+local Constants = require("kt_constants")
+local Font = require("ui/font")
+local emoji_font_path = Constants.ASSET_DIR .. "/emoji-noto.ttf"
+local original_register_font = cre.registerFont
+local emoji_registrations = 0
+cre.registerFont = function(path, ...)
+    local result = original_register_font(path, ...)
+    if path == emoji_font_path then
+        emoji_registrations = emoji_registrations + 1
+    end
+    return result
+end
 
 app:open_book(chat_path)
 
@@ -209,6 +390,9 @@ UIManager:scheduleIn(1.8, function()
     ok(reader_before ~= nil and reader_before.document ~= nil
         and reader_before.document.file == Book.path_for(chat_path),
         "T8: the native reader opened OUR document")
+    ok(emoji_registrations == 1
+        and not table.concat(Font.fallbacks, "|"):find("emoji-noto.ttf", 1, true),
+        "T26b: initial Book open registers Noto Emoji once without global fallback mutation")
 
     local view_is_first = reader_before[1] ~= nil
         and reader_before[1].name == "readerview"
@@ -455,6 +639,12 @@ UIManager:scheduleIn(2.6, function()
     app:_book_mutated({ kind = "mutation", tail = true })
 end)
 
+local router_ui, router_body
+local details_tapped, details_page_before = false, nil
+local details_ui = nil
+local spoiler_tapped = false
+local swipe_message_index = nil
+
 UIManager:scheduleIn(5.2, function()
     local ui = ReaderUI.instance
     local fresh = ui ~= reader_before
@@ -472,9 +662,222 @@ UIManager:scheduleIn(5.2, function()
     ok(body:find("<title>Book smoke renamed</title>", 1, true) ~= nil
         and body:find('<div class="book-title">Book smoke renamed</div>', 1, true) ~= nil,
         "T24c: Rename Chat refreshes the generated book title and cover")
+
+    -- Malformed/stale disclosure URIs are consumed without changing state or
+    -- scheduling a rebuild. The next block compares observable reader/file state.
+    router_ui = ui
+    router_body = body
+    Session.handle_uri("kt:det:1")
+    Session.handle_uri("kt:det:x:1")
+    Session.handle_uri("kt:det:999:1")
+    Session.handle_uri("kt:det:1:999")
+    Session.handle_uri("kt:spl:1r:999")
+    Session.handle_uri("kt:det:3:999") -- literal inside <code>, not a link
+    Session.handle_uri("kt:spl:3r:999") -- literal inside <pre>, not a link
 end)
 
 UIManager:scheduleIn(6.2, function()
+    ok(ReaderUI.instance == router_ui and read_generated_book() == router_body
+        and router_body:find("native hidden body", 1, true) == nil,
+        "T25c: malformed and stale disclosure URIs leave the Book untouched")
+
+    local ui = router_ui
+    if ui then
+        pcall(function()
+            ui:handleEvent(Event:new("GotoXPointer", "#m1"))
+        end)
+    end
+    UIManager:scheduleIn(0.3, function()
+        details_tapped, details_page_before = tap_native_link(ui, "kt:det:1:1")
+        ok(details_tapped, "T25d: a real native details link reaches the Book tap zone")
+    end)
+end)
+
+UIManager:scheduleIn(7.4, function()
+    details_ui = ReaderUI.instance
+    local body = read_generated_book()
+    ok(details_ui ~= nil and details_ui ~= router_ui
+        and body:find("native hidden body", 1, true) ~= nil
+        and body:find('href="kt:spl:1:1" class="ktspl">native secret</a>', 1, true) ~= nil
+        and current_page(details_ui) == details_page_before,
+        "T25e: details tap reloads revealed content at the same reading position")
+    local injected_private_link = false
+    for index, link in ipairs(details_ui and details_ui.document
+        and details_ui.document:getPageLinks() or {}) do
+        if link.uri == "kt:continue" then injected_private_link = true end
+    end
+    ok(not injected_private_link,
+        "T25i: model HTML cannot inject a private action through a duplicate href")
+
+    spoiler_tapped = tap_native_link(details_ui, "kt:spl:1:1")
+    ok(spoiler_tapped, "T25f: a real native spoiler link reaches the Book tap zone")
+end)
+
+UIManager:scheduleIn(8.6, function()
+    local body = read_generated_book()
+    ok(ReaderUI.instance ~= nil and ReaderUI.instance ~= details_ui
+        and body:find("native hidden body", 1, true) ~= nil
+        and body:find('<span class="ktspl ktsplopen">native secret</span>', 1, true) ~= nil,
+        "T25g: spoiler tap preserves the independently revealed details body")
+    ok(emoji_registrations == 1,
+        "T26c: disclosure reloads do not register the emoji font again")
+    -- Positional URIs must not transfer this open state to the next message.
+    app:move_message(1, 1)
+end)
+
+UIManager:scheduleIn(9.6, function()
+    local body = read_generated_book()
+    ok(body:find("native hidden body", 1, true) == nil
+        and body:find("second hidden body", 1, true) == nil
+        and body:find('<span class="ktspl ktsplopen">', 1, true) == nil,
+        "T25j: moving messages invalidates reveals instead of transferring them")
+    -- Reveal the new first message, then remove it through the same persisted
+    -- mutation used by App:delete_message's confirmation callback.
+    Session.handle_uri("kt:det:1:1")
+end)
+
+UIManager:scheduleIn(10.4, function()
+    ok(read_generated_book():find("second hidden body", 1, true) ~= nil,
+        "T25k-pre: the details target is revealed before deletion")
+    table.remove(app.state.messages, 1)
+    local chat_data = Storage.load_chat(chat_path)
+    if chat_data then
+        Storage.save_chat(chat_path, chat_data.header, app.state.messages)
+    end
+    app:_book_mutated({ kind = "mutation", anchor = "#m1" })
+end)
+
+UIManager:scheduleIn(11.2, function()
+    local body = read_generated_book()
+    ok(body:find("native hidden body", 1, true) == nil
+        and body:find("second hidden body", 1, true) == nil
+        and body:find('<span class="ktspl ktsplopen">', 1, true) == nil,
+        "T25k: deleting a message cannot reveal the message shifted into its place")
+    for index, msg in ipairs(app.state.messages) do
+        if msg.role == "assistant" and not swipe_message_index then
+            swipe_message_index = index
+            msg.swipes = {
+                "<details><summary>Swipe old</summary>old swipe hidden</details> ||old secret||",
+                "<details><summary>Swipe native</summary>swipe hidden body</details> ||swipe secret||",
+            }
+            msg.swipe_id = 1
+            msg.content = msg.swipes[1]
+            Storage.update_message(chat_path, index, msg)
+            Session.handle_uri("kt:det:" .. index .. ":1")
+        end
+    end
+end)
+
+UIManager:scheduleIn(12.0, function()
+    ok(read_generated_book():find("old swipe hidden", 1, true) ~= nil,
+        "T25l-pre: the old swipe details target is revealed before cycling")
+    if swipe_message_index then app:cycle_swipe(swipe_message_index, 1) end
+end)
+
+UIManager:scheduleIn(12.8, function()
+    local body = read_generated_book()
+    ok(swipe_message_index ~= nil
+        and body:find("Swipe native", 1, true) ~= nil
+        and body:find("swipe hidden body", 1, true) == nil
+        and body:find('href="kt:spl:' .. tostring(swipe_message_index)
+            .. ':1" class="ktspl">swipe secret</a>', 1, true) ~= nil,
+        "T25l: changing swipes does not carry reveals into different content")
+
+    -- Control the scheduler: an old-document tap arrives after new content was
+    -- queued but before its mutation reload can run. It must not replace the
+    -- mutation with a disclosure or reveal the new item at the same position.
+    local msg = swipe_message_index and app.state.messages[swipe_message_index]
+    if msg then
+        msg.content = "<details><summary>Race new</summary>race new hidden</details> ||race new secret||"
+        msg.swipes[msg.swipe_id] = msg.content
+        Storage.update_message(chat_path, swipe_message_index, msg)
+        local pending = {}
+        local real_schedule = UIManager.scheduleIn
+        UIManager.scheduleIn = function(_, _, callback)
+            pending[#pending + 1] = callback
+        end
+        Session.on_chat_changed(chat_path, { kind = "mutation", anchor = "#m" .. swipe_message_index })
+        Session.handle_uri("kt:det:" .. swipe_message_index .. ":1")
+        UIManager.scheduleIn = real_schedule
+        ok(#pending == 1,
+            "T25m: a stale tap during mutation debounce cannot replace the queued refresh")
+        for index = 1, #pending do pending[index]() end
+    else
+        ok(false, "T25m: a stale tap during mutation debounce cannot replace the queued refresh")
+    end
+end)
+
+UIManager:scheduleIn(13.6, function()
+    local body = read_generated_book()
+    ok(body:find("Race new", 1, true) ~= nil
+        and body:find("race new hidden", 1, true) == nil
+        and body:find('<span class="ktspl ktsplopen">race new secret</span>', 1, true) == nil,
+        "T25n: a stale tap cannot reveal replacement content before the mutation reload")
+end)
+
+UIManager:scheduleIn(14.4, function()
+    local ui = ReaderUI.instance
+    local function check_watchdog_recovery(opts, uri, revealed_text, label)
+        local pending = {}
+        local real_schedule = UIManager.scheduleIn
+        local real_reload = ui.reloadDocument
+        local function take(delay)
+            for index = #pending, 1, -1 do
+                if pending[index].delay == delay then
+                    local callback = pending[index].callback
+                    table.remove(pending, index)
+                    return callback
+                end
+            end
+            return nil
+        end
+
+        UIManager.scheduleIn = function(_, delay, callback)
+            pending[#pending + 1] = { delay = delay, callback = callback }
+        end
+        -- Simulate a reader reopen that never calls back. The reader remains
+        -- usable, so the watchdog must recover the queued refresh itself.
+        ui.reloadDocument = function() end
+        Session.on_chat_changed(chat_path, opts)
+        local initial = take(0.30)
+        if initial then initial() end
+        Session.on_chat_changed(chat_path, opts) -- queued behind the hung reload
+        local watchdog = take(15)
+        if watchdog then watchdog() end
+
+        -- A later reopen succeeds at the real ReaderUI callback boundary.
+        ui.reloadDocument = function(_, after_close, _, after_open)
+            if after_close then after_close(ui.document.file) end
+            if after_open then after_open() end
+        end
+        local recovery = take(0.25)
+        ok(recovery ~= nil, label .. ": watchdog reschedules the queued refresh")
+        if recovery then recovery() end
+
+        Session.handle_uri(uri)
+        local disclosure_refresh = take(0.30)
+        if disclosure_refresh then disclosure_refresh() end
+        UIManager.scheduleIn = real_schedule
+        ui.reloadDocument = real_reload
+        ok(read_generated_book():find(revealed_text, 1, true) ~= nil,
+            label .. ": disclosures still work after watchdog recovery")
+    end
+
+    if ui and swipe_message_index then
+        check_watchdog_recovery({ kind = "user" },
+            "kt:det:" .. swipe_message_index .. ":1", "race new hidden", "T25o")
+        check_watchdog_recovery({},
+            "kt:spl:" .. swipe_message_index .. ":1",
+            '<span class="ktspl ktsplopen">race new secret</span>', "T25p")
+    else
+        ok(false, "T25o: watchdog reschedules the queued refresh")
+        ok(false, "T25o: disclosures still work after watchdog recovery")
+        ok(false, "T25p: watchdog reschedules the queued refresh")
+        ok(false, "T25p: disclosures still work after watchdog recovery")
+    end
+end)
+
+UIManager:scheduleIn(15.4, function()
     -- T14 + T17: the Book -> List transition closes the reader and tears
     -- the session down (the display mode switch does it for us).
     app:set_chat_mode("list")
@@ -491,6 +894,13 @@ UIManager:scheduleIn(6.2, function()
             ok(ui2 ~= nil and ui2.document ~= nil
                 and ui2.document.file == Book.path_for(chat_path),
                 "T18: List -> Book opens the book for the chat on screen")
+            local reopened_body = read_generated_book()
+            ok(reopened_body:find("native hidden body", 1, true) == nil
+                and reopened_body:find('href="kt:spl:1:1" class="ktspl">native secret</a>', 1, true) ~= nil,
+                "T25h: a new Book session starts details and spoilers collapsed")
+            ok(emoji_registrations == 1,
+                "T26d: reopening a Book session does not register the emoji font again")
+            cre.registerFont = original_register_font
             -- T19: leaving Debug Mode takes the experimental book mode with
             -- it (otherwise the switch would be stranded without a UI).
             app.state.settings.debug_mode = true

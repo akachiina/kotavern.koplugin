@@ -14,7 +14,8 @@
 --   kind = "user"     the user sent a message: reload, follow the tail
 --   kind = "done"     a generation finished: reload, follow the tail when the
 --                     user was already on the last page
---   kind = "mutation" edit/delete/swipe: reload, restore the message anchor
+--   kind = "mutation" edit/delete/swipe: clear reveals, restore message anchor
+--   kind = "disclosure" a reveal toggle: preserve maps, restore message anchor
 --   default           reload, restore the exact xpointer
 -- Reloads are debounced (300 ms) so chained landings coalesce, and deferred
 -- while a native dialog sits above the reader.
@@ -48,7 +49,14 @@ local state = {
     stream_status = nil,
     write_error = nil,
     return_to_list = false,
+    revealed_spoilers = nil, -- qualified identity -> true; session-only
+    revealed_details = nil,
 }
+
+local function clear_reveals()
+    state.revealed_spoilers = {}
+    state.revealed_details = {}
+end
 
 local function app_state()
     local app = state.app
@@ -106,6 +114,8 @@ local function collect()
         persona_name = persona_name,
         created_at = meta.created_at,
         show_reasoning = st and st.settings and st.settings.book_show_reasoning or false,
+        revealed_spoilers = state.revealed_spoilers,
+        revealed_details = state.revealed_details,
     }
 end
 
@@ -178,6 +188,7 @@ end
 local function finish_reload(pos)
     local ui = state.ui
     state.reloading = false
+    state.reload_kind = nil
     state.reload_token = (state.reload_token or 0) + 1
 
     -- The reader that came back must be OUR book: if the plugin failed to
@@ -277,11 +288,13 @@ do_refresh = function(opts)
     end
 
     state.reloading = true
+    state.reload_kind = opts.kind or ""
     local token = (state.reload_token or 0) + 1
     state.reload_token = token
     pcall(function() book_ui().hud_hide() end)
 
     local ok, err = pcall(function()
+        reader().ensure_emoji_font()
         ui:reloadDocument(function(file)
             if cache_file and cache_file ~= "" then
                 os.remove(cache_file)
@@ -315,9 +328,14 @@ do_refresh = function(opts)
     UIManager:scheduleIn(15, function()
         if state.reload_token == token and state.reloading and state.active then
             state.reloading = false
+            state.reload_kind = nil
             local ReaderUI = require("apps/reader/readerui")
-            if not ReaderUI.instance then
+            if not ReaderUI.instance or not state.ui or not state.ui.document then
                 Session.teardown()
+            elseif state.queued then
+                -- Match finish_reload: a usable reader must not retain a
+                -- non-disclosure refresh forever after a missing callback.
+                schedule_refresh(state.queued, 0.25)
             end
         end
     end)
@@ -372,6 +390,7 @@ function Session.open(app, chat_path)
         if ok_name then persona_name = name end
     end
 
+    clear_reveals()
     local data = {
         messages = messages,
         chat_name = meta.chat_name,
@@ -379,6 +398,8 @@ function Session.open(app, chat_path)
         persona_name = persona_name,
         created_at = meta.created_at,
         show_reasoning = st and st.settings and st.settings.book_show_reasoning or false,
+        revealed_spoilers = state.revealed_spoilers,
+        revealed_details = state.revealed_details,
     }
 
     local html = Book.build(data)
@@ -387,7 +408,7 @@ function Session.open(app, chat_path)
         return nil, err or "write failed"
     end
 
-    -- First open: jump to the last chapter once the reader is ready. Later
+    -- First open: jump to the last page once the reader is ready. Later
     -- opens keep whatever position the sidecar restored.
     local first_open = false
     local ok_ds, DocSettings = pcall(require, "docsettings")
@@ -417,10 +438,13 @@ function Session.open(app, chat_path)
     state.refresh_token = (state.refresh_token or 0) + 1
     state.reload_token = (state.reload_token or 0) + 1
 
+    reader().ensure_emoji_font()
     local ok_open, open_err = pcall(reader().open, book_path)
     if not ok_open then
         state.active = false
         state.pending = nil
+        state.revealed_spoilers = nil
+        state.revealed_details = nil
         return nil, open_err or "reader open failed"
     end
     return book_path
@@ -461,7 +485,7 @@ function Session.attach(ui)
     return true
 end
 
--- Position the freshly opened reader: first open jumps to the last chapter,
+-- Position the freshly opened reader: first open jumps to the last page,
 -- an empty chat stays on the cover, later opens keep the sidecar position.
 function Session.apply_initial_position(ui)
     if not state.active or state.reloading or not ui or not ui.document then
@@ -493,6 +517,9 @@ function Session.on_chat_changed(chat_path, opts)
         if st and st.is_generating then return end
     end
 
+    -- Reveal URIs are positional. Content/structure mutations invalidate them
+    -- so a different message can never inherit a disclosure after a shift.
+    if opts.kind == "mutation" then clear_reveals() end
     schedule_refresh(opts)
 end
 
@@ -526,6 +553,8 @@ function Session.on_generation_end()
     state.stream_status = nil
     pcall(function() book_ui().hud_hide() end)
     if was then
+        -- Generation/continue/regenerate may replace the active swipe's markup.
+        clear_reveals()
         schedule_refresh({ kind = "done" }, 0.35)
     end
 end
@@ -546,9 +575,60 @@ function Session.on_end_of_book()
     return true
 end
 
+local function disclosure_exists(data, index, reasoning, disclosure, item)
+    local msg = data.messages[index]
+    if not msg then return false end
+    if reasoning == "r" and not data.show_reasoning then return false end
+    local content = reasoning == "r" and msg.reasoning or msg.content
+    if type(content) ~= "string" then return false end
+    local prefix = tostring(index) .. reasoning .. ":"
+    -- Open every details group only for this validation pass so nested
+    -- spoilers/disclosures are enumerable; reveal state itself is untouched.
+    local open_details = setmetatable({}, { __index = function() return true end })
+    local html = require("ktui/chat_bubbles").encode_html(
+        content, nil, open_details, { link_prefix = prefix })
+    local class_name = disclosure == "det" and "ktdet" or "ktspl"
+    local link = '<a href="kt:' .. disclosure .. ":" .. prefix .. tostring(item)
+        .. '" class="' .. class_name .. '">'
+    return html:find(link, 1, true) ~= nil
+end
+
+local function content_refresh_inflight()
+    if state.queued and state.queued.kind ~= "disclosure" then return true end
+    return state.reloading and state.reload_kind ~= "disclosure"
+end
+
 function Session.handle_uri(uri)
     if not state.active then return end
-    local kind, arg = tostring(uri or ""):match("^kt:([%w_]+)/?(%d*)$")
+    local text = tostring(uri or "")
+    local disclosure, message_number, reasoning, item_number =
+        text:match("^kt:(%a+):(%d+)(r?):(%d+)$")
+    if disclosure == "det" or disclosure == "spl" then
+        -- The old document remains tappable during debounce/reload. Never let
+        -- its positional URI reveal different content queued for that slot.
+        if content_refresh_inflight() then return end
+        local index = tonumber(message_number)
+        local item = tonumber(item_number)
+        local data = collect()
+        if not index or index < 1 or not item or item < 1
+            or not disclosure_exists(data, index, reasoning, disclosure, item) then
+            return
+        end
+        local key = tostring(index) .. reasoning .. ":" .. tostring(item)
+        local field = disclosure == "det" and "revealed_details" or "revealed_spoilers"
+        local revealed = state[field]
+        if not revealed then
+            revealed = {}
+            state[field] = revealed
+        end
+        if revealed[key] then revealed[key] = nil else revealed[key] = true end
+        schedule_refresh({
+            kind = "disclosure", anchor = "#m" .. tostring(index), tail = false,
+        })
+        return
+    end
+
+    local kind, arg = text:match("^kt:([%w_]+)/?(%d*)$")
     local app = state.app
     if not kind or not app then return end
 
@@ -627,6 +707,8 @@ function Session.teardown(ui)
     state.stream_text = ""
     state.stream_status = nil
     state.return_to_list = false
+    state.revealed_spoilers = nil
+    state.revealed_details = nil
     state.refresh_token = (state.refresh_token or 0) + 1
     state.reload_token = (state.reload_token or 0) + 1
 

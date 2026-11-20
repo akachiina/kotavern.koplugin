@@ -1132,6 +1132,14 @@ end
 do
     local App = require("kt_app")
     local Store = require("kt_storage")
+    local ChatBubbles = require("ktui/chat_bubbles")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local real_set_content = HtmlBoxWidget.setContent
+    local rendered_bodies = {}
+    HtmlBoxWidget.setContent = function(self, body, ...)
+        rendered_bodies[#rendered_bodies + 1] = body
+        return real_set_content(self, body, ...)
+    end
     local ck_key = "kt_client"
     local real_client = package.loaded[ck_key]
     local captured = {}
@@ -1164,7 +1172,9 @@ do
     local old_msg = { role = "assistant", content = "old reply",
         swipes = { "old reply" }, swipe_id = 1 }
     local a = setmetatable({
-        state = { settings = { stream_refresh = "live" },
+        state = { settings = { stream_refresh = "live", regex_scripts = {
+            { scriptName = "Uppercase world", find = "world", replace = "WORLD", placement = "display" },
+        } },
             messages = { { role = "user", content = "hi", name = "You" }, old_msg },
             scroll = {}, page = "chat", current_chat_id = "c9",
             current_chat_path = "/tmp/smoke_t1.jsonl",
@@ -1172,6 +1182,19 @@ do
             current_connection = { base_url = "http://x/v1", api_key = "k" } },
     }, { __index = App })
     a.view = { chat_region = { x = 0, y = 0, w = VW, h = VH }, app = a, hitboxes = {} }
+    local function paint_regenerated(is_generating, streaming)
+        rendered_bodies = {}
+        ChatBubbles.draw(a.view, new_bb(), 0, 0, VW, VH, 0,
+            a.state.messages, "Aria", is_generating, "You", nil, nil)
+        for _lk, layout in pairs(a.view._chat_layout_cache or {}) do
+            if layout.idx == 2 and (layout.is_streaming == true) == streaming
+                and layout._paint_id == a.view._chat_paint_id then
+                return layout, layout.entries and layout.entries[1] or nil,
+                    rendered_bodies[#rendered_bodies]
+            end
+        end
+        return nil, nil, rendered_bodies[#rendered_bodies]
+    end
 
     Store.get_active_persona = function() return nil end
     a:regenerate_last()
@@ -1180,26 +1203,122 @@ do
     ok(old_msg.content == "", "regen: old content cleared immediately")
 
     paints = {}
-    captured.on_chunk("wor", "wor")
-    ok(old_msg.content == "wor", "regen: chunk 1 updates content")
-    captured.on_chunk("ld", "world")
-    ok(old_msg.content == "world", "regen: chunk 2 accumulates")
-    ok(#paints == 2, "regen: live mode repaints per chunk (got " .. #paints .. ")")
+    captured.on_chunk("**wor", "**wor")
+    ok(old_msg.content == "**wor", "regen: chunk 1 updates content")
+    local streaming_layout, streaming_entry, streaming_body = paint_regenerated(true, true)
+    ok(streaming_entry and streaming_entry.kind == "html",
+        "regen: chunk 1 paints an HTML entry (got "
+        .. tostring(streaming_entry and streaming_entry.kind) .. ")")
+    ok(streaming_entry and streaming_entry.widget and streaming_entry.widget.document ~= nil,
+        "regen: chunk 1 HTML widget is live")
+    ok(streaming_entry and streaming_entry.fallback
+        and streaming_entry.fallback:find("**wor ▌", 1, true) ~= nil,
+        "regen: chunk 1 HTML keeps the streaming caret")
+    ok(streaming_body and streaming_body:find("wor ▌", 1, true)
+        and not streaming_body:find("**wor", 1, true),
+        "regen: unclosed Markdown reaches MuPDF as readable partial text")
+
+    captured.on_chunk("ld**", "**world**")
+    ok(old_msg.content == "**world**", "regen: chunk 2 accumulates")
+    streaming_layout, streaming_entry, streaming_body = paint_regenerated(true, true)
+    ok(streaming_entry and streaming_entry.kind == "html",
+        "regen: chunk 2 paints an HTML entry (got "
+        .. tostring(streaming_entry and streaming_entry.kind) .. ")")
+    ok(streaming_entry and streaming_entry.fallback
+        and streaming_entry.fallback:find("**WORLD** ▌", 1, true) ~= nil,
+        "regen: display regex applies to the streamed HTML, not the stored content")
+    ok(streaming_body and streaming_body:find("<b>WORLD</b> ▌", 1, true)
+        and not streaming_body:find("**WORLD**", 1, true),
+        "regen: real MuPDF body formats completed Markdown and applies display regex")
+    ok(old_msg.content == "**world**", "regen: display regex leaves stored content unchanged")
+
+    captured.on_chunk("\n<b>done", "**world**\n<b>done")
+    streaming_layout, streaming_entry, streaming_body = paint_regenerated(true, true)
+    ok(streaming_body and streaming_body:find("done ▌", 1, true)
+        and not streaming_body:find("&lt;b&gt;", 1, true),
+        "regen: unclosed HTML reaches MuPDF as readable text, not escaped markup")
+    ok(#paints == 3, "regen: live mode repaints per chunk (got " .. #paints .. ")")
+    local partial_dirty = 0
+    for pi = 1, #paints do
+        local call = paints[pi]
+        local region = call[4]
+        if call[2] == a.view and call[3] == "partial" and region
+            and region.x == a.view.chat_region.x and region.y == a.view.chat_region.y
+            and region.w == a.view.chat_region.w and region.h == a.view.chat_region.h then
+            partial_dirty = partial_dirty + 1
+        end
+    end
+    ok(partial_dirty == 3,
+        "regen: every chunk targets the chat region with a partial refresh")
+
+    -- The synthetic non-streaming pulse keeps the cheap canvas path even
+    -- though real partial responses now use MuPDF.
+    local think_view = { app = a, hitboxes = {} }
+    rendered_bodies = {}
+    ChatBubbles.draw(think_view, new_bb(), 0, 0, VW, VH, 0,
+        {}, "Aria", true, "You", nil, 0)
+    local thinking_entry = nil
+    for _tk, layout in pairs(think_view._chat_layout_cache or {}) do
+        if layout.is_thinking and layout._paint_id == think_view._chat_paint_id then
+            thinking_entry = layout.entries and layout.entries[1] or nil
+        end
+    end
+    ok(thinking_entry and thinking_entry.kind ~= "html" and #rendered_bodies == 0,
+        "regen: synthetic thinking pulse stays on canvas without building HTML")
 
     local okp = pcall(function()
-        captured.on_done("world", nil, nil, nil)
+        captured.on_done("**world**\n<b>done</b>", nil, nil, nil)
     end)
     ok(okp, "regen: on_done completes without crashing")
-    ok(not old_msg.is_streaming and old_msg.content == "world",
+    ok(not old_msg.is_streaming and old_msg.content == "**world**\n<b>done</b>",
         "regen: done clears streaming, keeps final text")
-    ok(#(old_msg.swipes or {}) == 2 and old_msg.swipes[2] == "world",
+    ok(#(old_msg.swipes or {}) == 2 and old_msg.swipes[2] == "**world**\n<b>done</b>",
         "regen: done appends new swipe")
+    local final_layout, final_entry, final_body = paint_regenerated(false, false)
+    ok(final_entry and final_entry.kind == "html" and final_entry.widget
+        and final_entry.widget.document ~= nil,
+        "regen: completion keeps a live HTML entry")
+    ok(final_body and final_body:find("<b>WORLD</b>", 1, true)
+        and final_body:find("<b>done</b>", 1, true)
+        and not final_body:find("▌", 1, true),
+        "regen: final MuPDF body has formatted HTML and no streaming caret")
+    ok(final_layout and final_layout.swipes_id == 2 and final_layout.swipes_n == 2,
+        "regen: completion paints the 2/2 swipe row")
 
+    HtmlBoxWidget.setContent = real_set_content
     package.loaded[ck_key] = real_client
     Store.create_chat, Store.append_message = real_create, real_append_fn
     Store.get_active_persona, Store.get_persona = real_getap, real_getp
     Store.load_chat, Store.save_chat = real_load, real_save
     UIManager.setDirty = real_dirty
+end
+
+-- Length-changing display regexes must not compare pre-regex content on one
+-- paint with post-regex content on the next (which rebuilds every layout).
+do
+    local ChatBubbles = require("ktui/chat_bubbles")
+    local messages = { { role = "assistant", name = "Aria", send_date = os.time(),
+        content = "world" } }
+    local app = fake_app({ page = "chat", messages = messages, settings = {
+        regex_scripts = { { scriptName = "Lengthen", find = "world",
+            replace = "a considerably longer world", placement = "display" } },
+    } })
+    local view = { app = app, hitboxes = {} }
+    local function paint_layout()
+        ChatBubbles.draw(view, new_bb(), 0, 0, VW, VH, 0,
+            messages, "Aria", false, "You", nil, nil)
+        for _rk, layout in pairs(view._chat_layout_cache or {}) do
+            if not layout.is_user and not layout.is_system
+                and layout._paint_id == view._chat_paint_id then
+                return layout
+            end
+        end
+        return nil
+    end
+    local first = paint_layout()
+    local second = paint_layout()
+    ok(first ~= nil and first == second,
+        "chat html regex: length-changing replacement reuses an unchanged layout")
 end
 
 -- === 4j. User avatar never borrows the character card ==========================
@@ -2951,6 +3070,40 @@ do
     ok(d5:find("<b>B</b>", 1, true) ~= nil
         and d5:find("ktsplopen", 1, true) ~= nil,
         "chat html details: markdown and spoilers work inside summary")
+
+    -- Book qualifies links by message/channel; no-prefix List output is identical.
+    local qualified_raw = "<details><summary>More</summary>hidden</details> ||secret||"
+    local qualified_opts = { link_prefix = "2r:" }
+    local qualified = DbgChat.encode_html and DbgChat.encode_html(
+        qualified_raw, nil, nil, qualified_opts)
+    ok(qualified ~= nil
+        and qualified:find('href="kt:det:2r:1"', 1, true) ~= nil
+        and qualified:find('href="kt:spl:2r:1"', 1, true) ~= nil
+        and qualified:find("hidden", 1, true) == nil,
+        "chat html namespaces: qualified links hide their details body")
+    local qualified_open = DbgChat.encode_html and DbgChat.encode_html(
+        qualified_raw, { ["2r:1"] = true }, { ["2r:1"] = true }, qualified_opts)
+    ok(qualified_open ~= nil
+        and qualified_open:find("hidden", 1, true) ~= nil
+        and qualified_open:find('<span class="ktspl ktsplopen">secret</span>', 1, true) ~= nil,
+        "chat html namespaces: qualified reveal maps open only their targets")
+    ok(DbgChat.encode_html ~= nil
+        and DbgChat.encode_html(qualified_raw) == DbgChat._test_chat_html_body(qualified_raw),
+        "chat html namespaces: omitted options preserve the List encoding")
+
+    -- Quotes inside model URLs must never become a second href attribute.
+    local url_injections = {
+        html = "<a href='https://example.org/\" href=\"kt:continue'>html</a>",
+        image = "<img src='https://example.org/x.png\" href=\"kt:continue' alt='image'>",
+        markdown = "[label](https://example.org/\"href=\"kt:continue)",
+        markdown_image = "![alt](https://example.org/x.png\"href=\"kt:continue)",
+    }
+    for source, raw in pairs(url_injections) do
+        local encoded = DbgChat._test_chat_html_body(raw)
+        ok(encoded:find('href="kt:', 1, true) == nil
+            and encoded:find('href="https://example.org/" href=', 1, true) == nil,
+            "chat html urls: " .. source .. " cannot inject a private action")
+    end
 end
 
 -- Model-HTML render probes (probe-verified MuPDF behavior, mirroring the
@@ -3771,6 +3924,28 @@ do
     view_dbg.hitboxes[1].callback(0, 0)
     ok(app_dbg._toggled == true,
         "debug: the first experimental row toggles book mode")
+
+    -- HTML is the sole normal message-body renderer. Capture the real row
+    -- specification as well as painting it, so the removed toggle cannot return.
+    local captured_rows = nil
+    local real_settings_section = Pages.settings_section
+    Pages.settings_section = function(...)
+        local args = { ... }
+        captured_rows = args[8]
+        return true
+    end
+    local captured_ok = pcall(function()
+        Pages.settings_debug(view_dbg, bb_dbg, 0, 0, VW, VH, 0)
+    end)
+    Pages.settings_section = real_settings_section
+    local renderer_row = false
+    for index = 1, #(captured_rows or {}) do
+        if captured_rows[index].text == "HTML chat renderer" then
+            renderer_row = true
+        end
+    end
+    ok(captured_ok and captured_rows ~= nil and not renderer_row,
+        "debug: the removed HTML chat renderer row stays absent")
     dump(bb_dbg, "settings_debug_page")
 end
 
@@ -5267,6 +5442,98 @@ do
     ok(#blocks == 1 and blocks[1].kind == "table", "md: table parses to a table block")
     ok(#(blocks[1].header or {}) == 2 and #(blocks[1].rows or {}) == 2,
         "md: table header + 2 rows")
+    local html_table = require("ktui/chat_bubbles")._test_chat_html_body(
+        "| Nome | Vida |\n|------|------|\n| Aria  | 12   |\n| Kai   | 9    |")
+    ok(not html_table:find("------", 1, true),
+        "chat html md: table delimiter row is consumed")
+    ok(html_table:find("Aria", 1, true) and html_table:find("Kai", 1, true),
+        "chat html md: table cells survive HTML conversion")
+
+    local inline_table = require("ktui/chat_bubbles")._test_chat_html_body(
+        "| Style | Link | Strike | Code |\n|---|---|---|---|\n"
+        .. "| **bold** | [open](https://example.org) | ~~gone~~ | `code` |")
+    ok(inline_table:find("<td>| <b>bold</b></td>", 1, true) ~= nil
+        and inline_table:find('<td>| <a href="https://example.org">open</a></td>', 1, true) ~= nil
+        and inline_table:find("<td>| <s>gone</s></td>", 1, true) ~= nil
+        and inline_table:find('<td>| <span class="ktcode">code</span></td>', 1, true) ~= nil,
+        "chat html md: table cells retain inline Markdown formatting")
+
+    local ChatBubbles = require("ktui/chat_bubbles")
+
+    local details_table = ChatBubbles._test_chat_html_body(
+        "<details><summary>More</summary>\n| Nome | Vida |\n|---|---|\n"
+        .. "| Aria | 12 |</details>\nfollowing prose")
+    ok(details_table:find('href="kt:det:1"', 1, true)
+        and details_table:find("following prose", 1, true),
+        "chat html md: a table cannot swallow a same-line details close")
+    for _ti, tag in ipairs({ "script", "style" }) do
+        local boundary = ChatBubbles._test_chat_html_body(
+            "| Nome | Vida |\n|---|---|\n| Aria | 12 |<" .. tag .. ">\n"
+            .. "SECRET_" .. tag .. "\n</" .. tag .. ">\nafter")
+        ok(not boundary:find("SECRET_" .. tag, 1, true)
+            and boundary:find("after", 1, true),
+            "chat html md: a table cannot swallow a same-line " .. tag .. " open")
+    end
+
+    -- Source-string padding is not enough: inspect MuPDF's actual word
+    -- rectangles so collapsed HTML whitespace cannot fake an aligned grid.
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local KtHTML = require("ktui/kthtml")
+    local function mupdf_pipe_rows(content)
+        local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = 500, h = 240 } }
+        widget:setContent(ChatBubbles._test_chat_html_body(content),
+            KtHTML.chat_css(), Theme.scale(Theme.get_base_font_size()),
+            false, nil, PLUGIN .. "/assets")
+        local page = widget.document:openPage(1)
+        local text_lines = page:getPageText()
+        -- Native table cells may come back as separate line boxes at the
+        -- same y. Merge them exactly as HtmlBoxWidget's selection code does.
+        local merged = {}
+        for _li, line in ipairs(text_lines) do
+            local previous = merged[#merged]
+            if previous and previous.y0 == line.y0 and previous.y1 == line.y1 then
+                for _wi, word in ipairs(line) do previous[#previous + 1] = word end
+            else
+                merged[#merged + 1] = line
+            end
+        end
+        local rows = {}
+        for _li, line in ipairs(merged) do
+            local pipes = {}
+            for _wi, word in ipairs(line) do
+                if word.word == "|" then pipes[#pipes + 1] = word.x0 end
+            end
+            if #pipes >= 2 then rows[#rows + 1] = pipes end
+        end
+        page:close()
+        widget:free()
+        return rows
+    end
+    local function pipe_delta(rows)
+        local delta = 0
+        for ri = 2, #rows do
+            for ci = 1, 2 do
+                delta = math.max(delta,
+                    math.abs((rows[ri][ci] or 0) - (rows[1][ci] or 0)))
+            end
+        end
+        return delta
+    end
+    local pipe_rows = mupdf_pipe_rows(
+        "| Nome | Vida |\n|---|---|\n| Ária | 12 |\n| Kai | 9 |")
+    ok(#pipe_rows == 3, "chat html md: MuPDF exposes three table grid rows")
+    local max_delta = pipe_delta(pipe_rows)
+    ok(#pipe_rows == 3 and max_delta < 0.75,
+        "chat html md: MuPDF aligns every pipe column (delta="
+        .. string.format("%.2f", max_delta) .. ")")
+    local cjk_rows = mupdf_pipe_rows(
+        "| Nome | Valor |\n|---|---|\n| 名前 | 界 |\n| ab | cd |")
+    local cjk_delta = pipe_delta(cjk_rows)
+    ok(#cjk_rows == 3, "chat html md: MuPDF exposes mixed CJK/ASCII grid rows")
+    ok(#cjk_rows == 3 and cjk_delta < 0.75,
+        "chat html md: MuPDF aligns mixed CJK/ASCII columns (delta="
+        .. string.format("%.2f", cjk_delta) .. ")")
 
     local app = fake_app({ page = "chat", messages = {
         { role = "assistant", name = "Aria", send_date = os.time(),

@@ -32,6 +32,7 @@ local Book = require("kt_book")
 local Reader = {}
 
 local TAP_ZONE_ID = "kotavern_book_tap"
+local emoji_font_registered = false
 
 -- === ReadHistory suppression ===
 --
@@ -229,6 +230,25 @@ function Reader.on_reader_init(ui)
     ui:registerPostReaderReadyCallback(function()
         Session.apply_initial_position(ui)
     end)
+    return true
+end
+
+-- Register the bundled monochrome face with crengine, not the canvas/global
+-- fallback chain. CreDocument owns engine initialization; our flag makes the
+-- additional registration process-wide and idempotent across Book reloads.
+function Reader.ensure_emoji_font()
+    if emoji_font_registered then return true end
+    local ok, err = pcall(function()
+        require("document/credocument"):engineInit()
+        local Constants = require("kt_constants")
+        require("libs/libkoreader-cre").registerFont(
+            Constants.ASSET_DIR .. "/emoji-noto.ttf")
+    end)
+    if not ok then
+        logger.warn("kotavern/book: cannot register Noto Emoji:", tostring(err))
+        return false
+    end
+    emoji_font_registered = true
     return true
 end
 

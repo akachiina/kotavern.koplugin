@@ -63,12 +63,12 @@ end
 
 -- === Block layout (two-pass: measure, then paint) ===
 
--- Completed message bodies render as ONE MuPDF document (HtmlBoxWidget via
--- KtHTML, real bold/italic/lists/tables), painted as a single block entry.
--- Measured once per content+width+theme (KtHTML's tall-total scan), clipped
--- per band like every other entry. Streaming keeps the plain-text path (a
--- partial HTML re-layout per chunk is jumpy and costly) and a failed render
--- falls back to the canvas text path — never a blank message.
+-- Completed and real streaming message bodies render as ONE MuPDF document
+-- (HtmlBoxWidget via KtHTML, bold/italic/lists/aligned table grids), painted
+-- as a single block entry. Layouts are cached per content+width+theme and
+-- clipped per band like every other entry. Only the synthetic thinking pulse
+-- uses the plain streaming path; a failed render falls back to canvas text —
+-- never a blank message.
 
 -- Compact + re-express the message for MuPDF. Model text is NOT trusted as
 -- HTML: block structure is detected on the RAW line, then the line is
@@ -135,6 +135,10 @@ end
 -- dead-looking link is worse than literal text).
 local function valid_href(url)
     url = tostring(url or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    -- The URL is emitted inside a double-quoted attribute. Quotes could close
+    -- it and forge a second href (crengine honors the last one); controls and
+    -- whitespace are not valid URL payload either. Reject, never interpolate.
+    if url:find("[\"'<>]", 1) or url:find("[%c%s]") then return nil end
     if url:match("^[hH][tT][tT][pP][sS]?://") and #url <= 2048 then
         return url
     end
@@ -327,10 +331,12 @@ local function chat_html_markdown(line, state, stash_html)
     end)
     line = line:gsub("||([^|]-)||", function(secret)
         state.spl_n = state.spl_n + 1
-        if state.revealed and state.revealed[state.spl_n] then
+        local prefix = state.link_prefix or ""
+        local reveal_key = prefix ~= "" and (prefix .. state.spl_n) or state.spl_n
+        if state.revealed and state.revealed[reveal_key] then
             return stash_html('<span class="ktspl ktsplopen">' .. secret .. '</span>')
         end
-        return stash_html('<a href="kt:spl:' .. state.spl_n .. '" class="ktspl">' .. secret .. '</a>')
+        return stash_html('<a href="kt:spl:' .. prefix .. state.spl_n .. '" class="ktspl">' .. secret .. '</a>')
     end)
     line = line:gsub("~~(.-)~~", "<s>%1</s>")
     line = line:gsub("%*%*%*(.-)%*%*%*", "<b><i>%1</i></b>")
@@ -397,7 +403,7 @@ local function own_line_tag(line, name)
     return line:match("^%s*</?" .. ci_letters(name) .. "%f[^%w][^>]*>%s*$")
 end
 
-local function chat_html_body(content, revealed, det_revealed)
+local function chat_html_body(content, revealed, det_revealed, opts)
     -- Rows are tagged text|fence; consecutive fence rows flush as CONTIGUOUS
     -- <p class="ktfence"> blocks (probe: contiguous <p> bands touch, no gap;
     -- a <br> inside/between inline-block spans left an empty white band),
@@ -414,7 +420,8 @@ local function chat_html_body(content, revealed, det_revealed)
     -- a kt:det:N summary header, body rows only when revealed).
     local rows = {}
     local state = { revealed = revealed, spl_n = 0,
-        det_revealed = det_revealed, det_n = 0 }
+        det_revealed = det_revealed, det_n = 0,
+        link_prefix = opts and opts.link_prefix or "" }
     -- Details stack: frames { sum_raw, sum_acc, sum_done, rows }. Body rows
     -- buffer per frame; numbering (det_n) counts every group even when
     -- collapsed, so rebuilds number identically.
@@ -444,11 +451,13 @@ local function chat_html_body(content, revealed, det_revealed)
         local sum_raw = frame.sum_raw
         if not sum_raw or sum_raw == "" then sum_raw = "…" end
         local sum_html = chat_html_fragment(sum_raw, state)
-        local is_open = state.det_revealed and state.det_revealed[n] and true or false
+        local prefix = state.link_prefix or ""
+        local reveal_key = prefix ~= "" and (prefix .. n) or n
+        local is_open = state.det_revealed and state.det_revealed[reveal_key] and true or false
         local marker = is_open and "▾" or "▸"
         local t = target_rows()
         t[#t + 1] = { kind = "text",
-            html = '<a href="kt:det:' .. n .. '" class="ktdet">'
+            html = '<a href="kt:det:' .. prefix .. n .. '" class="ktdet">'
                 .. marker .. " " .. sum_html .. "</a>" }
         if is_open then
             for ri = 1, #frame.rows do
@@ -693,8 +702,72 @@ local function chat_html_body(content, revealed, det_revealed)
         if rest:match("%S") then text_segment(rest) end
     end
 
+    local source_lines = {}
     for line in (tostring(content or "") .. "\n"):gmatch("(.-)\n") do
-        if in_script or in_style then
+        source_lines[#source_lines + 1] = line
+    end
+    -- Markdown tables keep their column structure in the HTML renderer too.
+    -- Md.parse owns recognition; native MuPDF table layout measures the real
+    -- glyph advances, including mixed ASCII/UTF-8/CJK cells.
+    local function markdown_table_at(start)
+        local first = source_lines[start]
+        local second = source_lines[start + 1]
+        if not first or not second or not first:find("|", 1, true)
+            or not second:find("|", 1, true) then
+            return nil
+        end
+        local candidate = {}
+        local pos = start
+        while source_lines[pos] and source_lines[pos]:find("|", 1, true) do
+            candidate[#candidate + 1] = source_lines[pos]
+            pos = pos + 1
+        end
+        local parsed = Md.parse(table.concat(candidate, "\n"))[1]
+        if not parsed or parsed.kind ~= "table" then return nil end
+        local last = start + 1 + #(parsed.rows or {})
+        -- This shortcut owns only pure Markdown rows. A tag in a consumed
+        -- row must go through the main scanner: Md.parse strips HTML, so
+        -- consuming it here could hide a details close or a script/style/pre
+        -- open and corrupt every line that follows.
+        for line_pos = start, last do
+            local raw = source_lines[line_pos]
+            if raw:find("<%a") or raw:find("</%a") or raw:find("<!", 1, true) then
+                return nil
+            end
+        end
+        return parsed, last
+    end
+    local function emit_markdown_table(parsed)
+        -- Native table layout measures the real glyphs (including CJK), so
+        -- columns do not depend on UTF-8 byte counts or terminal width myths.
+        -- MuPDF adds no visual cell separation: keep a pipe at the LEFT of
+        -- every cell, and omit the ragged decorative pipe on the right.
+        local out = { "<table>" }
+        local function emit_cells(cells)
+            out[#out + 1] = "<tr>"
+            for ci = 1, #cells do
+                out[#out + 1] = "<td>| "
+                    .. chat_html_fragment(tostring(cells[ci] or ""), state) .. "</td>"
+            end
+            out[#out + 1] = "</tr>"
+        end
+        emit_cells(parsed.header or {})
+        for ri = 1, #(parsed.rows or {}) do emit_cells(parsed.rows[ri]) end
+        out[#out + 1] = "</table>"
+        emit({ kind = "table", html = table.concat(out) })
+    end
+
+    local line_index = 1
+    while line_index <= #source_lines do
+        local line = source_lines[line_index]
+        local md_table, table_last = nil, nil
+        if not in_script and not in_style and not in_code and not in_pre then
+            md_table, table_last = markdown_table_at(line_index)
+        end
+        if md_table then
+            emit_markdown_table(md_table)
+            line_index = table_last
+        elseif in_script or in_style then
             -- Close whichever ranges end on this line (possibly both); a
             -- tail that reopens a range routes through the same drop logic.
             -- Anything still in range (or empty) is dropped: literal JS/CSS
@@ -806,6 +879,7 @@ local function chat_html_body(content, revealed, det_revealed)
                 end
             end
         end
+        line_index = line_index + 1
     end
     -- Unclosed groups flush as collapsed (markers dropped, body kept only
     -- in the buffer for a later toggle... no: collapsed shows summary only).
@@ -814,16 +888,20 @@ local function chat_html_body(content, revealed, det_revealed)
     end
     local parts, pending_text = {}, nil
     for _, r in ipairs(rows) do
-        if r.kind == "fence" then
+        if r.kind == "fence" or r.kind == "table" then
             if pending_text then
                 parts[#parts + 1] = table.concat(pending_text, "<br>")
                 pending_text = nil
             end
-            local f = parts[#parts]
-            if f and f:match("</p>$") then
-                parts[#parts] = f .. '<p class="ktfence">' .. r.html .. "</p>"
+            if r.kind == "table" then
+                parts[#parts + 1] = r.html
             else
-                parts[#parts + 1] = '<p class="ktfence">' .. r.html .. "</p>"
+                local f = parts[#parts]
+                if f and f:match("</p>$") then
+                    parts[#parts] = f .. '<p class="ktfence">' .. r.html .. "</p>"
+                else
+                    parts[#parts + 1] = '<p class="ktfence">' .. r.html .. "</p>"
+                end
             end
         else
             pending_text = pending_text or {}
@@ -1294,7 +1372,7 @@ local function block_entries(blocks, width, app, show_inline, view, body_face)
                 table.insert(entries, { kind = "image_pending", alt = block.alt, h = Theme.scale(44) })
             end
         elseif block.kind == "html" then
-            -- Experimental HTML render: the WHOLE message body goes through
+            -- HTML render: the WHOLE message body goes through
             -- MuPDF (real bold/italic/lists/tables), measured once and cached
             -- per content+width+font+reveal (chat_html_docs on app.state). A
             -- failed render falls back to the plain-text parse, never a blank
@@ -1429,7 +1507,7 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                         box_w - Theme.scale(16), "tiny", { color = Theme.chat_muted })
                 end
             elseif entry.kind == "html" then
-                -- Experimental HTML render: blit the VISIBLE slice of the
+                -- HTML render: blit the VISIBLE slice of the
                 -- tall bitmap. The source offset MUST track the band
                 -- (top - entry_y, like the text branch's scroll offset): a
                 -- constant src_y re-stamped the doc's head rows on every
@@ -1823,6 +1901,11 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             end
         end
 
+        -- Display regex transforms the RENDER text below, not the message's
+        -- cache identity. Keep the same post-reasoning/pre-regex input for
+        -- both the fast-path lookup and the signature stored in the layout.
+        local signature_content = content_text
+
         -- FAST PATH: an unchanged message reuses its measured layout; only
         -- positions (y/bubble_y/idx) are refreshed. Content, reasoning,
         -- stream state, last-message status, reasoning toggles or parse
@@ -1888,28 +1971,29 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             layouts[i] = layout
         else
             local blocks
-            if is_streaming then
-                -- Partial markdown during streaming looks jumpy: plain text.
+            if is_streaming and msg._thinking == true then
+                -- The synthetic thinking pulse stays cheap: no MuPDF relayout
+                -- three times per second just to animate its caret.
                 blocks = { { kind = "paragraph", text = content_text .. " ▌" } }
             else
-                -- Display-side regex scripts, then cache parse per message
-                -- (content identity, not repaint count). regex_sig busts the
-                -- per-msg caches when scripts change.
+                -- Display-side regex scripts apply to completed bodies and
+                -- real streaming partials alike. regex_sig participates in the
+                -- layout key, so editing a script rebuilds every visible doc.
                 local scripts = settings.regex_scripts
-                if type(scripts) == "table" and #scripts > 0
-                    and msg._md_regex_sig ~= regex_sig then
+                if type(scripts) == "table" and #scripts > 0 then
                     content_text = require("kt_regex_engine").apply(content_text, scripts, "display")
                 end
-                -- Completed bodies render as ONE MuPDF document (no canvas
-                -- markdown path remains). The bubble carries the RAW content
-                -- as one html block (see block_entries' html branch). USER
-                -- messages render through it too (their markdown/links/
-                -- spoilers deserve the same treatment); system/narrator lines
-                -- keep the canvas centered-muted style. The message identity
-                -- and the revealed-spoiler set ride along: the doc body
-                -- re-renders per reveal state, and the tap layer keys reveals
-                -- by msg_key.
-                blocks = { { kind = "html", text = content_text,
+                local render_text = content_text
+                if is_streaming then render_text = render_text .. " ▌" end
+                -- Message bodies render as ONE MuPDF document (no canvas
+                -- markdown path remains). Real streaming partials use this
+                -- same path, with the caret appended only to the render text;
+                -- msg.content stays untouched. USER messages render through
+                -- it too (their markdown/links/spoilers deserve the same
+                -- treatment); system/narrator lines keep the canvas centered-
+                -- muted style. The message identity and revealed-spoiler set
+                -- ride along so reveal taps rebuild exactly this message.
+                blocks = { { kind = "html", text = render_text,
                     role = is_user and "user" or "ai",
                     msg_key = msg_key,
                     revealed = ChatBubbles.spoiler_state(view.app, msg_key),
@@ -1999,7 +2083,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             layouts[i] = layout
         end
 
-        layout._sig = full_sig(msg, key, msg_key, content_text, reasoning, i == #(messages or {}))
+        layout._sig = full_sig(msg, key, msg_key, signature_content, reasoning, i == #(messages or {}))
         -- Store under the SAME key the fast path looks up (content-sampled);
         -- msg_key (plain identity) remains the UI-state identity only.
         layout._paint_id = view._chat_paint_id
@@ -2017,7 +2101,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     if thinking_text then
         local tl = measure_msg({
             role = "assistant", name = nil, send_date = nil,
-            content = thinking_text, is_streaming = true,
+            content = thinking_text, is_streaming = true, _thinking = true,
         }, #layouts + 1)
         if tl then
             tl.is_thinking = true
@@ -2497,6 +2581,12 @@ end
 -- Scroll snap step for the chat list: one full text line.
 function ChatBubbles.line_step()
     return line_height(Theme.face("default"))
+end
+
+-- Shared ST-compatible body encoder. List leaves link_prefix empty; Book
+-- qualifies links/reveal keys by message and reasoning channel.
+function ChatBubbles.encode_html(content, revealed, det_revealed, opts)
+    return chat_html_body(content, revealed, det_revealed, opts)
 end
 
 -- TEST-ONLY hook (ui_smoke): expose the HTML-mode body encoder without a
