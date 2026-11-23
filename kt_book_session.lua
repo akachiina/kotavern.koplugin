@@ -185,6 +185,21 @@ local function schedule_refresh(opts, delay, attempt)
     end)
 end
 
+-- Where should the freshly reloaded reader land?
+--   cover   the book has no messages (the only page-1 jump)
+--   anchor  the refresh named a message section (#mN)
+--   tail    follow the end of the book
+--   old_xp  the exact xpointer the reader had before the reload
+--   keep    nothing valid: leave the reader where it is (never the cover)
+local function choose_position(pos, has_messages)
+    pos = pos or {}
+    if not has_messages then return "cover" end
+    if pos.anchor and pos.anchor ~= "" then return "anchor" end
+    if pos.tail then return "tail" end
+    if pos.old_xp and pos.old_xp ~= "" then return "old_xp" end
+    return "keep"
+end
+
 local function finish_reload(pos)
     local ui = state.ui
     state.reloading = false
@@ -226,25 +241,36 @@ local function finish_reload(pos)
         end)
     end
 
-    if #(data.messages or {}) == 0 then
+    local choice = choose_position(pos, #(data.messages or {}) > 0)
+    if choice == "cover" then
         navigate("GotoPage", 1)
-    elseif follow_tail then
-        navigate("GotoPage", page_count(ui))
-    elseif pos.anchor then
+    elseif choice == "anchor" then
         local ok, in_doc = pcall(function() return doc:isXPointerInDocument(pos.anchor) end)
         if ok and in_doc then
             navigate("GotoXPointer", pos.anchor)
+        else
+            -- The anchor is gone (the message was deleted): fall back to the
+            -- tail, then to the previous position - never to the cover.
+            if follow_tail then
+                navigate("GotoPage", page_count(ui))
+            elseif pos.old_xp and pos.old_xp ~= "" then
+                local ok2, in_doc2 = pcall(function()
+                    return doc:isXPointerInDocument(pos.old_xp)
+                end)
+                if ok2 and in_doc2 then
+                    navigate("GotoXPointer", pos.old_xp)
+                end
+            end
         end
-    end
-    if not done and pos.old_xp and pos.old_xp ~= "" then
+    elseif choice == "tail" then
+        navigate("GotoPage", page_count(ui))
+    elseif choice == "old_xp" then
         local ok, in_doc = pcall(function() return doc:isXPointerInDocument(pos.old_xp) end)
         if ok and in_doc then
             navigate("GotoXPointer", pos.old_xp)
         end
     end
-    if not done then
-        navigate("GotoPage", 1)
-    end
+    -- choice == "keep": the reader keeps the position it restored.
 
     -- The old reader widget (and with it the HUD) was closed by the reload.
     if state.generation then
@@ -370,6 +396,11 @@ end
 -- Options of the refresh waiting to run (diagnostics and tests).
 function Session.queued_opts()
     return state.queued
+end
+
+-- TEST-ONLY hook (book_smoke): the position decision, without a reader.
+function Session._test_choose_position(pos, has_messages)
+    return choose_position(pos, has_messages)
 end
 
 function Session.open(app, chat_path)

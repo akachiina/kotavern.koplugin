@@ -804,6 +804,104 @@ UIManager:scheduleIn(5.8, function()
     app.state.current_connection = real_connection
 end)
 
+-- T29: the reader position resolves by anchor and NEVER falls back to the
+-- cover (the reported bug: a new message landed on page 1).
+UIManager:scheduleIn(6.0, function()
+    local pick = Session._test_choose_position
+    local function choice(pos, has_messages)
+        if not pick then return nil end
+        return pick(pos, has_messages)
+    end
+    ok(choice({}, false) == "cover",
+        "T29a: an empty book shows the cover")
+    ok(choice({ anchor = "#m3", tail = true }, true) == "anchor",
+        "T29b: the anchor wins over the tail")
+    ok(choice({ tail = true }, true) == "tail",
+        "T29c: the tail follows the end of the book")
+    ok(choice({ old_xp = "/body/DocFragment" }, true) == "old_xp",
+        "T29d: the previous xpointer is the last fallback")
+    ok(choice({}, true) == "keep",
+        "T29e: a book with messages never falls back to the cover")
+
+    -- Through the real reader: a reload whose anchor is unknown to the
+    -- document (and whose old xpointer died with the old document) must
+    -- leave the reader where it is - never on page 1.
+    local ui = ReaderUI.instance
+    if not ui then
+        ok(false, "T29f: an unknown anchor never jumps to the cover")
+        ok(false, "T29g: a valid anchor lands the reader on the message")
+        return
+    end
+    local original_bytes = read_generated_book()
+    local last = #app.state.messages
+    local original_content = app.state.messages[last].content
+    local events = {}
+    local real_handle = ui.handleEvent
+    local real_reload = ui.reloadDocument
+    local real_schedule = UIManager.scheduleIn
+    local real_xpointer = ui.document.getXPointer
+    local pending = {}
+    local probe = 0
+    ui.handleEvent = function(_, event)
+        events[#events + 1] = {
+            handler = event.handler,
+            arg = event.args and event.args[1],
+        }
+        return true
+    end
+    ui.reloadDocument = function(_, after_close, _, after_open)
+        if after_close then after_close(ui.document.file) end
+        if after_open then after_open() end
+    end
+    -- The xpointer of the OLD document is dead in the new one: the reload
+    -- must not fall back to the cover because of it.
+    ui.document.getXPointer = function() return "/body/DocFragment[99999]/gone" end
+    UIManager.scheduleIn = function(_, delay, callback)
+        pending[#pending + 1] = { delay = delay, callback = callback }
+    end
+    local function refresh_with(anchor)
+        probe = probe + 1
+        app.state.messages[last].content = original_content
+            .. " (position probe " .. tostring(probe) .. ")"
+        Storage.update_message(chat_path, last, app.state.messages[last])
+        Session.on_chat_changed(chat_path,
+            { kind = "mutation", anchor = anchor, tail = false })
+        for index = #pending, 1, -1 do
+            if pending[index].delay <= 1.0 then pending[index].callback() end
+        end
+        pending = {}
+    end
+    refresh_with("#m999")
+    local cover_jump = false
+    for index = 1, #events do
+        if events[index].handler == "onGotoPage"
+            and tonumber(events[index].arg) == 1 then
+            cover_jump = true
+        end
+    end
+    ok(not cover_jump,
+        "T29f: an unknown anchor never jumps to the cover")
+    events = {}
+    refresh_with("#m2")
+    local anchor_used = false
+    for index = 1, #events do
+        if events[index].handler == "onGotoXPointer"
+            and events[index].arg == "#m2" then
+            anchor_used = true
+        end
+    end
+    ok(anchor_used,
+        "T29g: a valid anchor lands the reader on the message")
+    -- Restore the fixture (chat + generated file).
+    app.state.messages[last].content = original_content
+    Storage.update_message(chat_path, last, app.state.messages[last])
+    Book.save(Book.path_for(chat_path), original_bytes)
+    UIManager.scheduleIn = real_schedule
+    ui.reloadDocument = real_reload
+    ui.handleEvent = real_handle
+    ui.document.getXPointer = real_xpointer
+end)
+
 UIManager:scheduleIn(6.2, function()
     ok(ReaderUI.instance == router_ui and read_generated_book() == router_body
         and router_body:find("native hidden body", 1, true) == nil,
