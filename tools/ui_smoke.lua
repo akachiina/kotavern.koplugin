@@ -2946,8 +2946,16 @@ do
     local app = fake_app({ page = "chat", settings = {}, scroll = {}, messages = msgs })
     local view = { app = app, hitboxes = {}, refresh = function() end }
     local b = new_bb()
+    -- Timing alarm: the first paint of a 50-message chat must stay well
+    -- under 1.5 s of CPU. It catches a regression back to the
+    -- bitmap-per-message behaviour (50 MuPDF builds + 50 tall bitmaps).
+    local t0 = os.clock()
     local okp, err = pcall(function() Pages.chat(view, b, 0, 0, VW, VH, 999999) end)
+    local paint_ms = (os.clock() - t0) * 1000
     ok(okp, "chat long: a 50-message chat paints (" .. tostring(err) .. ")")
+    ok(paint_ms < 1500,
+        "chat long: the first paint stays under the 1500 ms alarm ("
+        .. string.format("%.0f", paint_ms) .. " ms)")
     ok(renders <= 6,
         "chat long: only the visible messages build a bitmap (renders=" .. renders .. ")")
     ok(setcalls <= 50 + 6 + 2,
@@ -3035,6 +3043,55 @@ do
 
     HtmlBoxWidget._render = orig_render
     HtmlBoxWidget.setContent = orig_set
+end
+
+-- The oversized-message guard: a body taller than KtHTML.MEASURE_H has no
+-- layout-only measurement, so the message falls back to the canvas renderer
+-- and NO giant bitmap is ever built (the old path built a pages*96 tall
+-- bitmap - one message could allocate tens of megabytes).
+do
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local orig_render = HtmlBoxWidget._render
+    local max_h = 0
+    HtmlBoxWidget._render = function(self)
+        local h = (self.dimen and self.dimen.h) or 0
+        if h > max_h then max_h = h end
+        return orig_render(self)
+    end
+    local KtHTML = require("ktui/kthtml")
+    local ChatBubbles = require("ktui/chat_bubbles")
+    local css = KtHTML.chat_css()
+    local base_px = Theme.scale(Theme.get_base_font_size())
+    -- ~4000 one-word lines: taller than the 65 536 px probe page.
+    local content = string.rep("x\n", 4000)
+    local body = ChatBubbles._test_chat_html_body(content)
+    -- Self-validating: the body really is taller than the probe page.
+    local true_h = KtHTML.measure_body(body, css, base_px, 460, { probe_h = 300000 })
+    ok(type(true_h) == "number" and true_h > KtHTML.MEASURE_H,
+        "chat oversized: the body really is taller than the probe page ("
+        .. tostring(true_h) .. " > " .. tostring(KtHTML.MEASURE_H) .. ")")
+    ok(KtHTML.measure_body(body, css, base_px, 460, nil) == nil,
+        "chat oversized: the default probe has no height for it")
+    local app = fake_app({ page = "chat", settings = {}, scroll = {},
+        messages = { { role = "assistant", name = "Aria",
+            content = content, send_date = 1001 } } })
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local b = new_bb()
+    local okp, err = pcall(function() Pages.chat(view, b, 0, 0, VW, VH, 0) end)
+    ok(okp, "chat oversized: the chat paints without crashing (" .. tostring(err) .. ")")
+    local kinds = {}
+    for _lk, l in pairs(view._chat_layout_cache or {}) do
+        for _le, e in ipairs((l and l.entries) or {}) do
+            kinds[e.kind] = (kinds[e.kind] or 0) + 1
+        end
+    end
+    ok((kinds.html or 0) == 0,
+        "chat oversized: the message falls back to the canvas renderer (html="
+        .. tostring(kinds.html or 0) .. ")")
+    ok(max_h <= KtHTML.MEASURE_H,
+        "chat oversized: no bitmap taller than the probe page was rendered (max="
+        .. tostring(max_h) .. ")")
+    HtmlBoxWidget._render = orig_render
 end
 
 -- Debug header stats ("Show RAM and CPU in the header", Debug mode): the
