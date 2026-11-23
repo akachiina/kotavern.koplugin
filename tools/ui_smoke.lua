@@ -576,6 +576,30 @@ do
     ok(okp, "settings: auto-continue rows render (" .. tostring(err) .. ")")
 end
 
+-- === 4a-bis. Boot: the launcher must not pull the app graph in =============
+-- KOReader loads the plugin at boot; the 23-module app graph (plus the
+-- KOReader UI modules it pulls) must only load when the plugin is opened.
+do
+    require("kt_launcher")
+    ok(package.loaded["kt_app"] == nil,
+        "boot: requiring the launcher does not load the app graph ("
+        .. tostring(package.loaded["kt_app"]) .. ")")
+    local f = io.open(PLUGIN .. "/kt_launcher.lua", "r")
+    local src = f and f:read("*a") or ""
+    if f then f:close() end
+    local file_scope = false
+    for line in src:gmatch("[^\n]+") do
+        -- A file-scope require starts the line (no indentation); the one
+        -- inside Launcher.open() is indented and stays lazy.
+        if line:match("^local%s+App%s*=%s*require")
+            and line:find("kt_app", 1, true) then
+            file_scope = true
+        end
+    end
+    ok(not file_scope,
+        "boot: kt_launcher.lua has no file-scope require of kt_app")
+end
+
 -- === 4b. Auto-Continue decision (ST user-settings parity, v0.6.5) ============
 do
     local App = require("kt_app")
