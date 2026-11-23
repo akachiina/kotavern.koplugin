@@ -67,6 +67,7 @@ local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
 local logger = require("logger")
 local P = require("ktui/primitives")
 local Theme = require("ktui/theme")
+local Constants = require("kt_constants")
 
 local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
 if not lfs_ok or not lfs then
@@ -128,6 +129,36 @@ function KtHTML.scan_bottom(bb, w, bg)
         end
     end
     return nil
+end
+
+-- Layout-only height measurement (the chat-freeze fix). The measure pass must
+-- NOT build a bitmap: it lays the body out at a tall probe page and reads the
+-- content height from the used box. The transparent CSS is mandatory: with an
+-- opaque body background MuPDF paints the whole page and the used box reports
+-- the full probe height instead of the content height.
+KtHTML.MEASURE_H = 65536
+KtHTML.MEASURE_CSS = "\nhtml,body{background:transparent !important;} *{background:transparent !important;}"
+
+-- Height of the laid-out body in CSS pixels, or nil when the content does not
+-- fit a single page at the probe height (the caller then uses the canvas
+-- renderer). Never renders a bitmap and always closes the MuPDF document.
+function KtHTML.measure_body(body, css, base_px, width, opts)
+    if type(body) ~= "string" or body == "" then return nil end
+    width = tonumber(width) or 600
+    local probe = (opts and tonumber(opts.probe_h)) or KtHTML.MEASURE_H
+    if probe <= 0 then return nil end
+    local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = probe } }
+    local ok = pcall(function()
+        widget:setContent(body, (css or "") .. KtHTML.MEASURE_CSS,
+            base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
+    end)
+    local height = nil
+    if ok and widget.page_count == 1 then
+        local ok2, h = pcall(function() return widget:getSinglePageHeight() end)
+        if ok2 and type(h) == "number" then height = h end
+    end
+    pcall(function() widget:free() end)
+    return height
 end
 
 -- Blitbuffer color -> #rrggbb. NEVER compare colors to nil with ~= : LuaJIT

@@ -2760,6 +2760,72 @@ do
     end
 end
 
+-- Layout-only height measurement (the chat-freeze fix): measure_body lays the
+-- body out WITHOUT building a bitmap, so a long chat never allocates one tall
+-- bitmap per message.
+do
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local KtHTML = require("ktui/kthtml")
+    local ChatBubbles = require("ktui/chat_bubbles")
+
+    local renders = 0
+    local orig_render = HtmlBoxWidget._render
+    HtmlBoxWidget._render = function(self)
+        renders = renders + 1
+        return orig_render(self)
+    end
+
+    local css = KtHTML.chat_css()
+    local base_px = Theme.scale(Theme.get_base_font_size())
+    local bodies = {
+        "A single line of chat text.",
+        "- first item\n- second item\n\n> a quote\n\n```lua\nlocal x = 1\n```",
+        "Intro paragraph.\n\n```lua\nlocal y = 2\n```",
+    }
+    local measured = {}
+    for i, content in ipairs(bodies) do
+        local body = ChatBubbles._test_chat_html_body(content)
+        local h = KtHTML.measure_body(body, css, base_px, 460, nil)
+        measured[i] = h
+        ok(type(h) == "number" and h >= 16,
+            "measure: body " .. i .. " measures a height (got " .. tostring(h) .. ")")
+    end
+    ok(renders == 0,
+        "measure: measuring renders no bitmap (renders=" .. renders .. ")")
+
+    -- The measured height must match the rendered truth (the tall-bitmap scan).
+    for i, content in ipairs(bodies) do
+        local body = ChatBubbles._test_chat_html_body(content)
+        local w = HtmlBoxWidget:new{ dimen = Geom:new{ w = 460, h = 20000 } }
+        w:setContent(body, css, base_px, false, nil, PLUGIN .. "/assets")
+        w:_render()
+        local truth = KtHTML.scan_bottom(w.bb, 460,
+            KtHTML.css_hex(Theme.chat_bg, "#ffffff"))
+        w:free()
+        ok(truth ~= nil and measured[i] ~= nil and math.abs(measured[i] - truth) <= 12,
+            "measure: height matches the rendered truth (body " .. i .. ": "
+            .. tostring(measured[i]) .. " vs " .. tostring(truth) .. ")")
+    end
+
+    -- A body that does not fit one page at the probe height has no height:
+    -- the caller falls back to the canvas renderer.
+    local sentence = string.rep("w", 89) .. " "
+    local tall_body = ChatBubbles._test_chat_html_body(string.rep(sentence, 700))
+    ok(KtHTML.measure_body(tall_body, css, base_px, 460, { probe_h = 2000 }) == nil,
+        "measure: a body taller than the probe returns nil")
+    local huge_body = ChatBubbles._test_chat_html_body(string.rep(sentence, 3000))
+    local huge_h = KtHTML.measure_body(huge_body, css, base_px, 460,
+        { probe_h = 200000 })
+    ok(type(huge_h) == "number" and huge_h > KtHTML.MEASURE_H,
+        "measure: the oversized body really is taller than the default probe ("
+        .. tostring(huge_h) .. " > " .. tostring(KtHTML.MEASURE_H) .. ")")
+    ok(KtHTML.measure_body(huge_body, css, base_px, 460, nil) == nil,
+        "measure: a body taller than the default probe returns nil")
+
+    HtmlBoxWidget._render = orig_render
+end
+
 -- Doc sweep (the "Alto uso de memória" fix): the docs of OFFSCREEN messages release their widget (tall bitmap + MuPDF document
 -- with its fz_context + font cache); visible docs keep theirs. Heights stay
 -- cached and scrolling back rebuilds in place through the same entry.
