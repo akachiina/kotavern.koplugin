@@ -676,6 +676,76 @@ UIManager:scheduleIn(5.2, function()
     Session.handle_uri("kt:spl:3r:999") -- literal inside <pre>, not a link
 end)
 
+-- T27: a refresh whose HTML is byte-identical to the file on disk must NOT
+-- tear the reader down (the provider/preset switch case): the reader keeps
+-- its position and its history. A real content change still reloads.
+UIManager:scheduleIn(5.4, function()
+    local ui = ReaderUI.instance
+    if not ui then
+        ok(false, "T27a: a no-op refresh does not reload the reader")
+        ok(false, "T27b: a no-op refresh keeps the reading position")
+        ok(false, "T27c: a real change still reloads the reader")
+        return
+    end
+    local original_bytes = read_generated_book()
+    local last_index = #app.state.messages
+    local original_content = app.state.messages[last_index].content
+    local reloads = 0
+    local real_reload = ui.reloadDocument
+    local real_schedule = UIManager.scheduleIn
+    local pending = {}
+    -- Run the refresh debounce (and its reschedules); the 15 s watchdog is
+    -- left alone - it belongs to the reload path this block fakes.
+    local function drain(limit)
+        local ran = 0
+        while ran < limit do
+            local picked = nil
+            for index = #pending, 1, -1 do
+                if pending[index].delay <= 1.0 then
+                    picked = pending[index]
+                    table.remove(pending, index)
+                    break
+                end
+            end
+            if not picked then break end
+            picked.callback()
+            ran = ran + 1
+        end
+    end
+    ui.reloadDocument = function(_, after_close, _, after_open)
+        reloads = reloads + 1
+        if after_close then after_close(ui.document.file) end
+        if after_open then after_open() end
+    end
+    UIManager.scheduleIn = function(_, delay, callback)
+        pending[#pending + 1] = { delay = delay, callback = callback }
+    end
+    -- (1) no-op refresh: the generated HTML is identical to the file.
+    local page_before = current_page(ui)
+    Session.on_chat_changed(chat_path, { kind = "mutation" })
+    drain(5)
+    local page_after = current_page(ui)
+    ok(reloads == 0,
+        "T27a: a no-op refresh does not reload the reader (reloads=" .. reloads .. ")")
+    ok(page_after == page_before,
+        "T27b: a no-op refresh keeps the reading position (page "
+        .. tostring(page_before) .. " -> " .. tostring(page_after) .. ")")
+    -- (2) a real change still reloads.
+    app.state.messages[last_index].content = original_content .. " (edited)"
+    Storage.update_message(chat_path, last_index, app.state.messages[last_index])
+    Session.on_chat_changed(chat_path, { kind = "mutation" })
+    drain(5)
+    ok(reloads == 1,
+        "T27c: a real change still reloads the reader (reloads=" .. reloads .. ")")
+    -- Restore the fixture: the chat and the generated file go back to the
+    -- bytes the later blocks expect.
+    app.state.messages[last_index].content = original_content
+    Storage.update_message(chat_path, last_index, app.state.messages[last_index])
+    Book.save(Book.path_for(chat_path), original_bytes)
+    UIManager.scheduleIn = real_schedule
+    ui.reloadDocument = real_reload
+end)
+
 UIManager:scheduleIn(6.2, function()
     ok(ReaderUI.instance == router_ui and read_generated_book() == router_body
         and router_body:find("native hidden body", 1, true) == nil,
@@ -831,6 +901,14 @@ UIManager:scheduleIn(14.4, function()
             end
             return nil
         end
+
+        -- The reload guard skips a refresh whose HTML is byte-identical to
+        -- the file on disk, so this scenario (a reload that never calls
+        -- back) needs a REAL content change to reach the reload path.
+        local last_index = #app.state.messages
+        app.state.messages[last_index].content =
+            (app.state.messages[last_index].content or "") .. " (watchdog " .. label .. ")"
+        Storage.update_message(chat_path, last_index, app.state.messages[last_index])
 
         UIManager.scheduleIn = function(_, delay, callback)
             pending[#pending + 1] = { delay = delay, callback = callback }

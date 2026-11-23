@@ -597,6 +597,19 @@ function Book.save(book_path, html)
     return book_path
 end
 
+-- Read the generated book back (the no-op reload guard compares the freshly
+-- built HTML with the bytes the reader is showing).
+function Book.read(book_path)
+    if type(book_path) ~= "string" or book_path == "" then
+        return nil
+    end
+    local f = io.open(book_path, "r")
+    if not f then return nil end
+    local content = f:read("*a")
+    f:close()
+    return content
+end
+
 function Book.write(chat_path, html)
     local path = Book.path_for(chat_path)
     local ok, err = Book.save(path, html)

@@ -275,6 +275,14 @@ do_refresh = function(opts)
         return
     end
 
+    -- A change that does not touch the book (provider, preset, a settings
+    -- toggle) must not tear the reader down: compare the freshly built HTML
+    -- with the bytes on disk and keep the reader where it is.
+    local current = Book.read(state.book_path)
+    if current and current == html then
+        return
+    end
+
     local old_xp = ""
     pcall(function() old_xp = ui.document:getXPointer() or "" end)
     local cache_file
