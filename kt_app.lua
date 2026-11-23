@@ -674,6 +674,21 @@ function App:scroll_key()
     return self.state.page
 end
 
+-- Scroll policy: every list page opens at the top. The chat keeps its own
+-- rule (bottom / new message), so it is never reset here.
+function App:_reset_page_scroll(page)
+    if not page or page == "chat" then return end
+    if self.state.scroll then
+        self.state.scroll[page] = 0
+    end
+    -- A sheet opened over the old page must not restore the old offset
+    -- when it closes: the page was re-entered at the top.
+    local sheet = self.state.sheet
+    if sheet and sheet._saved_scroll then
+        sheet._saved_scroll = nil
+    end
+end
+
 -- === Debug Mode ============================================================
 -- Hidden developer mode: triple-tap "Installed" on Updates to arm it. Adds a
 -- Debug category in Settings (experimental/dangerous options + the CSS
@@ -1022,6 +1037,7 @@ function App:navigate(page, extra)
             self.state[k] = v
         end
     end
+    self:_reset_page_scroll(page)
     self:refresh(true)
 end
 
@@ -1031,6 +1047,7 @@ function App:go_back()
     self.state.page = prev
     self.state.previous_page = nil
     self.state.editing_theme_id = nil
+    self:_reset_page_scroll(prev)
     self:refresh(true)
 end
 
@@ -1219,7 +1236,7 @@ end
 
 function App:set_chats_query(query)
     self.state.chats_query = query or ""
-    self.state.scroll["chats_"] = 0
+    self.state.scroll["chats"] = 0
     self:refresh(true)
 end
 
@@ -6760,6 +6777,7 @@ end
 function App:show_dashboard()
     require("ktui/gifanim").stop_all(self)
     self.state.page = "dashboard"
+    self:_reset_page_scroll("dashboard")
     self:refresh_characters()
     self:refresh_chats_index()
     self:refresh(true)

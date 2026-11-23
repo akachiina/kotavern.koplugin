@@ -5598,6 +5598,47 @@ do
     ok(app:scroll_key() == "chat_c9",
         "scroll key: the chat keeps its per-chat slot ("
         .. tostring(app:scroll_key()) .. ")")
+
+    -- The list pages open at the top; the chat keeps its own rule.
+    local nav_app = setmetatable({
+        state = { settings = {}, scroll = {}, page = "chats", sheet = nil,
+            current_chat_id = "c9" },
+        refresh = function() end,
+        refresh_characters = function() end,
+        refresh_chats_index = function() end,
+    }, { __index = App })
+    nav_app.state.scroll.chats = 500
+    nav_app:navigate("chats")
+    ok(nav_app.state.scroll.chats == 0,
+        "scroll reset: entering the chats page opens it at the top ("
+        .. tostring(nav_app.state.scroll.chats) .. ")")
+    nav_app.state.page = "chat"
+    nav_app.state.scroll["chat_c9"] = 999999
+    nav_app:navigate("chat")
+    ok(nav_app.state.scroll["chat_c9"] == 999999,
+        "scroll reset: the chat keeps its bottom position ("
+        .. tostring(nav_app.state.scroll["chat_c9"]) .. ")")
+    nav_app.state.previous_page = "settings"
+    nav_app.state.scroll.settings = 500
+    nav_app:go_back()
+    ok(nav_app.state.scroll.settings == 0,
+        "scroll reset: Back opens the destination page at the top ("
+        .. tostring(nav_app.state.scroll.settings) .. ")")
+    nav_app.state.scroll.dashboard = 500
+    nav_app:show_dashboard()
+    ok(nav_app.state.scroll.dashboard == 0,
+        "scroll reset: the dashboard opens at the top ("
+        .. tostring(nav_app.state.scroll.dashboard) .. ")")
+    nav_app.state.sheet = { _saved_scroll = { key = "chats", value = 500 } }
+    nav_app:navigate("chats")
+    ok(nav_app.state.sheet and nav_app.state.sheet._saved_scroll == nil,
+        "scroll reset: a sheet cannot restore the old offset over the reset one")
+    nav_app.state.scroll.chats = 500
+    nav_app.state.scroll["chats_"] = nil
+    nav_app:set_chats_query("aria")
+    ok(nav_app.state.scroll.chats == 0 and nav_app.state.scroll["chats_"] == nil,
+        "scroll reset: the chats search resets the page slot (chats="
+        .. tostring(nav_app.state.scroll.chats) .. ")")
 end
 
 -- === 7d. Fullscreen image viewer takes a raw BlitBuffer (no custom fields) ===
