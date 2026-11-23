@@ -1626,7 +1626,7 @@ end
 function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_generating, user_name, char_image, thinking_frame)
     -- Paint epoch: html docs built during THIS paint must survive its own
     -- prune pass (their layouts were just measured above and pass 2 below
-    -- still needs their widgets). html_doc_for stamps it per doc and the
+    -- still needs their widgets). html_layout_for stamps it per doc and the
     -- prune skips same-epoch docs.
     view._chat_paint_id = (view._chat_paint_id or 0) + 1
     local settings = (view.app and view.app.state and view.app.state.settings) or {}
@@ -2168,8 +2168,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     -- for THIS paint (clamped scroll = what pass 2 paints, 100px margin
     -- like the fast path), so the released docs give back their tall
     -- bitmap + MuPDF document (fz_context + font cache) NOW; height/tall
-    -- stay cached and html_doc_for rebuilds in place when the message
-    -- scrolls back in (its layout_html_alive check forces the re-measure).
+    -- stay cached and html_widget_for rebuilds in place when the message
+    -- scrolls back in (the paint pass builds the bitmap only for the
+    -- visible band).
     do
         local docs = view.app and view.app.state and view.app.state.chat_html_docs
         if type(docs) == "table" then

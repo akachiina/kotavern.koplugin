@@ -2830,6 +2830,16 @@ end
 -- with its fz_context + font cache); visible docs keep theirs. Heights stay
 -- cached and scrolling back rebuilds in place through the same entry.
 do
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local builds = 0
+    local orig_render = HtmlBoxWidget._render
+    -- Count the BITMAP BUILDS: the offscreen documents must never be built
+    -- (the measure pass is layout-only), so the whole block stays at one
+    -- build per visible message per paint.
+    HtmlBoxWidget._render = function(self)
+        if not self.bb then builds = builds + 1 end
+        return orig_render(self)
+    end
     local msgs = {}
     for i = 1, 6 do
         local lines = {}
@@ -2853,11 +2863,25 @@ do
     local b = new_bb()
     local okp, err = pcall(function() Pages.chat(view, b, 0, 0, VW, VH, 999999) end)
     ok(okp, "docs sweep: long HTML chat paints (" .. tostring(err) .. ")")
+    -- The FIRST paint must not build the offscreen documents: the measure
+    -- pass is layout-only, so only the messages inside the band get a
+    -- bitmap (the old implementation built all 6 and freed 3 afterwards).
+    local builds_first = builds
+    ok(builds_first <= 4,
+        "docs sweep: the first paint builds only the visible messages (builds="
+        .. builds_first .. ")")
     local with_w, without_w = count_docs()
     ok(without_w >= 1,
         "docs sweep: offscreen docs released their widget (nil=" .. without_w .. ")")
     ok(with_w >= 1, "docs sweep: visible docs keep their widget (got " .. with_w .. ")")
     ok(with_w <= 4, "docs sweep: resident widgets bounded by the band (got " .. with_w .. ")")
+    -- The documents that hold a bitmap right now (the visible tail ones).
+    local bottom_keys = {}
+    for dk, dv in pairs(app.state.chat_html_docs or {}) do
+        if type(dk) == "string" and type(dv) == "table" and dv.widget then
+            bottom_keys[#bottom_keys + 1] = dk
+        end
+    end
     -- Second paint at the same scroll: idempotent (nothing churns back).
     local b2 = new_bb()
     pcall(function() Pages.chat(view, b2, 0, 0, VW, VH, 999999) end)
@@ -2875,6 +2899,22 @@ do
     ok((with_w3 + without_w3) == (with_w + without_w),
         "docs sweep: rebuild reuses the entries, no growth ("
         .. (with_w + without_w) .. " -> " .. (with_w3 + without_w3) .. ")")
+    -- The tail documents gave their bitmap back when the chat scrolled away.
+    local still = 0
+    for _, dk in ipairs(bottom_keys) do
+        local dv = app.state.chat_html_docs[dk]
+        if dv and dv.widget then still = still + 1 end
+    end
+    ok(still == 0,
+        "docs sweep: the tail docs release their bitmap on scroll-back (still="
+        .. still .. ")")
+    -- The offscreen documents were never BUILT (the measure pass is
+    -- layout-only): three paints of a 6-message chat build at most one
+    -- bitmap per visible message per paint.
+    ok(builds <= 8,
+        "docs sweep: only the visible messages built a bitmap (builds="
+        .. builds .. ")")
+    HtmlBoxWidget._render = orig_render
 end
 
 -- The long-chat freeze fix: the measure pass lays the bodies out WITHOUT
