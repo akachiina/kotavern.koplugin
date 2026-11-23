@@ -37,7 +37,7 @@ local SETTINGS_DEFAULTS = {
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     book_show_reasoning = false, -- book mode: render the reasoning blocks
-    chat_mode = "list",        -- list | book (Debug > Experimental; Appearance > Display mode)
+    chat_mode = "list",        -- list | book (Debug > Experimental; Appearance > Chat mode)
     debug_header_stats = false, -- Debug: plugin/device RAM+CPU beside the header dots
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
@@ -1283,8 +1283,8 @@ function App:show_dashboard_filter()
     -- the cards it paints, so the filter sheet warms the cache here (an
     -- explicit user action) - otherwise the tag list would only show the
     -- tags of the cards that happened to be on screen.
-    for _, path in ipairs(Storage.list_character_files()) do
-        self:card_meta(path)
+    for _i, card_path in ipairs(Storage.list_character_files()) do
+        self:card_meta(card_path)
     end
     local tags = {}
     for path, meta in pairs(self.state._card_cache or {}) do
@@ -1348,17 +1348,17 @@ function App:apply_card_meta(item)
     item.tokens = meta.tokens or 0
     local tags = {}
     if type(meta.tags) == "table" then
-        for _, t in ipairs(meta.tags) do tags[#tags + 1] = t end
+        for _i, tag_item in ipairs(meta.tags) do tags[#tags + 1] = tag_item end
     end
     local settings = self.state.settings or {}
     local global_tags = (settings.tag_map or {})[item.path]
     if type(global_tags) == "table" then
         local seen = {}
-        for _, t in ipairs(tags) do seen[tostring(t)] = true end
-        for _, t in ipairs(global_tags) do
-            if not seen[tostring(t)] then
-                tags[#tags + 1] = t
-                seen[tostring(t)] = true
+        for _i, tag_item in ipairs(tags) do seen[tostring(tag_item)] = true end
+        for _i, tag_item in ipairs(global_tags) do
+            if not seen[tostring(tag_item)] then
+                tags[#tags + 1] = tag_item
+                seen[tostring(tag_item)] = true
             end
         end
     end
@@ -1391,8 +1391,8 @@ function App:dashboard_items()
     local filter = self.state.dashboard_filter or "all"
     local needs_meta = (query ~= "") or filter:match("^tag:") ~= nil
     if needs_meta then
-        for _, it in ipairs(items) do
-            self:apply_card_meta(it)
+        for _i, card_item in ipairs(items) do
+            self:apply_card_meta(card_item)
         end
     end
 

@@ -646,7 +646,7 @@ function KtHTML.ensure(app, view, page, src, w, h, opts)
     end
     -- setContent only swaps self.document; the previous one would wait for
     -- the GC finalizer holding its fz_context + font cache (the same leak
-    -- closed in the chat's html_doc_for). Close explicitly before relayouts.
+    -- closed in the chat's html_widget_for). Close explicitly before relayouts.
     local function close_probe_doc()
         pcall(function() if widget.document then widget.document:close() end end)
         widget.document = nil

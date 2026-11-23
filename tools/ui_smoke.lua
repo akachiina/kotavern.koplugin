@@ -1802,6 +1802,76 @@ do
     ok(#bad == 0, "lint: no _() call inside a for_, body (" .. table.concat(bad, "; ") .. ")")
 end
 
+-- === 4v2-bis. Static guard: no NEW bare `_` loop variable =================
+-- `_` is gettext everywhere: `for _, x` shadows it, and a nested `_()` then
+-- calls the numeric index ("attempt to call upvalue '_'" - the quick-reply
+-- Edit crash). The 4v2 guard only sees an ACTUAL `_()` call inside the
+-- loop body, so a bare `for _,` without one slipped through. The legacy
+-- spots are baselined per file (they predate this guard); a file whose
+-- count grows FAILS, so no NEW `for _,` can enter the plugin again.
+do
+    -- Baseline: the bare-`_` loop vars that predate this guard (per file).
+    local BASELINE = {
+        ["kt_app.lua"] = 66,
+        ["kt_backup.lua"] = 2,
+        ["kt_book.lua"] = 7,
+        ["kt_book_reader.lua"] = 3,
+        ["kt_book_ui.lua"] = 3,
+        ["kt_client.lua"] = 4,
+        ["kt_i18n.lua"] = 3,
+        ["kt_models.lua"] = 20,
+        ["kt_regex_engine.lua"] = 1,
+        ["kt_storage.lua"] = 9,
+        ["kt_update.lua"] = 1,
+        ["kt_world_info.lua"] = 10,
+        ["ktui/cards.lua"] = 1,
+        ["ktui/chat_bubbles.lua"] = 4,
+        ["ktui/deck.lua"] = 4,
+        ["ktui/gifanim.lua"] = 7,
+        ["ktui/header.lua"] = 1,
+        ["ktui/images.lua"] = 2,
+        ["ktui/kthtml.lua"] = 10,
+        ["ktui/md.lua"] = 1,
+        ["ktui/modals.lua"] = 1,
+        ["ktui/pages.lua"] = 18,
+        ["ktui/scroll.lua"] = 2,
+        ["main.lua"] = 2,
+    }
+    local lfs = require("libs/libkoreader-lfs")
+    local files = {}
+    local function collect(dir, prefix)
+        for name in lfs.dir(dir) do
+            if name ~= "." and name ~= ".." then
+                local path = dir .. "/" .. name
+                if lfs.attributes(path, "mode") == "file" and name:match("%.lua$") then
+                    files[#files + 1] = prefix .. name
+                end
+            end
+        end
+    end
+    collect(PLUGIN, "")
+    collect(PLUGIN .. "/ktui", "ktui/")
+    local bad = {}
+    for rel in ipairs(files) do
+        local f = io.open(PLUGIN .. "/" .. rel, "r")
+        if f then
+            local n = 0
+            for line in f:lines() do
+                if line:match("for%s+_%s*,") or line:match("for%s+_%s+in%s") then
+                    n = n + 1
+                end
+            end
+            f:close()
+            local limit = BASELINE[rel] or 0
+            if n > limit then
+                bad[#bad + 1] = rel .. " (" .. tostring(n) .. " > " .. tostring(limit) .. ")"
+            end
+        end
+    end
+    ok(#bad == 0,
+        "lint: no new bare _ loop variable (" .. table.concat(bad, "; ") .. ")")
+end
+
 -- === 4v3. Static guard: the "Chat mode" label (retired "Display mode") ====
 do
     local function read_file(rel)
@@ -1832,7 +1902,7 @@ do
     ok(count_literal(pages_src, '_("Chat mode")') >= 2,
         "i18n: the Appearance row and its picker say Chat mode ("
         .. tostring(count_literal(pages_src, '_("Chat mode")')) .. ")")
-    for _, lang in ipairs({ "pt_BR", "es" }) do
+    for _i, lang in ipairs({ "pt_BR", "es" }) do
         local catalog = read_file("locales/" .. lang .. ".po")
         local translated = po_entry(catalog, "Chat mode")
         ok(translated ~= nil and translated ~= ""
@@ -2715,7 +2785,7 @@ do
         .. tostring(parses) .. ")")
     Png.parse_character = real_parse
     Store.list_character_files = real_list
-    for _, path in ipairs(lazy_paths) do os.remove(path) end
+    for _i, stale_path in ipairs(lazy_paths) do os.remove(stale_path) end
     os.remove("/tmp/card_file_xyz.png")
 end
 
@@ -2746,7 +2816,7 @@ do
     local function write_png(path, chunks)
         local f = io.open(path, "wb")
         f:write(string.char(137, 80, 78, 71, 13, 10, 26, 10))
-        for _, c in ipairs(chunks) do f:write(c) end
+        for _i, chunk in ipairs(chunks) do f:write(chunk) end
         f:close()
     end
     local ihdr = string.char(0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0)
@@ -3145,8 +3215,8 @@ do
         .. (with_w + without_w) .. " -> " .. (with_w3 + without_w3) .. ")")
     -- The tail documents gave their bitmap back when the chat scrolled away.
     local still = 0
-    for _, dk in ipairs(bottom_keys) do
-        local dv = app.state.chat_html_docs[dk]
+    for _i, bottom_key in ipairs(bottom_keys) do
+        local dv = app.state.chat_html_docs[bottom_key]
         if dv and dv.widget then still = still + 1 end
     end
     ok(still == 0,
@@ -3277,8 +3347,8 @@ do
     ok(ink_ratio(b2) > 10,
         "chat long: a failing MuPDF still paints the bubble text (" .. ink_ratio(b2) .. ")")
     local html_entries = 0
-    for _lk, l in pairs(view2._chat_layout_cache or {}) do
-        for _le, e in ipairs((l and l.entries) or {}) do
+    for layout_key, l in pairs(view2._chat_layout_cache or {}) do
+        for entry_index, e in ipairs((l and l.entries) or {}) do
             if e.kind == "html" then html_entries = html_entries + 1 end
         end
     end
@@ -3287,6 +3357,74 @@ do
 
     HtmlBoxWidget._render = orig_render
     HtmlBoxWidget.setContent = orig_set
+end
+
+-- Review Focus 4 (permanent): a reveal in ONE message must not invalidate
+-- the other 49 documents. The reveal state is namespaced per message, so
+-- the repaint re-measures EXACTLY one body and keeps every other document
+-- object alive (a whole-chat re-measure would re-open 50 MuPDF documents).
+do
+    local KtHTML = require("ktui/kthtml")
+    local real_measure = KtHTML.measure_body
+    local measures = 0
+    KtHTML.measure_body = function(...)
+        measures = measures + 1
+        return real_measure(...)
+    end
+    local msgs = {}
+    for i = 1, 50 do
+        msgs[i] = { role = (i % 2 == 0) and "assistant" or "user",
+            name = (i % 2 == 0) and "Aria" or "You",
+            content = "message " .. i .. " ||secret|| tail",
+            send_date = 1000 + i }
+    end
+    local app = fake_app({ page = "chat", settings = {}, scroll = {}, messages = msgs })
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local okp, err = pcall(function() Pages.chat(view, new_bb(), 0, 0, VW, VH, 999999) end)
+    ok(okp, "chat reveal isolation: the 50-message chat paints (" .. tostring(err) .. ")")
+    ok(measures == 50,
+        "chat reveal isolation: every message is measured once (measures="
+        .. measures .. ")")
+    local docs = app.state.chat_html_docs or {}
+    local before = {}
+    local before_n = 0
+    for dk, dv in pairs(docs) do
+        if type(dk) == "string" and type(dv) == "table" then
+            before[dk] = dv
+            before_n = before_n + 1
+        end
+    end
+    ok(before_n == 50,
+        "chat reveal isolation: 50 documents are cached (docs=" .. before_n .. ")")
+    -- Reveal the spoiler of the LAST message (the one on screen).
+    local target = msgs[50]
+    local target_key = tostring(target.send_date) .. ":" .. tostring(target.name)
+        .. ":" .. #target.content
+    app.state.chat_spoilers_revealed = app.state.chat_spoilers_revealed or {}
+    app.state.chat_spoilers_revealed[target_key] = { [1] = true }
+    measures = 0
+    view.hitboxes = {}
+    local okp2, err2 = pcall(function() Pages.chat(view, new_bb(), 0, 0, VW, VH, 999999) end)
+    ok(okp2, "chat reveal isolation: the revealed repaint runs (" .. tostring(err2) .. ")")
+    ok(measures == 1,
+        "chat reveal isolation: exactly ONE message is re-measured (measures="
+        .. measures .. ")")
+    local same, replaced, added = 0, 0, 0
+    for dk, dv in pairs(before) do
+        if docs[dk] == dv then same = same + 1 else replaced = replaced + 1 end
+    end
+    for dk, dv in pairs(docs) do
+        if type(dk) == "string" and type(dv) == "table" and before[dk] == nil then
+            added = added + 1
+        end
+    end
+    ok(same == 50 and replaced == 0,
+        "chat reveal isolation: the other documents survive untouched (same="
+        .. same .. " replaced=" .. replaced .. ")")
+    ok(added == 1,
+        "chat reveal isolation: the revealed message gets ONE new document (added="
+        .. added .. ")")
+    KtHTML.measure_body = real_measure
 end
 
 -- The oversized-message guard: a body taller than KtHTML.MEASURE_H has no
@@ -3324,8 +3462,8 @@ do
     local okp, err = pcall(function() Pages.chat(view, b, 0, 0, VW, VH, 0) end)
     ok(okp, "chat oversized: the chat paints without crashing (" .. tostring(err) .. ")")
     local kinds = {}
-    for _lk, l in pairs(view._chat_layout_cache or {}) do
-        for _le, e in ipairs((l and l.entries) or {}) do
+    for layout_key, l in pairs(view._chat_layout_cache or {}) do
+        for entry_index, e in ipairs((l and l.entries) or {}) do
             kinds[e.kind] = (kinds[e.kind] or 0) + 1
         end
     end
@@ -3668,7 +3806,8 @@ do
 end
 
 -- Long-message tall-bitmap integrity (the "mensagem cortada" report): the
--- html_doc_for flow budgets the bitmap as pages(96px)*96 and relayouts there.
+-- html_layout_for / html_widget_for flow budgets the bitmap as pages(96px)*96
+-- and relayouts there.
 -- A long markdown bubble used to lose its tail: the relaid-out bitmap ended
 -- mid-heading and the ordered list after it was gone at the bottom of the
 -- scroll. Ground truth = a 20000px layout; the tall budget must cover it.
@@ -3811,9 +3950,9 @@ do
     end
     local function all_html_layouts()
         local out = {}
-        for _lk, l in pairs(view._chat_layout_cache or {}) do
+        for layout_key, l in pairs(view._chat_layout_cache or {}) do
             if type(l) == "table" and l.entries then
-                for _ek, e in ipairs(l.entries) do
+                for entry_key, e in ipairs(l.entries) do
                     if e.kind == "html" then
                         out[#out + 1] = { layout = l, entry = e }
                     end
@@ -3962,9 +4101,9 @@ do
     end
     local function find_long2()
         local best, best_e, best_h = nil, nil, -1
-        for _lk, l in pairs(view2._chat_layout_cache or {}) do
+        for layout_key, l in pairs(view2._chat_layout_cache or {}) do
             if type(l) == "table" and l.entries then
-                for _ek, e in ipairs(l.entries) do
+                for entry_key, e in ipairs(l.entries) do
                     if e.kind == "html" and (e.h or 0) > best_h then
                         best, best_e, best_h = l, e, e.h or 0
                     end
@@ -4405,26 +4544,26 @@ do
         theme = "light", base_font_size = 22, debug_mode = false, chat_mode = "list" })
     ok(okp_nd, "appearance: paints without Debug Mode")
     ok(#view_nd.hitboxes == 4,
-        "appearance: without Debug Mode the Display mode row is gone (got "
+        "appearance: without Debug Mode the Chat mode row is gone (got "
         .. #view_nd.hitboxes .. " rows)")
 
-    -- With Debug Mode: the Display mode row joins (5 rows) and opens the
+    -- With Debug Mode: the Chat mode row joins (5 rows) and opens the
     -- List/Book sheet.
     local app_d, view_d, okp_d, bb_d = appearance_fixture({
         theme = "light", base_font_size = 22, debug_mode = true, chat_mode = "list" })
     ok(okp_d, "appearance: paints with Debug Mode")
     ok(#view_d.hitboxes == 5,
-        "appearance: with Debug Mode the Display mode row shows (got "
+        "appearance: with Debug Mode the Chat mode row shows (got "
         .. #view_d.hitboxes .. " rows)")
     dump(bb_d, "appearance_debug_list")
     view_d.hitboxes[3].callback(0, 0)
     local sheet = app_d.state.sheet
     ok(sheet ~= nil and #sheet.actions == 2,
-        "appearance: the Display mode row opens the List/Book sheet")
+        "appearance: the Chat mode row opens the List/Book sheet")
     if sheet and sheet.actions[2] then
         sheet.actions[2].on_tap()
         ok(app_d._mode == "book",
-            "appearance: the Book action switches the display mode")
+            "appearance: the Book action switches the chat mode")
     end
 
     -- Book mode: the chat theme launcher leaves (4 rows, no themes).
@@ -4499,7 +4638,7 @@ do
     end)
     ok(okp_b6, "b6 launcher: paints without crashing")
     -- Launcher = 3 rows (New theme / Themes… / Default theme), no knobs:
-    -- the Display mode picker moved up to Appearance (Debug Mode only).
+    -- the Chat mode picker moved up to Appearance (Debug Mode only).
     local tap_count = #view_b6.hitboxes
     ok(tap_count == 3, "b6 launcher: exactly 3 tappable rows (got " .. tap_count .. ")")
     -- Tap each row by position: 1=New, 2=Themes…, 3=Default.
@@ -8182,6 +8321,89 @@ do
     P_r3.rect(bb8, 5, 5, 40, 10, Blitbuffer.COLOR_BLACK)
     ok(rgb_px(bb8, 20, 10) == 0x000000,
         "r3: BB8 fills still route through paintRect")
+end
+
+-- === TEMP-MEASURE: scroll-up cost =========================================
+do
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local orig_set = HtmlBoxWidget.setContent
+    local orig_render = HtmlBoxWidget._render
+    local stat = { measure = 0, measure_ms = 0, build = 0, build_ms = 0,
+        render = 0, render_ms = 0 }
+    HtmlBoxWidget.setContent = function(self, ...)
+        local t = os.clock()
+        local r = orig_set(self, ...)
+        local ms = (os.clock() - t) * 1000
+        local h = (self.dimen and self.dimen.h) or 0
+        if h > 60000 then
+            stat.measure = stat.measure + 1
+            stat.measure_ms = stat.measure_ms + ms
+        else
+            stat.build = stat.build + 1
+            stat.build_ms = stat.build_ms + ms
+        end
+        return r
+    end
+    HtmlBoxWidget._render = function(self)
+        local t = os.clock()
+        local fresh = not self.bb
+        local r = orig_render(self)
+        local ms = (os.clock() - t) * 1000
+        if fresh then
+            stat.render = stat.render + 1
+            stat.render_ms = stat.render_ms + ms
+        end
+        return r
+    end
+    local msgs = {}
+    for i = 1, 50 do
+        msgs[i] = { role = (i % 2 == 0) and "assistant" or "user",
+            name = (i % 2 == 0) and "Aria" or "You",
+            content = "message " .. i .. " line one\nmessage " .. i
+                .. " line two\nmessage " .. i .. " line three\nmessage " .. i
+                .. " line four\nmessage " .. i .. " line five",
+            send_date = 1000 + i }
+    end
+    -- Kindle-like viewport: 1080x1440 with the scaled fonts.
+    Screen.getWidth = function() return 1080 end
+    Screen.getHeight = function() return 1440 end
+    Theme.reset_scale = Theme.reset_scale
+    local KW, KH = 1080, 1440
+    local app = fake_app({ page = "chat", settings = {}, scroll = {}, messages = msgs })
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local function snapshot(label)
+        print(string.format("MEASURE %s: measure=%d/%.0fms build=%d/%.0fms render=%d/%.0fms",
+            label, stat.measure, stat.measure_ms, stat.build, stat.build_ms,
+            stat.render, stat.render_ms))
+    end
+    local function kbb()
+        local b = Blitbuffer.new(KW, KH, Blitbuffer.TYPE_BB8)
+        b:fill(Blitbuffer.COLOR_WHITE)
+        return b
+    end
+    local t0 = os.clock()
+    Pages.chat(view, kbb(), 0, 0, KW, KH, 999999)
+    local first_ms = (os.clock() - t0) * 1000
+    print(string.format("MEASURE first paint (kindle size): %.0f ms", first_ms))
+    snapshot("after first paint")
+    local max_scroll = 0
+    for scroll = 20000, 0, -400 do
+        stat.measure, stat.measure_ms = 0, 0
+        stat.build, stat.build_ms = 0, 0
+        stat.render, stat.render_ms = 0, 0
+        local t = os.clock()
+        Pages.chat(view, kbb(), 0, 0, KW, KH, scroll)
+        local ms = (os.clock() - t) * 1000
+        max_scroll = max_scroll + 1
+        if max_scroll <= 6 or max_scroll % 10 == 0 then
+            print(string.format("MEASURE scroll %d: %.0f ms (build=%d/%.0fms render=%d/%.0fms)",
+                scroll, ms, stat.build, stat.build_ms, stat.render, stat.render_ms))
+        end
+    end
+    Screen.getWidth = function() return VW end
+    Screen.getHeight = function() return VH end
+    HtmlBoxWidget.setContent = orig_set
+    HtmlBoxWidget._render = orig_render
 end
 
 print(string.format("\n%d checks, %d failures", checks, fails))
