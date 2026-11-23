@@ -465,12 +465,12 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             callback = function() app:prompt_base_font_size() end,
         },
     }
-    -- Display mode (List | Book). Book mode is an experimental feature, so
+    -- Chat mode (List | Book). Book mode is an experimental feature, so
     -- the picker only exists while Debug Mode is armed (the switch itself
     -- lives in Settings > Debug > Experimental).
     if app.state.settings.debug_mode then
         rows[#rows + 1] = {
-            text = _("Display mode"),
+            text = _("Chat mode"),
             icon = "comments",
             subtext = _("List (SillyTavern) or Book (experimental)"),
             value = function()
@@ -481,7 +481,7 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
                 local Sheets = require("ktui/sheets")
                 local current = app.state.settings.chat_mode
                 Sheets.show(app, {
-                    title = _("Display mode"),
+                    title = _("Chat mode"),
                     actions = {
                         { label = _("List"), icon = "list",
                           checked = (current ~= "book"),

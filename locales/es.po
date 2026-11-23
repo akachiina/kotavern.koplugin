@@ -1882,9 +1882,6 @@ msgstr "Uso del plugin y del dispositivo junto a los tres puntos"
 msgid "Chat mode"
 msgstr "Modo de chat"
 
-msgid "Display mode"
-msgstr "Modo de visualización"
-
 msgid "List (SillyTavern) or Book (experimental)"
 msgstr "Lista (SillyTavern) o Libro (experimental)"
 

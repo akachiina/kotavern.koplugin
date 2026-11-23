@@ -1778,6 +1778,46 @@ do
     ok(#bad == 0, "lint: no _() call inside a for_, body (" .. table.concat(bad, "; ") .. ")")
 end
 
+-- === 4v3. Static guard: the "Chat mode" label (retired "Display mode") ====
+do
+    local function read_file(rel)
+        local f = io.open(PLUGIN .. "/" .. rel, "r")
+        if not f then return "" end
+        local body = f:read("*a") or ""
+        f:close()
+        return body
+    end
+    local function count_literal(text, literal)
+        local n = 0
+        local from = 1
+        while true do
+            local at = text:find(literal, from, true)
+            if not at then break end
+            n = n + 1
+            from = at + 1
+        end
+        return n
+    end
+    -- msgid "X" followed (over the blank line) by msgstr "Y".
+    local function po_entry(catalog, msgid)
+        return catalog:match('msgid "' .. msgid .. '"%s*\nmsgstr "([^"]*)"')
+    end
+    local pages_src = read_file("ktui/pages.lua")
+    ok(pages_src:find('_("Display mode")', 1, true) == nil,
+        "i18n: the source no longer says Display mode")
+    ok(count_literal(pages_src, '_("Chat mode")') >= 2,
+        "i18n: the Appearance row and its picker say Chat mode ("
+        .. tostring(count_literal(pages_src, '_("Chat mode")')) .. ")")
+    for _, lang in ipairs({ "pt_BR", "es" }) do
+        local catalog = read_file("locales/" .. lang .. ".po")
+        local translated = po_entry(catalog, "Chat mode")
+        ok(translated ~= nil and translated ~= ""
+            and catalog:find('msgid "Display mode"', 1, true) == nil,
+            "i18n: " .. lang .. " translates Chat mode and drops Display mode ("
+            .. tostring(translated) .. ")")
+    end
+end
+
 -- === 4w. GIF player lifecycle (frames, stop frees, no leak) =======================
 do
     local GifAnim = require("ktui/gifanim")
