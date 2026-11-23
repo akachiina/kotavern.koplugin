@@ -665,7 +665,13 @@ function App:prompt_chunk_interval()
 end
 
 function App:scroll_key()
-    return self.state.page .. "_" .. tostring(self.state.current_chat_id or "")
+    -- One scroll position per page. The chat keeps a per-chat key (each
+    -- conversation has its own reading position); every other page owns a
+    -- single slot named after the page.
+    if self.state.page == "chat" then
+        return "chat_" .. tostring(self.state.current_chat_id or "")
+    end
+    return self.state.page
 end
 
 -- === Debug Mode ============================================================

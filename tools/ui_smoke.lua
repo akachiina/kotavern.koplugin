@@ -5580,6 +5580,26 @@ do
     Store.load_chat, Store.list_all_chats = real_load, real_list
 end
 
+-- === 7c-bis. Scroll policy: one slot per page, the chat keeps its own =====
+do
+    local App = require("kt_app")
+    local app = setmetatable({
+        state = { settings = {}, scroll = {}, page = "dashboard",
+            current_chat_id = "c9" },
+    }, { __index = App })
+    ok(app:scroll_key() == "dashboard",
+        "scroll key: a list page owns a slot named after the page ("
+        .. tostring(app:scroll_key()) .. ")")
+    app.state.page = "chats"
+    ok(app:scroll_key() == "chats",
+        "scroll key: the chats page does not carry the chat id ("
+        .. tostring(app:scroll_key()) .. ")")
+    app.state.page = "chat"
+    ok(app:scroll_key() == "chat_c9",
+        "scroll key: the chat keeps its per-chat slot ("
+        .. tostring(app:scroll_key()) .. ")")
+end
+
 -- === 7d. Fullscreen image viewer takes a raw BlitBuffer (no custom fields) ===
 do
     local App = require("kt_app")
