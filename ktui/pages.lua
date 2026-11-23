@@ -203,6 +203,8 @@ function Pages.dashboard(view, bb, x, y, w, h, scroll)
     else
         max_scroll = Scroll.scrolled_list(view, bb, items, x, list_top, w, list_h, scroll, list_row_h, card_gap, function(item, cy, scrollable)
             local row_gutter = scrollable and gutter or 0
+            -- Lazy card metadata (the list mode shows the same name/tags).
+            if app.apply_card_meta then app:apply_card_meta(item) end
             Cards.list_item(view, bb, item, x + pad, cy, w - pad * 2 - row_gutter, list_row_h)
         end)
     end

@@ -1279,7 +1279,13 @@ function App:show_dashboard_filter()
     end
     add(_("All"), "all")
     add(_("Favorites"), "fav")
-    -- Tag list (card meta cache + global tags)
+    -- Tag list (card meta cache + global tags). The dashboard only parses
+    -- the cards it paints, so the filter sheet warms the cache here (an
+    -- explicit user action) - otherwise the tag list would only show the
+    -- tags of the cards that happened to be on screen.
+    for _, path in ipairs(Storage.list_character_files()) do
+        self:card_meta(path)
+    end
     local tags = {}
     for path, meta in pairs(self.state._card_cache or {}) do
         for _, t in ipairs(meta.tags or {}) do
@@ -1303,6 +1309,70 @@ function App:show_dashboard_filter()
     Sheets.show(self, { title = _("Filter characters"), actions = actions })
 end
 
+-- Dashboard metadata for one card, parsed on first use and cached.
+-- The old code parsed EVERY card before the filter and the visibility
+-- check; on a Kindle with a large library that was the first-launch
+-- stall (the base64 decode alone was ~200 ms per card).
+function App:card_meta(path)
+    local cache = self.state._card_cache
+    if not cache then
+        cache = {}
+        self.state._card_cache = cache
+    end
+    local meta = cache[path]
+    if meta then return meta end
+    meta = {}
+    local ok, card = pcall(require("kotaven_png").parse_character, path)
+    if ok and type(card) == "table" then
+        meta.version = card.character_version
+        meta.creator = card.creator
+        meta.tags = card.tags
+        meta.card_name = card.name
+        -- Token estimate = only what is actually sent to the LLM
+        -- (system_prompt + description + personality + scenario +
+        -- post_history_instructions). Rough heuristic: 1 token = 4 chars.
+        local Models = require("kt_models")
+        meta.tokens = math.ceil(#Models.build_system_prompt(card) / 4)
+    end
+    cache[path] = meta
+    return meta
+end
+
+-- Fill the metadata a card painter needs. The tag list is copied so the
+-- global tag_map merge never mutates the cached metadata.
+function App:apply_card_meta(item)
+    if not item or not item.path then return item end
+    local meta = self:card_meta(item.path)
+    item.version = meta.version or ""
+    item.creator = meta.creator or ""
+    item.tokens = meta.tokens or 0
+    local tags = {}
+    if type(meta.tags) == "table" then
+        for _, t in ipairs(meta.tags) do tags[#tags + 1] = t end
+    end
+    local settings = self.state.settings or {}
+    local global_tags = (settings.tag_map or {})[item.path]
+    if type(global_tags) == "table" then
+        local seen = {}
+        for _, t in ipairs(tags) do seen[tostring(t)] = true end
+        for _, t in ipairs(global_tags) do
+            if not seen[tostring(t)] then
+                tags[#tags + 1] = t
+                seen[tostring(t)] = true
+            end
+        end
+    end
+    item.tags = tags
+    -- Display the card's own name (not the file name); fall back to the
+    -- file-derived name when the card has none.
+    if type(meta.card_name) == "string" and meta.card_name ~= "" then
+        item.display_name = meta.card_name
+    else
+        item.display_name = item.name
+    end
+    return item
+end
+
 -- Build the dashboard character items: parsed meta (cached), then filtered by
 -- the current query/filter, then sorted by the chosen sort rule.
 function App:dashboard_items()
@@ -1315,48 +1385,14 @@ function App:dashboard_items()
         })
     end
 
-    local cache = self.state._card_cache
-    if not cache then
-        cache = {}
-        self.state._card_cache = cache
-    end
-    local Models = require("kt_models")
-    for _, it in ipairs(items) do
-        local meta = cache[it.path]
-        if not meta then
-            meta = {}
-            local ok, card = pcall(require("kotaven_png").parse_character, it.path)
-            if ok and type(card) == "table" then
-                meta.version = card.character_version
-                meta.creator = card.creator
-                meta.tags = card.tags
-                meta.card_name = card.name
-                -- Token estimate = only what is actually sent to the LLM
-                -- (system_prompt + description + personality + scenario +
-                -- post_history_instructions). Rough heuristic: 1 token ≈ 4 chars.
-                meta.tokens = math.ceil(#Models.build_system_prompt(card) / 4)
-            end
-            cache[it.path] = meta
-        end
-        it.version = meta.version or ""
-        it.creator = meta.creator or ""
-        it.tags = meta.tags or {}
-        it.tokens = meta.tokens or 0
-        -- Display the card's own name (not the file name); fall back to the
-        -- file-derived name when the card has none.
-        if type(meta.card_name) == "string" and meta.card_name ~= "" then
-            it.display_name = meta.card_name
-        else
-            it.display_name = it.name
-        end
-        -- merge global tags (settings.tag_map)
-        local global_tags = (self.state.settings.tag_map or {})[it.path]
-        if type(global_tags) == "table" then
-            local seen = {}
-            for _, t in ipairs(it.tags) do seen[tostring(t)] = true end
-            for _, t in ipairs(global_tags) do
-                if not seen[tostring(t)] then table.insert(it.tags, t) end
-            end
+    -- Metadata is needed to filter by name/creator/tag. Without such a
+    -- filter the cards are parsed lazily, when they are painted.
+    local query = (self.state.dashboard_query or ""):lower()
+    local filter = self.state.dashboard_filter or "all"
+    local needs_meta = (query ~= "") or filter:match("^tag:") ~= nil
+    if needs_meta then
+        for _, it in ipairs(items) do
+            self:apply_card_meta(it)
         end
     end
 

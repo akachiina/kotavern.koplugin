@@ -2643,11 +2643,55 @@ do
         state = { settings = {}, dashboard_query = "", _card_cache = nil },
     }, { __index = App })
     local items = app:dashboard_items()
+    -- The metadata is lazy: the painter asks for it (the call is guarded so
+    -- this block fails on the NEW assertions below, not on a missing method).
+    if app.apply_card_meta then app:apply_card_meta(items[1]) end
     ok(#items == 1 and items[1].display_name == "Real Card Name"
         and items[1].name == "card_file_xyz",
         "dashboard: display_name comes from the card (got "
         .. tostring(items[1] and items[1].display_name) .. ")")
+
+    -- Lazy metadata: the dashboard must NOT parse every card up front.
+    local lazy_paths = {}
+    for i = 1, 12 do
+        local path = string.format("/tmp/card_lazy_%02d.png", i)
+        make_card(path, string.format("Card %02d", i))
+        lazy_paths[#lazy_paths + 1] = path
+    end
+    local Png = require("kotaven_png")
+    local real_parse = Png.parse_character
+    local parses = 0
+    Png.parse_character = function(path)
+        parses = parses + 1
+        return real_parse(path)
+    end
+    Store.list_character_files = function() return lazy_paths end
+    local lazy_app = setmetatable({
+        state = { settings = {}, dashboard_query = "", _card_cache = nil },
+    }, { __index = App })
+    local lazy_items = lazy_app:dashboard_items()
+    ok(#lazy_items == 12,
+        "dashboard: the card list is complete without parsing ("
+        .. tostring(#lazy_items) .. ")")
+    ok(parses == 0,
+        "dashboard: the dashboard does not parse every card (parses="
+        .. tostring(parses) .. ")")
+    lazy_app:apply_card_meta(lazy_items[1])
+    ok(lazy_items[1].display_name == "Card 01" and parses == 1,
+        "dashboard: painting one card parses one card (parses="
+        .. tostring(parses) .. ", name="
+        .. tostring(lazy_items[1].display_name) .. ")")
+    lazy_app.state.dashboard_query = "Card 03"
+    local found = lazy_app:dashboard_items()
+    ok(#found == 1 and found[1].display_name == "Card 03",
+        "dashboard: the search finds the card by its own name ("
+        .. tostring(#found) .. " items)")
+    ok(parses == 12,
+        "dashboard: the search parses every card exactly once (parses="
+        .. tostring(parses) .. ")")
+    Png.parse_character = real_parse
     Store.list_character_files = real_list
+    for _, path in ipairs(lazy_paths) do os.remove(path) end
     os.remove("/tmp/card_file_xyz.png")
 end
 

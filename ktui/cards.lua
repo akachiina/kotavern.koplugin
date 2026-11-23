@@ -77,6 +77,10 @@ function Cards.character(view, bb, item, x, y, w, h)
     local line_small = Theme.line_h("small")
     local line_tiny = Theme.line_h("tiny")
     local line_chip = Theme.line_h("chip")
+    -- Lazy card metadata: the dashboard parses a card when it is painted.
+    if view.app and view.app.apply_card_meta then
+        view.app:apply_card_meta(item)
+    end
     local meta = show_meta and meta_text(item) or ""
     local tags = show_tags and tags_text(item.tags) or ""
 
