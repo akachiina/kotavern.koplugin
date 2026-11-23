@@ -2651,6 +2651,142 @@ do
     os.remove("/tmp/card_file_xyz.png")
 end
 
+-- === 4t-bis. Card parsing: every base64 padding, no image data read =========
+do
+    local b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local function b64enc(s)
+        local out = {}
+        for i = 1, #s, 3 do
+            local a, b, c = s:byte(i, i + 2)
+            b = b or 0
+            c = c or 0
+            local n = a * 65536 + b * 256 + c
+            out[#out + 1] = b64:sub(math.floor(n / 262144) + 1, math.floor(n / 262144) + 1)
+                .. b64:sub(math.floor(n / 4096) % 64 + 1, math.floor(n / 4096) % 64 + 1)
+                .. (i + 1 > #s and "=" or b64:sub(math.floor(n / 64) % 64 + 1, math.floor(n / 64) % 64 + 1))
+                .. (i + 2 > #s and "=" or b64:sub(n % 64 + 1, n % 64 + 1))
+        end
+        return table.concat(out)
+    end
+    -- The parser skips the CRC, so the fixtures carry a zeroed one: a real
+    -- CRC over a 2 MB chunk would cost seconds in pure Lua.
+    local function raw_chunk(typ, data)
+        return string.char(
+            math.floor(#data / 16777216) % 256, math.floor(#data / 65536) % 256,
+            math.floor(#data / 256) % 256, #data % 256) .. typ .. data .. "\0\0\0\0"
+    end
+    local function write_png(path, chunks)
+        local f = io.open(path, "wb")
+        f:write(string.char(137, 80, 78, 71, 13, 10, 26, 10))
+        for _, c in ipairs(chunks) do f:write(c) end
+        f:close()
+    end
+    local ihdr = string.char(0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0)
+    local function text_chunk(keyword, payload)
+        return raw_chunk("tEXt", keyword .. "\0" .. payload)
+    end
+    local Png = require("kotaven_png")
+    local json = require("json")
+
+    -- (1) Every base64 padding case decodes to the same JSON.
+    local pad_ok, pad_detail = true, ""
+    for case = 0, 2 do
+        local name = "Pad" .. tostring(case)
+        local base = json.encode({ name = name, description = "" })
+        local need = case - (#base % 3)
+        if need < 0 then need = need + 3 end
+        local payload = b64enc(json.encode({
+            name = name, description = string.rep("d", need),
+        }))
+        local path = "/tmp/card_pad_" .. tostring(case) .. ".png"
+        write_png(path, {
+            raw_chunk("IHDR", ihdr), text_chunk("chara", payload), raw_chunk("IEND", ""),
+        })
+        local card = Png.parse_character(path)
+        if not card or card.name ~= name then
+            pad_ok = false
+            pad_detail = pad_detail .. " #" .. tostring(case) .. "("
+                .. tostring(card and card.name) .. ")"
+        end
+        os.remove(path)
+    end
+    ok(pad_ok, "cards: every base64 padding case decodes to the same JSON ("
+        .. (pad_detail ~= "" and pad_detail or "ok") .. ")")
+
+    -- (2) The image data is skipped, not read.
+    local big_path = "/tmp/card_idat_big.png"
+    local payload = b64enc(json.encode({ name = "IDAT Card", description = "d" }))
+    write_png(big_path, {
+        raw_chunk("IHDR", ihdr),
+        raw_chunk("IDAT", string.rep("\0", 2 * 1024 * 1024)),
+        text_chunk("ccv3", payload),
+        raw_chunk("IEND", ""),
+    })
+    local bytes_read = 0
+    local real_open = io.open
+    io.open = function(path, mode)
+        local handle = real_open(path, mode)
+        if not handle then return nil end
+        return setmetatable({}, {
+            __index = function(_, key)
+                if key == "read" then
+                    return function(_, ...)
+                        local data = handle:read(...)
+                        if type(data) == "string" then bytes_read = bytes_read + #data end
+                        return data
+                    end
+                end
+                local fn = handle[key]
+                if type(fn) == "function" then
+                    return function(_, ...) return fn(handle, ...) end
+                end
+                return fn
+            end,
+        })
+    end
+    local extracted = Png.extract_json(big_path)
+    io.open = real_open
+    ok(type(extracted) == "string" and extracted:find("IDAT Card", 1, true) ~= nil,
+        "cards: the tEXt chunk behind the image data is still found")
+    ok(bytes_read < 200000,
+        "cards: the parser does not read the image data (bytes=" .. tostring(bytes_read) .. ")")
+    os.remove(big_path)
+
+    -- (3) ccv3 wins over chara.
+    local both_path = "/tmp/card_both.png"
+    write_png(both_path, {
+        raw_chunk("IHDR", ihdr),
+        text_chunk("chara", b64enc(json.encode({ name = "Old Chara" }))),
+        text_chunk("ccv3", b64enc(json.encode({ name = "New Ccv3" }))),
+        raw_chunk("IEND", ""),
+    })
+    local both = Png.parse_character(both_path)
+    ok(both ~= nil and both.name == "New Ccv3",
+        "cards: ccv3 wins over chara (" .. tostring(both and both.name) .. ")")
+    os.remove(both_path)
+
+    -- (4) A plain image has no card data (and must not raise).
+    local plain_path = "/tmp/card_plain.png"
+    write_png(plain_path, { raw_chunk("IHDR", ihdr), raw_chunk("IEND", "") })
+    local plain_ok, plain = pcall(function() return Png.parse_character(plain_path) end)
+    ok(plain_ok and (plain == nil or plain.name == nil),
+        "cards: a plain image yields no card and does not raise")
+    os.remove(plain_path)
+
+    -- (5) A huge card stays fast (alarm only).
+    local huge_path = "/tmp/card_huge.png"
+    local huge_json = json.encode({ name = "Huge", description = string.rep("x", 200000) })
+    write_png(huge_path, {
+        raw_chunk("IHDR", ihdr), text_chunk("ccv3", b64enc(huge_json)), raw_chunk("IEND", ""),
+    })
+    local t0 = os.clock()
+    local huge = Png.parse_character(huge_path)
+    local huge_ms = (os.clock() - t0) * 1000
+    ok(huge ~= nil and huge.name == "Huge" and huge_ms < 500,
+        "cards: a 200 KB card parses under 500 ms (" .. string.format("%.0f", huge_ms) .. " ms)")
+    os.remove(huge_path)
+end
+
 -- === 4l. Message actions open on hold/kebab, never on tap =====================
 do
     local AppView = require("ktui/app_view")

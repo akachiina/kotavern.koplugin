@@ -12,24 +12,56 @@ local function read_int(file)
     return b1 * 16777216 + b2 * 65536 + b3 * 256 + b4
 end
 
+-- Base64 decode with a lookup table: the old per-character implementation
+-- expanded every character into six binary digits (a 66 KB card became a
+-- 500 KB intermediate string and took 35 ms per card on a PC - minutes on a
+-- Kindle). The table version is ~1 ms for the same payload.
+local B64_VALUES = {}
+do
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    for i = 0, 63 do
+        B64_VALUES[alphabet:sub(i + 1, i + 1)] = i
+    end
+end
+
 local function decode_base64(data)
-    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    data = string.gsub(data, '[^' .. b .. '=]', '')
-    return (data:gsub('.', function(x)
-        if x == '=' then return '' end
-        local r, f = '', (b:find(x) - 1)
-        for i = 6, 1, -1 do
-            r = r .. (f % 2^i - f % 2^(i-1) > 0 and '1' or '0')
-        end
-        return r
-    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-        if #x ~= 8 then return '' end
-        local c = 0
-        for i = 1, 8 do
-            c = c + (x:sub(i, i) == '1' and 2^(8 - i) or 0)
-        end
-        return string.char(c)
-    end))
+    if type(data) ~= "string" then return "" end
+    -- Ignore everything outside the alphabet (newlines in wrapped payloads)
+    -- and the padding ("=" is simply not data).
+    data = data:gsub("[^A-Za-z0-9+/]", "")
+    local out = {}
+    local n = 0
+    local i = 1
+    local len = #data
+    while i + 3 <= len do
+        local c1 = B64_VALUES[data:sub(i, i)]
+        local c2 = B64_VALUES[data:sub(i + 1, i + 1)]
+        local c3 = B64_VALUES[data:sub(i + 2, i + 2)]
+        local c4 = B64_VALUES[data:sub(i + 3, i + 3)]
+        n = n + 1
+        out[n] = string.char(c1 * 4 + math.floor(c2 / 16),
+            (c2 % 16) * 16 + math.floor(c3 / 4),
+            (c3 % 4) * 64 + c4)
+        i = i + 4
+    end
+    local rest = len - i + 1
+    -- A trailing group of 2 or 3 characters carries 1 or 2 whole bytes; the
+    -- remaining bits are padding and are DROPPED (the old decoder dropped
+    -- the incomplete trailing group too).
+    if rest == 2 then
+        local c1 = B64_VALUES[data:sub(i, i)]
+        local c2 = B64_VALUES[data:sub(i + 1, i + 1)]
+        n = n + 1
+        out[n] = string.char(c1 * 4 + math.floor(c2 / 16))
+    elseif rest == 3 then
+        local c1 = B64_VALUES[data:sub(i, i)]
+        local c2 = B64_VALUES[data:sub(i + 1, i + 1)]
+        local c3 = B64_VALUES[data:sub(i + 2, i + 2)]
+        n = n + 1
+        out[n] = string.char(c1 * 4 + math.floor(c2 / 16),
+            (c2 % 16) * 16 + math.floor(c3 / 4))
+    end
+    return table.concat(out)
 end
 
 -- Extract raw JSON string from a PNG file
@@ -51,24 +83,30 @@ function Png.extract_json(filepath)
         if not len then break end
         local ctype = f:read(4)
         if not ctype then break end
-        local data = ""
-        if len > 0 then
-            data = f:read(len)
-        end
-        f:read(4) -- CRC
-        if ctype == "tEXt" then
-            local null_pos = data:find("\0")
-            if null_pos then
-                local keyword = data:sub(1, null_pos - 1)
-                local text = data:sub(null_pos + 1)
-                if keyword == "ccv3" then
-                    ccv3_data = text
-                elseif keyword == "chara" then
-                    chara_data = text
-                end
+        if ctype == "IDAT" then
+            -- Image data: hundreds of kilobytes per card and never needed.
+            -- Seek over the payload and the CRC instead of reading them.
+            f:seek("cur", len + 4)
+        else
+            local data = ""
+            if len > 0 then
+                data = f:read(len)
             end
-        elseif ctype == "IEND" then
-            break
+            f:read(4) -- CRC
+            if ctype == "tEXt" then
+                local null_pos = data:find("\0")
+                if null_pos then
+                    local keyword = data:sub(1, null_pos - 1)
+                    local text = data:sub(null_pos + 1)
+                    if keyword == "ccv3" then
+                        ccv3_data = text
+                    elseif keyword == "chara" then
+                        chara_data = text
+                    end
+                end
+            elseif ctype == "IEND" then
+                break
+            end
         end
     end
     f:close()
