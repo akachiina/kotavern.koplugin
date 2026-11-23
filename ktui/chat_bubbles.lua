@@ -938,7 +938,12 @@ local function content_digest(str)
     return string.format("%x", h)
 end
 
-local function html_doc_for(app, view, content, width, revealed, det_revealed, css_extra, role)
+-- Document METADATA for one message body (the chat-freeze fix): the measure
+-- pass lays the body out WITHOUT building a bitmap and keeps the height, the
+-- encoded body and the stylesheet. The tall bitmap is built on demand by
+-- html_widget_for, only for the messages the paint actually shows - a long
+-- chat never holds 50 tall bitmaps (and 50 MuPDF documents) at once.
+local function html_layout_for(app, view, content, width, revealed, det_revealed, css_extra, role)
     if not app or not app.state then return nil end
     local docs = app.state.chat_html_docs
     if not docs then
@@ -950,10 +955,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
                       -- per-build pairs() count over the whole store was
                       -- O(n) per miss = O(N^2) opening a long chat)
     end
-    local Constants = require("kt_constants")
     local Theme = require("ktui/theme")
-    local Geom = require("ui/geometry")
-    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
     local ChatTheme = require("ktui/chat_theme")
     -- One resolved theme (colors/text knobs merged with the settings) feeds
     -- the stylesheet AND the cache key: any knob change rebuilds the doc.
@@ -1007,33 +1009,8 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         "\0", set_sig_local(det_revealed), "\0", tostring(css_extra or "") }, "")
     local cached = docs[key]
     if cached and cached.width == width then
-        if cached.widget then
-            return cached
-        end
-        -- The offscreen sweep (end of the measure pass) released the widget
-        -- but kept height/tall: rebuild IN PLACE at the tall height the
-        -- original build used - one setContent, no page probe, no bottom
-        -- scan (identical inputs reconstruct identical pixels).
-        local base_px = Theme.scale(Theme.get_base_font_size())
-            * (tonumber(resolved.font_scale) or 1)
-        base_px = math.max(8, math.floor(base_px + 0.5))
-        local css = require("ktui/kthtml").chat_css(resolved)
-        if css_extra and css_extra ~= "" then
-            css = css .. "\n" .. css_extra
-        end
-        local okr, rerr = pcall(function()
-            local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = cached.tall or 96 } }
-            widget:setContent(chat_html_body(content, revealed, det_revealed), css,
-                base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
-            widget:_render()
-            cached.widget = widget
-        end)
-        if not okr or not cached.widget then
-            require("logger").warn("chat html rebuild failed: ", rerr)
-            docs[key] = nil
-            return nil
-        end
-        cached.paint_id = view and view._chat_paint_id or 0
+        -- The metadata is enough: the paint pass builds the bitmap when the
+        -- message scrolls into view (the offscreen sweep drops it again).
         return cached
     end
     if cached then
@@ -1057,15 +1034,15 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
             if type(l) == "table" and l._paint_id == paint_id then
                 for ei = 1, #(l.entries or {}) do
                     local e = l.entries[ei]
-                    if type(e) == "table" and e.kind == "html" and e.widget then
-                        live[e.widget] = true
+                    if type(e) == "table" and e.kind == "html" and e.doc_key then
+                        live[e.doc_key] = true
                     end
                 end
                 -- Reasoning entries in HTML mode hold their own docs.
                 for ri = 1, #(l.reasoning_entries or {}) do
                     local re = l.reasoning_entries[ri]
-                    if type(re) == "table" and re.kind == "html" and re.widget then
-                        live[re.widget] = true
+                    if type(re) == "table" and re.kind == "html" and re.doc_key then
+                        live[re.doc_key] = true
                     end
                 end
             end
@@ -1077,7 +1054,7 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         for k, v in pairs(docs) do
             if type(k) == "string" and k ~= key and type(v) == "table"
                 and v.paint_id ~= paint_id
-                and not live[v.widget] then
+                and not live[k] then
                 victims[#victims + 1] = k
             end
         end
@@ -1092,52 +1069,85 @@ local function html_doc_for(app, view, content, width, revealed, det_revealed, c
         end
         docs.n = math.max(0, n - removed)
     end
-    local okp, perr = pcall(function()
-        -- Live settings thread through so the custom chat font (KTUser
-        -- @font-face), chat_font_size and custom_css all ride inside the
-        -- same stylesheet; by-sig callers cache on the settings hash anyway.
-        local css = require("ktui/kthtml").chat_css(resolved)
-        -- Reasoning docs ride the same stylesheet plus a mute + indent layer
-        -- (the canvas reasoning look): colors come from Theme live.
-        if css_extra and css_extra ~= "" then
-            css = css .. "\n" .. css_extra
-        end
-        -- font_scale layers on the base size (ST font_scale parity).
-        local base_px = Theme.scale(Theme.get_base_font_size())
-            * (tonumber(resolved.font_scale) or 1)
-        base_px = math.max(8, math.floor(base_px + 0.5))
-        local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = width, h = 96 } }
-        widget:setContent(chat_html_body(content, revealed, det_revealed), css,
-            base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
-        local pages = widget.page_count or 1
-        -- Close the probe document before the tall relayout: setContent only
-        -- drops the reference, and the probe's fz_context + font cache would
-        -- sit in memory until the GC runs its finalizer (one per build -
-        -- part of the "RAM sobe a cada mensagem" report).
-        pcall(function() if widget.document then widget.document:close() end end)
-        widget.document = nil
-        -- Tall bitmap: relayout at pages*96 then scan the exact bottom.
-        local tall = math.max(96, pages * 96)
-        widget.dimen = Geom:new{ w = width, h = tall }
-        widget:setContent(chat_html_body(content, revealed, det_revealed), css,
-            base_px, false, nil, Constants.PLUGIN_DIR .. "/assets")
-        widget:_render()
-        -- scan_bottom must compare against the DOC's own background (the
-        -- theme surface), not the app palette - dark themes made every row
-        -- read as ink.
-        local last = require("ktui/kthtml").scan_bottom(widget.bb, width,
-            resolved.colors.surface)
-        local h = last and math.max(16, last) or 96
-        docs[key] = { widget = widget, height = h, width = width, key = key,
-            tall = tall, paint_id = view and view._chat_paint_id or 0 }
-        docs.n = (docs.n or 0) + 1
-    end)
-    if not okp then
-        require("logger").warn("chat html render failed: ", perr)
-        docs[key] = nil
+    -- MEASURE (no bitmap): the layout-only pass returns the content height.
+    -- The transparent CSS makes the used box report the CONTENT, not the
+    -- probe page. A body that does not fit one probe page (taller than
+    -- KtHTML.MEASURE_H) returns nil: the canvas renderer takes it, so an
+    -- oversized message never builds a giant bitmap.
+    local body = chat_html_body(content, revealed, det_revealed)
+    local css = require("ktui/kthtml").chat_css(resolved)
+    -- Reasoning docs ride the same stylesheet plus a mute + indent layer
+    -- (the canvas reasoning look): colors come from Theme live.
+    if css_extra and css_extra ~= "" then
+        css = css .. "\n" .. css_extra
+    end
+    -- font_scale layers on the base size (ST font_scale parity).
+    local base_px = Theme.scale(Theme.get_base_font_size())
+        * (tonumber(resolved.font_scale) or 1)
+    base_px = math.max(8, math.floor(base_px + 0.5))
+    local measured = require("ktui/kthtml").measure_body(body, css, base_px,
+        width, nil)
+    if not measured then
+        require("logger").warn("chat html measure failed (too tall): ", content:sub(1, 40))
         return nil
     end
-    return docs[key]
+    local height = math.max(16, math.floor(measured + 0.5))
+    local doc = {
+        key = key, height = height, width = width, tall = height + 8,
+        css = css, base_px = base_px, body = body, panel_bg = panel_bg,
+        widget = nil, paint_id = view and view._chat_paint_id or 0,
+    }
+    docs[key] = doc
+    docs.n = (docs.n or 0) + 1
+    return doc
+end
+
+-- Build the tall bitmap for ONE document (the paint pass): the offscreen
+-- documents stay metadata-only, so a long chat holds a handful of bitmaps
+-- instead of one per message. Returns nil when the build fails - the caller
+-- then paints the canvas fallback (never a blank bubble).
+local function html_widget_for(view, doc)
+    if not doc then return nil end
+    if doc.widget then
+        if doc.widget.document then return doc.widget end
+        pcall(function() doc.widget:free() end)
+        doc.widget = nil
+    end
+    local Constants = require("kt_constants")
+    local Geom = require("ui/geometry")
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local ok, err = pcall(function()
+        local widget = HtmlBoxWidget:new{ dimen = Geom:new{ w = doc.width, h = doc.tall } }
+        widget:setContent(doc.body, doc.css, doc.base_px, false, nil,
+            Constants.PLUGIN_DIR .. "/assets")
+        if (widget.page_count or 1) > 1 then
+            -- The body does not fit the padded height: no tall bitmap.
+            widget:free()
+            error("chat html body does not fit one page")
+        end
+        widget:_render()
+        doc.widget = widget
+    end)
+    if not ok or not doc.widget then
+        require("logger").warn("chat html build failed: ", err)
+        doc.widget = nil
+        return nil
+    end
+    doc.paint_id = view and view._chat_paint_id or 0
+    return doc.widget
+end
+
+-- The widget of a painted entry (built on demand, cached in the doc).
+local function entry_widget(view, entry)
+    if not entry then return nil end
+    if entry.widget and entry.widget.document then return entry.widget end
+    local app = view and view.app
+    local docs = app and app.state and app.state.chat_html_docs
+    local doc = docs and docs[entry.doc_key]
+    if not doc then return nil end
+    local widget = html_widget_for(view, doc)
+    entry.widget = widget
+    return widget
 end
 
 -- === Spoiler reveal + HTML-block taps ===
@@ -1169,16 +1179,20 @@ function ChatBubbles.details_state(app, msg_key)
 end
 
 -- The fast path may only reuse a cached layout while every html entry still
--- points at a live widget: the doc-cache prune frees evicted widgets, and
--- repainting a layout that references a freed one paints a blank band (the
--- "bugada" report on long chats). A dead widget forces the full re-measure,
--- which rebuilds the doc from the same content.
-local function layout_html_alive(layout)
+-- points at a cached document: the doc-cache prune drops evicted entries, and
+-- repainting a layout whose doc is gone paints a blank band (the "bugada"
+-- report on long chats). A missing doc forces the full re-measure, which
+-- rebuilds the doc metadata from the same content. The doc's WIDGET is not
+-- required: offscreen documents hold metadata only and get their bitmap
+-- built on demand when they scroll into view.
+local function layout_html_alive(app, layout)
     if not layout then return true end
+    local docs = app and app.state and app.state.chat_html_docs
     for ei = 1, #(layout.entries or {}) do
         local entry = layout.entries[ei]
         if entry.kind == "html" then
-            if not entry.widget or entry.widget.document == nil then
+            local doc = docs and docs[entry.doc_key]
+            if not doc or type(doc.height) ~= "number" then
                 return false
             end
         end
@@ -1186,7 +1200,8 @@ local function layout_html_alive(layout)
     for ri = 1, #(layout.reasoning_entries or {}) do
         local entry = layout.reasoning_entries[ri]
         if entry.kind == "html" then
-            if not entry.widget or entry.widget.document == nil then
+            local doc = docs and docs[entry.doc_key]
+            if not doc or type(doc.height) ~= "number" then
                 return false
             end
         end
@@ -1238,8 +1253,10 @@ end
 -- spoiler's reveal and rebuilds the doc; http(s) opens the KOReader
 -- external-link dialog; every other scheme is ignored.
 function ChatBubbles.chat_html_tap(view, entry, msg_key, lx, ly)
-    local widget = entry.widget
-    if not widget or not widget.getLinkByPosition then return end
+    local widget = entry and entry.widget
+    -- A message whose build failed (or whose bitmap was already released)
+    -- has no live widget: the tap does nothing instead of crashing.
+    if not widget or not widget.document or not widget.getLinkByPosition then return end
     local ok_t, link = pcall(widget.getLinkByPosition, widget, { x = lx, y = ly })
     if not ok_t or not link then return end
     local uri = tostring(link.uri or link.url or "")
@@ -1378,14 +1395,14 @@ local function block_entries(blocks, width, app, show_inline, view, body_face)
             -- failed render falls back to the plain-text parse, never a blank
             -- bubble. doc.key rides along so the spoiler tap can invalidate
             -- exactly this doc.
-            local doc = html_doc_for(app, view, block.text, width,
+            local doc = html_layout_for(app, view, block.text, width,
                 block.revealed, block.det_revealed, nil, block.role)
             if doc and doc.height then
                 table.insert(entries, {
-                    kind = "html", widget = doc.widget,
-                    h = doc.height, doc_key = doc.key, pad = 0, offset = 0,
+                    kind = "html", doc_key = doc.key,
+                    h = doc.height, pad = 0, offset = 0,
                     -- Stripped plain text rides along so draw_blocks can
-                    -- fall back to canvas if the doc widget dies/blit
+                    -- fall back to canvas if the doc build/blit
                     -- fails on some paint (otherwise the panel bg painted
                     -- right before would ERASE the previous frame's text -
                     -- the "balões apagados durante a geração" report).
@@ -1508,37 +1525,48 @@ local function draw_blocks(view, bb, entries, cx, content_y, width, color, bg, v
                 end
             elseif entry.kind == "html" then
                 -- HTML render: blit the VISIBLE slice of the
-                -- tall bitmap. The source offset MUST track the band
-                -- (top - entry_y, like the text branch's scroll offset): a
-                -- constant src_y re-stamped the doc's head rows on every
-                -- scrolled band, so tall bubbles could never show their tail
-                -- (the "mensagem cortada" report).
-                if entry.widget and band_h > 0 then
-                    local okp = pcall(function()
-                        entry.widget:_render()
-                        local src_y = math.max(0, top - entry_y)
-                        local src_h = entry.widget.bb and entry.widget.bb:getHeight() or 0
-                        local copy_h = math.min(band_h, math.max(0, src_h - src_y))
-                        if copy_h > 0 then
-                            bb:blitFrom(entry.widget.bb, cx, top, 0, src_y, width, copy_h)
+                -- tall bitmap. The bitmap is built ON DEMAND here (only the
+                -- visible messages get one); the source offset MUST track
+                -- the band (top - entry_y, like the text branch's scroll
+                -- offset): a constant src_y re-stamped the doc's head rows
+                -- on every scrolled band, so tall bubbles could never show
+                -- their tail (the "mensagem cortada" report).
+                if band_h > 0 then
+                    local widget = entry_widget(view, entry)
+                    if widget then
+                        local okp = pcall(function()
+                            widget:_render()
+                            local src_y = math.max(0, top - entry_y)
+                            local src_h = widget.bb and widget.bb:getHeight() or 0
+                            local copy_h = math.min(band_h, math.max(0, src_h - src_y))
+                            if copy_h > 0 then
+                                bb:blitFrom(widget.bb, cx, top, 0, src_y, width, copy_h)
+                            end
+                        end)
+                        if okp then
+                            view.dithered = true
+                        else
+                            -- Widget died mid-blit (MuPDF OOM on device, freed
+                            -- doc): without fill the panel bg painted right
+                            -- above keeps the band empty (fb had the old text
+                            -- overwritten - the "balões apagados" report).
+                            -- Canvas paragraph fills the band; the next full
+                            -- re-measure rebuilds the doc from cache on its own.
+                            if entry.fallback and entry.fallback ~= "" then
+                                P.scrollable_paragraph(bb, entry.fallback, cx, top,
+                                    width, band_h, "default", math.max(0, top - entry_y),
+                                    { color = color, bgcolor = bg })
+                            end
+                            require("logger").warn("chat html blit failed, canvas fallback; widget=",
+                                tostring(widget), "doc=", tostring(widget and widget.document), "bb=", tostring(widget and widget.bb))
                         end
-                    end)
-                    if okp then
-                        view.dithered = true
-                    else
-                        -- Widget died mid-blit (MuPDF OOM on device, freed
-                        -- doc): without fill the panel bg painted right
-                        -- above keeps the band empty (fb had the old text
-                        -- overwritten - the "balões apagados" report).
-                        -- Canvas paragraph fills the band; the next full
-                        -- re-measure rebuilds the doc from cache on its own.
-                        if entry.fallback then
-                            P.scrollable_paragraph(bb, entry.fallback, cx, top,
-                                width, band_h, "default", math.max(0, top - entry_y),
-                                { color = color, bgcolor = bg })
-                        end
-                        require("logger").warn("chat html blit failed, canvas fallback; widget=",
-                            tostring(entry.widget), "doc=", tostring(entry.widget and entry.widget.document), "bb=", tostring(entry.widget and entry.widget.bb))
+                    elseif entry.fallback and entry.fallback ~= "" then
+                        -- No bitmap for this message (the build failed or the
+                        -- body is too tall): the canvas renderer paints the
+                        -- text instead of leaving a blank bubble.
+                        P.scrollable_paragraph(bb, entry.fallback, cx, top,
+                            width, band_h, "default", math.max(0, top - entry_y),
+                            { color = color, bgcolor = bg })
                     end
                     -- Tap zone for links + spoiler reveals (message bodies
                     -- only - hit_ctx is nil for system/reasoning draws).
@@ -1798,18 +1826,22 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                 .. ":" .. spoiler_sig(view.app, ns)
                 .. ":" .. details_sig(view.app, ns)
             local hit = reasoning_cache[rkey]
-            -- A cached hit may hold a widget FREED by a later reveal toggle
-            -- (invalidate_doc) - reusing it would paint a blank band on the
-            -- ON->OFF->ON cycle. Dead hits rebuild like misses.
+            -- A cached hit may point at a doc that a later reveal toggle
+            -- invalidated (invalidate_doc drops the metadata) - reusing it
+            -- would paint a blank band on the ON->OFF->ON cycle. Dead hits
+            -- rebuild like misses. The doc's WIDGET is not required: it is
+            -- built on demand when the band is painted.
             if hit and type(hit) == "table" then
-                local hw = hit.entries and hit.entries[1] and hit.entries[1].widget
-                if not hw or hw.document == nil then
+                local he = hit.entries and hit.entries[1]
+                local hdocs = view.app and view.app.state and view.app.state.chat_html_docs
+                local hdoc = he and hdocs and hdocs[he.doc_key]
+                if not hdoc or type(hdoc.height) ~= "number" then
                     hit = nil
                     reasoning_cache[rkey] = nil
                 end
             end
             if not hit then
-                local doc = html_doc_for(view.app, view, reasoning, rtw,
+                local doc = html_layout_for(view.app, view, reasoning, rtw,
                     ChatBubbles.spoiler_state(view.app, ns),
                     ChatBubbles.details_state(view.app, ns),
                     "body { color: " .. require("ktui/kthtml").css_hex(Theme.chat_muted, "#666666")
@@ -1817,8 +1849,9 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                         .. require("ktui/kthtml").css_hex(Theme.chat_muted, "#666666")
                         .. " !important; }")
                 if doc and doc.height then
-                    hit = { entries = { { kind = "html", widget = doc.widget,
-                        h = doc.height, doc_key = doc.key, pad = 0, offset = 0 } }, h = doc.height }
+                    hit = { entries = { { kind = "html", doc_key = doc.key,
+                        h = doc.height, pad = 0, offset = 0,
+                        fallback = reasoning } }, h = doc.height }
                 else
                     -- Render failed: fall back to the canvas parse below.
                     hit = false
@@ -1922,7 +1955,7 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             -- them into view. Margin: heal one line early, never late.
             local visible = (cy + rh > scroll + y - 100)
                 and (cy < scroll + y + h + 100)
-            if layout_html_alive(cached) or not visible then
+            if layout_html_alive(view.app, cached) or not visible then
                 local dy = cy - (cached.y or cy)
                 cached.y = cy
                 if dy ~= 0 and cached.bubble_y then

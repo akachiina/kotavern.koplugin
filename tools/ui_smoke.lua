@@ -2877,6 +2877,126 @@ do
         .. (with_w + without_w) .. " -> " .. (with_w3 + without_w3) .. ")")
 end
 
+-- The long-chat freeze fix: the measure pass lays the bodies out WITHOUT
+-- building bitmaps; only the visible messages get one, on demand.
+do
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local renders, setcalls = 0, 0
+    local orig_render = HtmlBoxWidget._render
+    local orig_set = HtmlBoxWidget.setContent
+    -- Count the BITMAP BUILDS (a _render call with no bitmap yet): the
+    -- paint path may call _render again on an already built widget.
+    HtmlBoxWidget._render = function(self)
+        if not self.bb then renders = renders + 1 end
+        return orig_render(self)
+    end
+    HtmlBoxWidget.setContent = function(self, ...)
+        setcalls = setcalls + 1
+        return orig_set(self, ...)
+    end
+
+    local msgs = {}
+    for i = 1, 50 do
+        msgs[i] = { role = (i % 2 == 0) and "assistant" or "user",
+            name = (i % 2 == 0) and "Aria" or "You",
+            content = "message " .. i .. " line one\nmessage " .. i
+                .. " line two\nmessage " .. i .. " line three",
+            send_date = 1000 + i }
+    end
+    local app = fake_app({ page = "chat", settings = {}, scroll = {}, messages = msgs })
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local b = new_bb()
+    local okp, err = pcall(function() Pages.chat(view, b, 0, 0, VW, VH, 999999) end)
+    ok(okp, "chat long: a 50-message chat paints (" .. tostring(err) .. ")")
+    ok(renders <= 6,
+        "chat long: only the visible messages build a bitmap (renders=" .. renders .. ")")
+    ok(setcalls <= 50 + 6 + 2,
+        "chat long: one layout per message + one build per visible (setContent="
+        .. setcalls .. ")")
+    ok(ink_ratio(b) > 300, "chat long: the chat still paints ink (" .. ink_ratio(b) .. ")")
+    ok(count_hits(view) >= 4, "chat long: the chat still registers its hitboxes")
+    local total_docs, with_widget = 0, 0
+    for dk, dv in pairs(app.state.chat_html_docs or {}) do
+        if type(dk) == "string" and type(dv) == "table" then
+            total_docs = total_docs + 1
+            if dv.widget then with_widget = with_widget + 1 end
+        end
+    end
+    ok(total_docs == 50,
+        "chat long: every message has a cached layout (docs=" .. total_docs .. ")")
+    ok(with_widget <= 6,
+        "chat long: only the visible documents carry a bitmap (with widget="
+        .. with_widget .. ")")
+
+    -- The paint build lays the body out at (measured + 8): every body must
+    -- still fit ONE page there, or the bubble would silently fall back to
+    -- the canvas renderer.
+    do
+        local Geom = require("ui/geometry")
+        local KtHTML = require("ktui/kthtml")
+        local ChatBubbles = require("ktui/chat_bubbles")
+        local css = KtHTML.chat_css()
+        local base_px = Theme.scale(Theme.get_base_font_size())
+        local samples = {
+            "A single line of chat text.",
+            "- first item\n- second item\n\n> a quote\n\n```lua\nlocal x = 1\n```",
+            "Intro paragraph.\n\n```lua\nlocal y = 2\n```",
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\nAfter the table.",
+            "**bold** _italic_ `code` and a ||spoiler|| end.",
+            string.rep("A long paragraph line of words. ", 40),
+        }
+        local bad, detail = 0, ""
+        for i, content in ipairs(samples) do
+            local body = ChatBubbles._test_chat_html_body(content)
+            local m = KtHTML.measure_body(body, css, base_px, 460, nil)
+            if m then
+                local w = HtmlBoxWidget:new{ dimen = Geom:new{ w = 460, h = m + 8 } }
+                w:setContent(body, css, base_px, false, nil, PLUGIN .. "/assets")
+                if (w.page_count or 1) > 1 then
+                    bad = bad + 1
+                    detail = detail .. " #" .. i .. " pages=" .. tostring(w.page_count)
+                end
+                w:free()
+            else
+                bad = bad + 1
+                detail = detail .. " #" .. i .. " no-height"
+            end
+        end
+        ok(bad == 0,
+            "chat long: every body fits one page at measured+8 (bad=" .. bad
+            .. detail .. ")")
+    end
+
+    -- A failing MuPDF must not blank the bubble.
+    local app2 = fake_app({ page = "chat", settings = {}, scroll = {},
+        messages = { { role = "assistant", name = "Aria",
+            content = "the mupdf layout of this body fails on purpose",
+            send_date = 1001 } } })
+    local view2 = { app = app2, hitboxes = {}, refresh = function() end }
+    HtmlBoxWidget.setContent = function(self, body, ...)
+        if type(body) == "string" and body:find("fails on purpose", 1, true) then
+            error("mupdf layout failed on purpose")
+        end
+        return orig_set(self, body, ...)
+    end
+    local b2 = new_bb()
+    local okp2, err2 = pcall(function() Pages.chat(view2, b2, 0, 0, VW, VH, 0) end)
+    ok(okp2, "chat long: a failing MuPDF does not crash the paint (" .. tostring(err2) .. ")")
+    ok(ink_ratio(b2) > 10,
+        "chat long: a failing MuPDF still paints the bubble text (" .. ink_ratio(b2) .. ")")
+    local html_entries = 0
+    for _lk, l in pairs(view2._chat_layout_cache or {}) do
+        for _le, e in ipairs((l and l.entries) or {}) do
+            if e.kind == "html" then html_entries = html_entries + 1 end
+        end
+    end
+    ok(html_entries == 0,
+        "chat long: a failing MuPDF falls back to the canvas renderer")
+
+    HtmlBoxWidget._render = orig_render
+    HtmlBoxWidget.setContent = orig_set
+end
+
 -- Debug header stats ("Show RAM and CPU in the header", Debug mode): the
 -- compact P<lua MB> <cpu %>·D<device MB> <cpu %> readout beside the kebab
 -- (ktui/debug_stats), fed by /proc reads + AppView paint-CPU accounting.
@@ -3520,8 +3640,13 @@ do
     -- Best doc-row offset for a paint strip: min grayscale mismatch over the
     -- doc bitmap (step 4 rows). Returns offset, mismatch rate.
     local function match_offset(paint, px0, py0, strip_w, strip_h, doc_bb, doc_w, doc_h)
-        local best_off, best_bad, total = 0, 1e9, 0
-        for off = 0, math.max(0, doc_h - strip_h), 4 do
+        -- 1px resolution: the paint strip and the doc rows can sit one pixel
+        -- apart (the bubble geometry rounds the band), and only the exact
+        -- row scores a perfect match. A coarse grid locks onto a repetitive
+        -- row instead and the offset stops tracking the scroll.
+        local max_off = math.max(0, doc_h - strip_h)
+        local best_off, best_bad = 0, 1e9
+        for off = 0, max_off do
             local bad, n = 0, 0
             for dy = 0, strip_h - 1, 4 do
                 for dx = 0, strip_w - 1, 12 do
@@ -3531,10 +3656,10 @@ do
                     if math.abs(a - c) > 60 then bad = bad + 1 end
                 end
             end
-            total = n
-            if bad < best_bad then best_bad, best_off = bad, off end
+            local rate = n > 0 and bad / n or 1
+            if rate < best_bad then best_bad, best_off = rate, off end
         end
-        return best_off, (total > 0) and (best_bad / total) or 1
+        return best_off, best_bad
     end
 
     local okp0, total0 = paint2(0)
