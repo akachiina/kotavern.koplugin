@@ -367,6 +367,11 @@ function Session.chat_path()
     return state.chat_path
 end
 
+-- Options of the refresh waiting to run (diagnostics and tests).
+function Session.queued_opts()
+    return state.queued
+end
+
 function Session.open(app, chat_path)
     if type(chat_path) ~= "string" or chat_path == "" then
         return nil, "no chat path"
@@ -563,7 +568,12 @@ function Session.on_generation_end()
     if was then
         -- Generation/continue/regenerate may replace the active swipe's markup.
         clear_reveals()
-        schedule_refresh({ kind = "done" }, 0.35)
+        -- The reply is the last message: the anchor points at it, so the
+        -- reader lands on the new answer instead of the cover.
+        local data = collect()
+        local count = #(data.messages or {})
+        local anchor = count > 0 and ("#m" .. tostring(count)) or nil
+        schedule_refresh({ kind = "done", anchor = anchor }, 0.35)
     end
 end
 

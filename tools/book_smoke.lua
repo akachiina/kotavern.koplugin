@@ -746,6 +746,64 @@ UIManager:scheduleIn(5.4, function()
     ui.reloadDocument = real_reload
 end)
 
+-- T28: the send path and the generation end carry the anchor of the new
+-- message (#mN), so the reader can land on it instead of the cover.
+UIManager:scheduleIn(5.8, function()
+    local captured = {}
+    local real_on_chat_changed = Session.on_chat_changed
+    local real_append = Storage.append_message
+    local real_generate = app._do_generate
+    local real_refresh = app.refresh
+    local real_connection = app.state.current_connection
+    Session.on_chat_changed = function(_, opts)
+        captured[#captured + 1] = opts
+    end
+    Storage.append_message = function() end
+    app._do_generate = function() end
+    app.refresh = function() end
+    app.state.current_connection = {
+        id = "book-smoke", name = "Book smoke", model_id = "smoke",
+    }
+    local before_count = #app.state.messages
+    app:_do_send_message("book anchor probe")
+    local send_opts = captured[1]
+    ok(send_opts ~= nil and send_opts.kind == "user"
+        and send_opts.anchor == "#m" .. tostring(#app.state.messages),
+        "T28a: sending a message carries the anchor of the new message ("
+        .. tostring(send_opts and send_opts.anchor) .. ")")
+    -- The probe message must not stay in the chat.
+    table.remove(app.state.messages)
+    ok(#app.state.messages == before_count,
+        "T28b: the send probe leaves the message list as it was")
+
+    -- Generation end: the reply is the last message, so the anchor points
+    -- at it.
+    local pending = {}
+    local real_schedule = UIManager.scheduleIn
+    UIManager.scheduleIn = function(_, delay, callback)
+        pending[#pending + 1] = { delay = delay, callback = callback }
+    end
+    Session.on_generation_start(app)
+    Session.on_generation_end()
+    local queued = Session.queued_opts and Session.queued_opts() or nil
+    ok(queued ~= nil and queued.kind == "done"
+        and queued.anchor == "#m" .. tostring(#app.state.messages),
+        "T28c: the generation end carries the anchor of the reply ("
+        .. tostring(queued and queued.anchor) .. ")")
+    -- Run the queued refresh NOW: it is a no-op (the HTML did not change) and
+    -- it clears the pending refresh, which would otherwise block the
+    -- disclosure taps of the later blocks.
+    for index = #pending, 1, -1 do
+        if pending[index].delay <= 1.0 then pending[index].callback() end
+    end
+    UIManager.scheduleIn = real_schedule
+    Session.on_chat_changed = real_on_chat_changed
+    Storage.append_message = real_append
+    app._do_generate = real_generate
+    app.refresh = real_refresh
+    app.state.current_connection = real_connection
+end)
+
 UIManager:scheduleIn(6.2, function()
     ok(ReaderUI.instance == router_ui and read_generated_book() == router_body
         and router_body:find("native hidden body", 1, true) == nil,

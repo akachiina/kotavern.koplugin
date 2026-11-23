@@ -5132,8 +5132,10 @@ function App:_do_send_message(text)
     -- Save user message to JSONL
     Storage.append_message(self.state.current_chat_path, "user", text, nil, "User")
     -- Book mode: show the user's message immediately; the reply streams into
-    -- the HUD and lands as a reload.
-    self:_book_mutated({ kind = "user", tail = true })
+    -- the HUD and lands as a reload. The anchor is the message just appended
+    -- (1-based index), so the reader lands on it instead of the cover.
+    self:_book_mutated({ kind = "user", tail = true,
+        anchor = "#m" .. tostring(#self.state.messages) })
 
     -- Scroll to the new message
     self.state.scroll[self:scroll_key()] = 999999
