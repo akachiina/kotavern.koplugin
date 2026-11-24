@@ -8323,87 +8323,92 @@ do
         "r3: BB8 fills still route through paintRect")
 end
 
--- === TEMP-MEASURE: scroll-up cost =========================================
+-- === Quit: release the heavy caches and drop the app instance =========
+-- The "3 dots -> Quit" close froze the Kindle. Two defects fed it:
+--   (1) the close freed NOTHING, so the chat HTML pipeline kept its
+--       MuPDF documents (an fz_context + 3 font faces each) and the tall
+--       bitmaps alive - and the App singleton stayed in the Launcher
+--       forever, so the memory piled up from session to session;
+--   (2) the Quit only closed the VIEW: the launcher kept the closed
+--       app, so the next open started from the stale session.
 do
-    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
-    local orig_set = HtmlBoxWidget.setContent
-    local orig_render = HtmlBoxWidget._render
-    local stat = { measure = 0, measure_ms = 0, build = 0, build_ms = 0,
-        render = 0, render_ms = 0 }
-    HtmlBoxWidget.setContent = function(self, ...)
-        local t = os.clock()
-        local r = orig_set(self, ...)
-        local ms = (os.clock() - t) * 1000
-        local h = (self.dimen and self.dimen.h) or 0
-        if h > 60000 then
-            stat.measure = stat.measure + 1
-            stat.measure_ms = stat.measure_ms + ms
-        else
-            stat.build = stat.build + 1
-            stat.build_ms = stat.build_ms + ms
-        end
-        return r
-    end
-    HtmlBoxWidget._render = function(self)
-        local t = os.clock()
-        local fresh = not self.bb
-        local r = orig_render(self)
-        local ms = (os.clock() - t) * 1000
-        if fresh then
-            stat.render = stat.render + 1
-            stat.render_ms = stat.render_ms + ms
-        end
-        return r
-    end
+    -- (1) The close releases every live HTML document.
+    local App = require("kt_app")
     local msgs = {}
-    for i = 1, 50 do
+    for i = 1, 6 do
         msgs[i] = { role = (i % 2 == 0) and "assistant" or "user",
             name = (i % 2 == 0) and "Aria" or "You",
-            content = "message " .. i .. " line one\nmessage " .. i
-                .. " line two\nmessage " .. i .. " line three\nmessage " .. i
-                .. " line four\nmessage " .. i .. " line five",
-            send_date = 1000 + i }
+            content = "message " .. i .. " with **bold** and a ||spoiler|| tail",
+            send_date = 3000 + i }
     end
-    -- Kindle-like viewport: 1080x1440 with the scaled fonts.
-    Screen.getWidth = function() return 1080 end
-    Screen.getHeight = function() return 1440 end
-    Theme.reset_scale = Theme.reset_scale
-    local KW, KH = 1080, 1440
-    local app = fake_app({ page = "chat", settings = {}, scroll = {}, messages = msgs })
+    local app = setmetatable({
+        state = {
+            page = "chat", settings = {}, scroll = {}, messages = msgs,
+            chats_index = {}, personas = { list = {}, active = nil },
+            dashboard_query = "", dashboard_filter = "all",
+            is_generating = false, reasoning_open = {}, reasoning_full = {},
+        },
+    }, { __index = App })
+    function app:scroll_key() return self.state.page end
     local view = { app = app, hitboxes = {}, refresh = function() end }
-    local function snapshot(label)
-        print(string.format("MEASURE %s: measure=%d/%.0fms build=%d/%.0fms render=%d/%.0fms",
-            label, stat.measure, stat.measure_ms, stat.build, stat.build_ms,
-            stat.render, stat.render_ms))
-    end
-    local function kbb()
-        local b = Blitbuffer.new(KW, KH, Blitbuffer.TYPE_BB8)
-        b:fill(Blitbuffer.COLOR_WHITE)
-        return b
-    end
-    local t0 = os.clock()
-    Pages.chat(view, kbb(), 0, 0, KW, KH, 999999)
-    local first_ms = (os.clock() - t0) * 1000
-    print(string.format("MEASURE first paint (kindle size): %.0f ms", first_ms))
-    snapshot("after first paint")
-    local max_scroll = 0
-    for scroll = 20000, 0, -400 do
-        stat.measure, stat.measure_ms = 0, 0
-        stat.build, stat.build_ms = 0, 0
-        stat.render, stat.render_ms = 0, 0
-        local t = os.clock()
-        Pages.chat(view, kbb(), 0, 0, KW, KH, scroll)
-        local ms = (os.clock() - t) * 1000
-        max_scroll = max_scroll + 1
-        if max_scroll <= 6 or max_scroll % 10 == 0 then
-            print(string.format("MEASURE scroll %d: %.0f ms (build=%d/%.0fms render=%d/%.0fms)",
-                scroll, ms, stat.build, stat.build_ms, stat.render, stat.render_ms))
+    local okp, err = pcall(function()
+        Pages.chat(view, new_bb(), 0, 0, VW, VH, 999999)
+    end)
+    ok(okp, "quit: the chat paints before the close (" .. tostring(err) .. ")")
+    local live = 0
+    for dk, dv in pairs(app.state.chat_html_docs or {}) do
+        if type(dk) == "string" and type(dv) == "table" and dv.widget then
+            live = live + 1
         end
     end
-    Screen.getWidth = function() return VW end
-    Screen.getHeight = function() return VH end
-    HtmlBoxWidget.setContent = orig_set
-    HtmlBoxWidget._render = orig_render
+    ok(live > 0,
+        "quit: the chat holds live HTML documents before the close (live="
+        .. live .. ")")
+    local okc, errc = pcall(function() app:close() end)
+    ok(okc, "quit: the close runs without errors (" .. tostring(errc) .. ")")
+    local left = 0
+    for dk, dv in pairs(app.state.chat_html_docs or {}) do
+        if type(dk) == "string" and type(dv) == "table" and dv.widget then
+            left = left + 1
+        end
+    end
+    ok(left == 0,
+        "quit: the close releases every live HTML document (left=" .. left .. ")")
+    ok(app.state.chat_html_docs == nil
+        or next(app.state.chat_html_docs) == nil,
+        "quit: the close drops the HTML document cache")
+    -- The close uninstalls the i18n hook (the harness keeps using it):
+    -- put it back.
+    require("kt_i18n").install()
+
+    -- (2) The Quit drops the launcher singleton: the next open has to
+    -- build a NEW app, not reuse the closed one.
+    local Launcher = require("kt_launcher")
+    local built, closed = 0, 0
+    local fake = { show = function() end, close = function() closed = closed + 1 end }
+    local real_kt_app = package.loaded["kt_app"]
+    package.loaded["kt_app"] = {
+        new = function() built = built + 1; return fake end,
+    }
+    Launcher.open(nil)
+    package.loaded["kt_app"] = real_kt_app
+    ok(built == 1,
+        "quit: the launcher builds the app on open (built=" .. built .. ")")
+    -- The Quit entry point (kebab -> Quit, the error page -> Quit) closes
+    -- through the launcher.
+    local AppView = require("ktui/app_view")
+    local qview = AppView:new{ app = fake }
+    qview:onClose()
+    ok(closed == 1, "quit: the view closes the app (closed=" .. closed .. ")")
+    -- The next open must build a fresh instance.
+    package.loaded["kt_app"] = {
+        new = function() built = built + 1; return fake end,
+    }
+    Launcher.open(nil)
+    package.loaded["kt_app"] = real_kt_app
+    ok(built == 2,
+        "quit: the launcher drops the closed instance (built=" .. built .. ")")
+    Launcher.close()
 end
 
 print(string.format("\n%d checks, %d failures", checks, fails))

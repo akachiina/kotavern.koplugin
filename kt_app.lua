@@ -893,6 +893,12 @@ function App:close()
     self:_cancel_generation()
     require("ktui/gifanim").stop_all(self)
     require("ktui/sheets").drop_snapshot()
+    -- Release the heavy caches BEFORE the view goes away: the chat HTML
+    -- pipeline holds a MuPDF document + a tall bitmap per live message
+    -- (tens of MB on a long chat) and nothing ever freed them, so the
+    -- memory survived the Quit (the frozen screen on the Kindle).
+    require("ktui/chat_bubbles").free_all(self)
+    require("ktui/kthtml").free_all(self)
     if self.view then
         UIManager:close(self.view)
     end

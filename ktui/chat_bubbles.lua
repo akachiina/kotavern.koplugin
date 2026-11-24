@@ -1150,6 +1150,35 @@ local function entry_widget(view, entry)
     return widget
 end
 
+-- Release EVERYTHING the chat HTML pipeline holds: the MuPDF documents
+-- (each one carries an fz_context + the 3 embedded font faces) and the
+-- tall bitmaps. Called when the app closes: a long chat keeps tens of
+-- MB of documents + bitmaps alive, and a close that freed NOTHING left
+-- that memory in the device for the whole session (the frozen screen on
+-- the Kindle: the Quit left the app - and its cache - alive in the
+-- Launcher, session after session).
+function ChatBubbles.free_all(app)
+    local view = app and app.view
+    if view then
+        -- The layout cache holds the same widget objects (plus the parsed
+        -- blocks): drop it too, or the widgets stay referenced.
+        view._chat_layout_cache = nil
+        view._chat_layout_sig = nil
+        view._chat_reasoning_cache = nil
+    end
+    local docs = app and app.state and app.state.chat_html_docs
+    if type(docs) == "table" then
+        for dk, dv in pairs(docs) do
+            if type(dk) == "string" and type(dv) == "table" and dv.widget then
+                -- free() closes the MuPDF document AND frees the bitmap.
+                pcall(function() dv.widget:free() end)
+                dv.widget = nil
+            end
+        end
+        app.state.chat_html_docs = nil
+    end
+end
+
 -- === Spoiler reveal + HTML-block taps ===
 
 -- Reveal set for one message (session-scoped: dies with app.state, like the

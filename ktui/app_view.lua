@@ -517,7 +517,10 @@ function AppView:onCloseWidget()
 end
 
 function AppView:onClose()
-    self.app:close()
+    -- Quit: the launcher drops the app instance, so the next open starts
+    -- clean - the old one kept the chat caches (a MuPDF document + a tall
+    -- bitmap per live message) alive for the whole session.
+    require("kt_launcher").close(self.app)
     return true
 end
 
