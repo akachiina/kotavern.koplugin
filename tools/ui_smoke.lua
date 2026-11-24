@@ -8472,6 +8472,25 @@ do
             end
         end
     end
+    -- Every rendered bitmap of the chat, in bytes. The buffer type decides
+    -- the size (the harness screen is a color device: 4 bytes per pixel).
+    local function total_bitmap_bytes(app)
+        local bytes = 0
+        for dk, dv in pairs(app.state.chat_html_docs or {}) do
+            if type(dk) == "string" and type(dv) == "table" and dv.widget
+                and dv.widget.bb then
+                local bb = dv.widget.bb
+                local bpp = 8
+                local ok, btype = pcall(function() return bb:getType() end)
+                if ok and btype then
+                    bpp = (Blitbuffer.TYPE_TO_BPP or {})[btype] or 8
+                end
+                bytes = bytes + math.floor((bb:getWidth() or 0)
+                    * (bb:getHeight() or 0) * bpp / 8)
+            end
+        end
+        return bytes
+    end
 
     -- (1) A message that leaves the band keeps its bitmap and gives its
     -- MuPDF document back (the document is the expensive part).
@@ -8544,6 +8563,124 @@ do
             "scroll: the prefetch takes the build off the scroll path (without="
             .. without .. " with=" .. with_pf .. ")")
     end
+
+    -- (3b) The prefetch covers BOTH drag directions. A finger-up drag
+    -- RAISES the scroll (the messages below the band come in from the
+    -- bottom edge); a finger-down drag lowers it (the messages above come
+    -- in from the top edge). The prefetch prepared only the top side, so
+    -- the finger-up drag still paid the MuPDF build on the drag path.
+    local appC, viewC = scroll_fixture()
+    Pages.chat(viewC, new_bb(), 0, 0, VW, VH, 999999)
+    local bottomC = appC.state.scroll[appC:scroll_key()] or 0
+    local midC = math.max(0, bottomC - 500)
+    -- The app stores the offset BEFORE the repaint (the real app does the
+    -- same): the prefetch reads it.
+    appC.state.scroll[appC:scroll_key()] = midC
+    Pages.chat(viewC, new_bb(), 0, 0, VW, VH, midC)
+    builds = 0
+    local builtC = ChatBubbles.prefetch(viewC)
+    ok(builtC > 0,
+        "scroll: the prefetch renders the band below the viewport (built="
+        .. builtC .. ")")
+    local docC = find_doc(appC, "message 20")
+    ok(docC ~= nil and docC.widget ~= nil and docC.widget.bb ~= nil,
+        "scroll: the prefetch prepares the messages the drag-up reaches")
+    appC.state.scroll[appC:scroll_key()] = bottomC
+    builds = 0
+    Pages.chat(viewC, new_bb(), 0, 0, VW, VH, bottomC)
+    ok(builds == 0,
+        "scroll: the drag-up costs no build (builds=" .. builds .. ")")
+
+    -- (3c) The prefetch never builds the streaming message: its content
+    -- changes on every chunk, so the bitmap would be stale before the
+    -- next paint.
+    local appS, viewS = scroll_fixture()
+    appS.state.messages[1].is_streaming = true
+    Pages.chat(viewS, new_bb(), 0, 0, VW, VH, 0)
+    local docS = find_doc(appS, "message 1 line")
+    local layS = (viewS._chat_layouts or {})[1]
+    local bandS = viewS._chat_band
+    ok(docS ~= nil and layS ~= nil and bandS ~= nil,
+        "scroll: the fixture has a streaming message above the band")
+    if docS and layS and bandS then
+        -- Put the band right below the streaming message (it leaves the
+        -- band on the top side: the side the prefetch walks).
+        local scrollS = math.max(0, (layS.y or 0) + (layS.row_h or layS.h or 0)
+            - (bandS.y or 0) + 10)
+        appS.state.scroll[appS:scroll_key()] = scrollS
+        -- Drop the bitmap the first paint built: the prefetch must not
+        -- make a new one for the streaming body.
+        if docS.widget then
+            pcall(function() docS.widget:free() end)
+            docS.widget = nil
+        end
+        ChatBubbles.prefetch(viewS)
+        ok(not (docS.widget and docS.widget.bb),
+            "scroll: the prefetch never builds the streaming message")
+    end
+
+    -- (3d) The prefetch respects the bitmap budget: the retained offscreen
+    -- bitmaps never grow past it (the prefetch built them with no cap and
+    -- the memory piled up between the paints).
+    local saved_budget = ChatBubbles.BITMAP_BUDGET or (8 * 1024 * 1024)
+    local appB2, viewB2 = scroll_fixture()
+    Pages.chat(viewB2, new_bb(), 0, 0, VW, VH, 999999)
+    local beforeB2 = total_bitmap_bytes(appB2)
+    -- The budget: one message bitmap + half. The prefetch may keep ONE
+    -- more body, not two.
+    local oneB2 = 0
+    for dk, dv in pairs(appB2.state.chat_html_docs or {}) do
+        if type(dk) == "string" and type(dv) == "table" and dv.widget
+            and dv.widget.bb then
+            local bb = dv.widget.bb
+            local bpp = 8
+            local ok, btype = pcall(function() return bb:getType() end)
+            if ok and btype then
+                bpp = (Blitbuffer.TYPE_TO_BPP or {})[btype] or 8
+            end
+            oneB2 = math.max(oneB2, math.floor((bb:getWidth() or 0)
+                * (bb:getHeight() or 0) * bpp / 8))
+        end
+    end
+    local budgetB2 = math.floor(oneB2 * 1.5)
+    ChatBubbles.BITMAP_BUDGET = budgetB2
+    ChatBubbles.prefetch(viewB2, 99)
+    local afterB2 = total_bitmap_bytes(appB2)
+    ChatBubbles.BITMAP_BUDGET = saved_budget
+    ok(budgetB2 > 0, "scroll: the budget fixture has a measured body")
+    ok(afterB2 - beforeB2 <= budgetB2,
+        "scroll: the prefetch respects the bitmap budget (added="
+        .. (afterB2 - beforeB2) .. " budget=" .. budgetB2 .. ")")
+    ok(afterB2 > beforeB2,
+        "scroll: the prefetch still builds inside the budget (added="
+        .. (afterB2 - beforeB2) .. ")")
+
+    -- (3e) The prefetch waits for a quiet moment: a pending repaint, a
+    -- drag or a running generation block it (a MuPDF build in front of a
+    -- repaint would delay the screen update - the same stutter). Each
+    -- check gets its own chat: the candidates must still be waiting.
+    local function busy_prefetch(setup)
+        local appB, viewB = scroll_fixture()
+        Pages.chat(viewB, new_bb(), 0, 0, VW, VH, 999999)
+        setup(appB, viewB)
+        return ChatBubbles.prefetch(viewB)
+    end
+    ok(busy_prefetch(function(_, viewB)
+        viewB._chat_repaint_pending = true
+    end) == 0,
+        "scroll: the prefetch waits for the pending repaint")
+    ok(busy_prefetch(function(_, viewB)
+        viewB._list_dragging = true
+    end) == 0,
+        "scroll: the prefetch waits for the drag")
+    ok(busy_prefetch(function(appB)
+        appB.state.is_generating = true
+    end) == 0,
+        "scroll: the prefetch waits for the generation")
+    ok(busy_prefetch(function(appB)
+        appB.state.book_active = true
+    end) == 0,
+        "scroll: the prefetch stops in the book mode")
 
     -- (4) The spoiler tap keeps working after the MuPDF document was
     -- released: the bitmap-only widget answers from the captured links.

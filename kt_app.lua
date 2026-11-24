@@ -926,6 +926,12 @@ function App:refresh(full, region)
     if self.state.book_active then
         return
     end
+    -- A repaint is on its way: the idle chat prefetch must not build in
+    -- front of it (the build would delay the screen update). The view
+    -- clears the flag when it paints.
+    if self.view then
+        self.view._chat_repaint_pending = true
+    end
     if region then
         -- Sheet is modal: the page pixels behind the scrim are (a) stale from
         -- before the sheet opened and (b) hidden on purpose. A tap inside the
@@ -1016,6 +1022,7 @@ function App:refresh_flash()
         return
     end
     if self.view then
+        self.view._chat_repaint_pending = true
         UIManager:setDirty(self.view, "full")
     end
 end

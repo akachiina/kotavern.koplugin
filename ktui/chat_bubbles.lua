@@ -27,12 +27,23 @@ local ChatBubbles = {}
 
 -- The retained offscreen bitmaps are bounded (bytes): a Kindle cannot hold
 -- the renders of a whole chat. The budget is spent by the bitmaps closest
--- to the band; the farthest ones are dropped first.
-local BITMAP_BUDGET = 8 * 1024 * 1024
+-- to the band; the farthest ones are dropped first. Exported so the smoke
+-- harness can lower it and prove the cap holds.
+ChatBubbles.BITMAP_BUDGET = 8 * 1024 * 1024
+
+-- A single body may be huge (a message taller than the viewport: the
+-- bitmap is the FULL height). The prefetch never builds one that alone
+-- would eat a quarter of the budget - the paint builds it when the
+-- message becomes visible (and then it is worth the memory).
+ChatBubbles.BITMAP_SINGLE_CAP = 2 * 1024 * 1024
 
 -- The idle prefetch renders at most this many messages per call: the
 -- prefetch must never turn into a long stall of its own.
 ChatBubbles.PREFETCH_MAX = 8
+
+-- How many idle ticks the pump keeps waiting for a quiet moment before it
+-- gives up (a repaint that never comes must not kill the prefetch).
+ChatBubbles.PREFETCH_WAIT_TICKS = 20
 
 -- HH:MM timestamp from a unix epoch (matches the Send / send_date field).
 local function format_time(ts)
@@ -1163,6 +1174,147 @@ local function release_document(widget)
     return true
 end
 
+-- The bytes of a rendered bitmap. The buffer type decides the size: a
+-- grayscale page is 1 byte per pixel, a color page 4.
+local function bitmap_bytes(bb)
+    if not bb then return 0 end
+    local w, h = 0, 0
+    local ok = pcall(function()
+        w = bb:getWidth() or 0
+        h = bb:getHeight() or 0
+    end)
+    if not ok or w <= 0 or h <= 0 then return 0 end
+    local bpp = 8
+    local okt, btype = pcall(function() return bb:getType() end)
+    if okt and btype then
+        local map = require("ffi/blitbuffer").TYPE_TO_BPP
+        bpp = (map and map[btype]) or 8
+    end
+    return math.floor(w * h * bpp / 8)
+end
+
+-- The bits per pixel of the NEXT render: a color device renders 4 bytes
+-- per pixel (the grayscale Kindle 1).
+local function render_bpp()
+    local ok, device = pcall(require, "device")
+    if ok and type(device) == "table" and device.screen then
+        local ok2, on = pcall(function() return device.screen:isColorEnabled() end)
+        if ok2 and on then return 32 end
+    end
+    return 8
+end
+
+-- The doc keys of a layout (the body + the reasoning blocks).
+local function each_doc_key(l, fn)
+    if type(l) ~= "table" then return end
+    for ei = 1, #(l.entries or {}) do
+        local e = l.entries[ei]
+        if type(e) == "table" and e.kind == "html" and e.doc_key then fn(e.doc_key) end
+    end
+    for ri = 1, #(l.reasoning_entries or {}) do
+        local re = l.reasoning_entries[ri]
+        if type(re) == "table" and re.kind == "html" and re.doc_key then fn(re.doc_key) end
+    end
+end
+
+-- The docs of the chat, split by their distance to the band:
+--   keep:   IN the band (the document + the bitmap stay);
+--   retain: NEAR the band (the bitmap stays, the document goes back);
+--   far:    everything else (both go).
+local function band_sets(layouts, scroll, y, h)
+    local keep, retain = {}, {}
+    local vis_top = scroll + y - 100
+    local vis_bottom = scroll + y + h + 100
+    local retain_top = vis_top - h
+    local retain_bottom = vis_bottom + h
+    for li = 1, #(layouts or {}) do
+        local l = layouts[li]
+        local ly = l.y or 0
+        local lh = l.row_h or l.h or 0
+        if (ly + lh > vis_top) and (ly < vis_bottom) then
+            each_doc_key(l, function(key) keep[key] = true end)
+        elseif (ly + lh > retain_top) and (ly < retain_bottom) then
+            -- The distance from the band: the bitmap budget spends it on
+            -- the closest ones and drops the farthest first.
+            local dist
+            if ly + lh <= vis_top then
+                dist = vis_top - (ly + lh)
+            else
+                dist = ly - vis_bottom
+            end
+            each_doc_key(l, function(key)
+                local old = retain[key]
+                retain[key] = old and math.min(old, dist) or dist
+            end)
+        end
+    end
+    return keep, retain
+end
+
+-- The bytes of the OFFSCREEN bitmaps. The visible ones are never counted:
+-- a visible bitmap that goes would blank the bubble.
+local function offscreen_bytes(docs, keep)
+    local bytes = 0
+    for k, v in pairs(docs) do
+        if type(k) == "string" and type(v) == "table" and v.widget
+            and v.widget.bb and not keep[k] then
+            bytes = bytes + bitmap_bytes(v.widget.bb)
+        end
+    end
+    return bytes
+end
+
+-- Release the documents of the near-band docs and enforce the bitmap
+-- budget. Shared by the paint sweep and the idle prefetch.
+local function sweep_docs(docs, keep, retain)
+    local freed = 0
+    for k, v in pairs(docs) do
+        if type(k) == "string" and type(v) == "table" and v.widget
+            and not keep[k] then
+            if retain[k] then
+                -- Near the band: the bitmap stays, the document goes.
+                release_document(v.widget)
+            else
+                pcall(function() v.widget:free() end)
+                v.widget = nil
+                freed = freed + 1
+            end
+        end
+    end
+    -- The retained bitmaps are bounded: a Kindle cannot hold the renders
+    -- of a whole chat. The budget is spent by the bitmaps closest to the
+    -- band; the farthest ones go first (they are the cheapest to rebuild).
+    local budget = ChatBubbles.BITMAP_BUDGET
+    local bytes = 0
+    local victims = {}
+    for k, v in pairs(docs) do
+        if type(k) == "string" and type(v) == "table" and v.widget
+            and v.widget.bb and not keep[k] then
+            local size = bitmap_bytes(v.widget.bb)
+            bytes = bytes + size
+            victims[#victims + 1] = {
+                doc = v, size = size, dist = retain[k] or 0,
+            }
+        end
+    end
+    if bytes > budget then
+        table.sort(victims, function(a, b) return a.dist > b.dist end)
+        for vi = 1, #victims do
+            if bytes <= budget then break end
+            local victim = victims[vi]
+            local w = victim.doc.widget
+            pcall(function() w:freeBb() end)
+            victim.doc.widget = nil
+            bytes = bytes - victim.size
+            freed = freed + 1
+        end
+    end
+    if freed > 0 then
+        pcall(collectgarbage, "step")
+    end
+    return freed
+end
+
 -- Build the tall bitmap for ONE document (the paint pass): the offscreen
 -- documents stay metadata-only, so a long chat holds a handful of bitmaps
 -- instead of one per message. Returns nil when the build fails - the caller
@@ -1257,8 +1409,11 @@ end
 -- of a message is that cost (a document + 3 font faces + the raster) and
 -- it happened IN the drag, on the critical path.
 --
--- The prefetch renders the messages just ABOVE the viewport while the
--- user is NOT dragging: the drag itself then only blits.
+-- The prefetch renders the messages just above AND below the viewport
+-- while the user is NOT dragging: the drag itself then only blits. Both
+-- sides: a finger-up drag raises the scroll (the messages below come in
+-- from the bottom edge), a finger-down drag lowers it (the messages above
+-- come in from the top edge).
 
 -- Render ONE message body for the prefetch: the bitmap is the render, the
 -- MuPDF document goes back right away (the prefetch only needs the pixels).
@@ -1275,13 +1430,45 @@ local function prefetch_entry(view, docs, entry)
     return true
 end
 
--- Build the bitmaps of the messages just above the viewport. Returns the
--- number of bodies rendered. `limit` caps the work of one call (the idle
--- pump renders ONE body per tick: a build in the middle of a drag is the
--- stutter this prefetch exists to avoid).
+-- The estimated size of the bitmap a body would build (the doc knows its
+-- width and its measured height).
+local function estimate_bytes(docs, entry, bpp)
+    if type(entry) ~= "table" or not entry.doc_key then return nil end
+    local doc = docs[entry.doc_key]
+    if not doc then return nil end
+    local w = doc.width or 0
+    local h = doc.tall or 0
+    if w <= 0 or h <= 0 then return nil end
+    return math.floor(w * h * bpp / 8)
+end
+
+-- Is the prefetch waiting for a quiet moment? The UI owns the CPU: a
+-- build in the middle of a drag, a stream or a pending repaint is the
+-- stutter this prefetch exists to avoid.
+function ChatBubbles.prefetch_blocked(view)
+    local app = view and view.app
+    if not app or not app.state then return false end
+    if view._list_dragging or view._scroll_dragging then return true end
+    -- The stream repaints on every chunk: the CPU belongs to the model.
+    if app.state.is_generating then return true end
+    -- A repaint was requested: it is about to happen, and a build in front
+    -- of it would delay the screen update (the view clears the flag when
+    -- it paints).
+    if view._chat_repaint_pending then return true end
+    return false
+end
+
+-- Build the bitmaps of the messages just above AND below the viewport.
+-- Returns the number of bodies rendered. `limit` caps the work of one call
+-- (the idle pump renders ONE body per tick: a build in the middle of a
+-- drag is the stutter this prefetch exists to avoid).
 function ChatBubbles.prefetch(view, limit)
     local app = view and view.app
     if not app or not app.state then return 0 end
+    -- The book reader owns the screen (the chat canvas is underneath it).
+    if app.state.page ~= "chat" or app.state.book_active then return 0 end
+    -- The UI owns the CPU right now: wait for a quiet moment.
+    if ChatBubbles.prefetch_blocked(view) then return 0 end
     local docs = app.state.chat_html_docs
     local layouts = view._chat_layouts
     local band = view._chat_band
@@ -1292,36 +1479,61 @@ function ChatBubbles.prefetch(view, limit)
     local max = tonumber(limit) or ChatBubbles.PREFETCH_MAX
     if max < 1 then return 0 end
     local scroll = app.state.scroll[app:scroll_key()] or 0
-    local top = scroll + band.y
-    -- The candidates: the bodies in the window ABOVE the band. The list is
-    -- walked backwards: the body closest to the band is the one the next
-    -- drag reaches.
+    local band_top = scroll + band.y
+    local band_bottom = band_top + band.h
+    -- The candidates: the bodies in the window ABOVE and BELOW the band.
+    -- The list is walked by distance: the body closest to the band is the
+    -- one the next drag reaches.
     local candidates = {}
     for li = 1, #layouts do
         local l = layouts[li]
         local ly = l.y or 0
         local lh = l.row_h or l.h or 0
-        if ly + lh <= top and ly + lh > top - band.h then
-            candidates[#candidates + 1] = l
+        local dist
+        if ly + lh <= band_top then
+            dist = band_top - (ly + lh)
+        elseif ly >= band_bottom then
+            dist = ly - band_bottom
+        end
+        -- The streaming message changes on every chunk: its bitmap would be
+        -- stale before the next paint.
+        if dist and dist < band.h and not l.is_streaming then
+            candidates[#candidates + 1] = { layout = l, dist = dist }
         end
     end
+    if #candidates == 0 then return 0 end
+    table.sort(candidates, function(a, b) return a.dist < b.dist end)
+    local keep = band_sets(layouts, scroll, band.y, band.h)
+    local budget = ChatBubbles.BITMAP_BUDGET
+    local single_cap = ChatBubbles.BITMAP_SINGLE_CAP or budget
+    local bpp = render_bpp()
+    local bytes = offscreen_bytes(docs, keep)
     local built = 0
-    for ci = #candidates, 1, -1 do
+    local function try_entry(entry)
+        if built >= max then return end
+        local est = estimate_bytes(docs, entry, bpp)
+        if not est or est > single_cap then return end
+        -- The budget: the prefetch never pushes the retained bitmaps over
+        -- it (evicting them right after the build would make the prefetch
+        -- rebuild the same bodies forever).
+        if bytes + est > budget then return end
+        if prefetch_entry(view, docs, entry) then
+            built = built + 1
+            bytes = bytes + est
+        end
+    end
+    for ci = 1, #candidates do
         if built >= max then break end
-        local l = candidates[ci]
+        local l = candidates[ci].layout
         local entries = l.entries or {}
         for ei = 1, #entries do
             if built >= max then break end
-            if prefetch_entry(view, docs, entries[ei]) then
-                built = built + 1
-            end
+            try_entry(entries[ei])
         end
         local reasoning_entries = l.reasoning_entries or {}
         for ri = 1, #reasoning_entries do
             if built >= max then break end
-            if prefetch_entry(view, docs, reasoning_entries[ri]) then
-                built = built + 1
-            end
+            try_entry(reasoning_entries[ri])
         end
     end
     return built
@@ -1333,17 +1545,24 @@ function ChatBubbles.schedule_prefetch(view)
     if not view or view._chat_prefetch_pending then return end
     local UIManager = require("ui/uimanager")
     view._chat_prefetch_pending = true
+    local waited = 0
     local function step()
         view._chat_prefetch_pending = false
-        -- The drag owns the CPU: a build in the middle of a drag is the
-        -- stutter this prefetch exists to avoid.
-        if view._list_dragging or view._scroll_dragging then return end
         local app = view.app
         if not app or not app.state or app.state.page ~= "chat" then return end
         local built = ChatBubbles.prefetch(view, 1)
         if built > 0 then
+            waited = 0
+        else
+            waited = waited + 1
+        end
+        -- Keep waiting while the UI is busy (a drag, a stream, a pending
+        -- repaint) - but not forever: a repaint that never comes must not
+        -- kill the prefetch (the next paint restarts it).
+        local blocked = ChatBubbles.prefetch_blocked(view)
+        if built > 0 or (blocked and waited < (ChatBubbles.PREFETCH_WAIT_TICKS or 20)) then
             view._chat_prefetch_pending = true
-            UIManager:scheduleIn(0.02, step)
+            UIManager:scheduleIn(built > 0 and 0.02 or 0.05, step)
         end
     end
     UIManager:scheduleIn(0.05, step)
@@ -2398,100 +2617,8 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     do
         local docs = view.app and view.app.state and view.app.state.chat_html_docs
         if type(docs) == "table" then
-            local keep = {}
-            local retain = {}
-            local vis_top = scroll + y - 100
-            local vis_bottom = scroll + y + h + 100
-            local retain_top = vis_top - h
-            local retain_bottom = vis_bottom + h
-            for li = 1, #layouts do
-                local l = layouts[li]
-                local ly = l.y or 0
-                local lh = l.row_h or l.h or 0
-                if (ly + lh > vis_top) and (ly < vis_bottom) then
-                    for ei = 1, #(l.entries or {}) do
-                        local e = l.entries[ei]
-                        if type(e) == "table" and e.kind == "html" and e.doc_key then
-                            keep[e.doc_key] = true
-                        end
-                    end
-                    for ri = 1, #(l.reasoning_entries or {}) do
-                        local re = l.reasoning_entries[ri]
-                        if type(re) == "table" and re.kind == "html" and re.doc_key then
-                            keep[re.doc_key] = true
-                        end
-                    end
-                elseif (ly + lh > retain_top) and (ly < retain_bottom) then
-                    -- The distance from the band: the bitmap budget spends
-                    -- it on the closest ones and drops the farthest first.
-                    local dist
-                    if ly + lh <= vis_top then
-                        dist = vis_top - (ly + lh)
-                    else
-                        dist = ly - vis_bottom
-                    end
-                    for ei = 1, #(l.entries or {}) do
-                        local e = l.entries[ei]
-                        if type(e) == "table" and e.kind == "html" and e.doc_key then
-                            local old = retain[e.doc_key]
-                            retain[e.doc_key] = old and math.min(old, dist) or dist
-                        end
-                    end
-                    for ri = 1, #(l.reasoning_entries or {}) do
-                        local re = l.reasoning_entries[ri]
-                        if type(re) == "table" and re.kind == "html" and re.doc_key then
-                            local old = retain[re.doc_key]
-                            retain[re.doc_key] = old and math.min(old, dist) or dist
-                        end
-                    end
-                end
-            end
-            local freed = 0
-            for k, v in pairs(docs) do
-                if type(k) == "string" and type(v) == "table" and v.widget
-                    and not keep[k] then
-                    if retain[k] then
-                        -- Near the band: the bitmap stays, the document goes.
-                        release_document(v.widget)
-                    else
-                        pcall(function() v.widget:free() end)
-                        v.widget = nil
-                        freed = freed + 1
-                    end
-                end
-            end
-            -- The retained bitmaps are bounded: a Kindle cannot hold the
-            -- renders of a whole chat. The budget is spent by the bitmaps
-            -- closest to the band; the farthest ones go first (they are the
-            -- cheapest to rebuild).
-            local bytes = 0
-            local victims = {}
-            for k, v in pairs(docs) do
-                if type(k) == "string" and type(v) == "table" and v.widget
-                    and v.widget.bb and not keep[k] then
-                    local bb = v.widget.bb
-                    local size = (bb:getWidth() or 0) * (bb:getHeight() or 0)
-                    bytes = bytes + size
-                    victims[#victims + 1] = {
-                        doc = v, size = size, dist = retain[k] or 0,
-                    }
-                end
-            end
-            if bytes > BITMAP_BUDGET then
-                table.sort(victims, function(a, b) return a.dist > b.dist end)
-                for vi = 1, #victims do
-                    if bytes <= BITMAP_BUDGET then break end
-                    local victim = victims[vi]
-                    local w = victim.doc.widget
-                    pcall(function() w:freeBb() end)
-                    victim.doc.widget = nil
-                    bytes = bytes - victim.size
-                    freed = freed + 1
-                end
-            end
-            if freed > 0 then
-                pcall(collectgarbage, "step")
-            end
+            local keep, retain = band_sets(layouts, scroll, y, h)
+            sweep_docs(docs, keep, retain)
         end
     end
 

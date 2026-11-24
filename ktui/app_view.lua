@@ -479,6 +479,9 @@ function AppView:_render_scroll_list()
     -- bounds are the same rectangle. self.dimen is the last-resort fallback.
     local region = (self.scrollbar and self.scrollbar.region)
         or self.list_bounds or self.dimen
+    -- A repaint is on its way: the idle chat prefetch must not build in
+    -- front of it (the build would delay the screen update).
+    self._chat_repaint_pending = true
     UIManager:setDirty(self, "ui", Geom:new(region))
 end
 
@@ -492,6 +495,9 @@ function AppView:refresh(full, region)
         app:refresh(full, region)
         return
     end
+    -- A repaint is on its way: the idle chat prefetch must not build in
+    -- front of it (the build would delay the screen update).
+    self._chat_repaint_pending = true
     UIManager:setDirty(self, full and "full" or "ui",
         region and Geom:new(region) or self.dimen)
 end
@@ -527,6 +533,9 @@ end
 function AppView:paintTo(bb, x, y)
     local t0 = os.clock()
     self.hitboxes = {}
+    -- The pending repaint is here now: the idle chat prefetch may build
+    -- again (a build in front of a repaint would delay the screen).
+    self._chat_repaint_pending = nil
     -- Any full paint invalidates the sheet snapshot (it holds pre-sheet
     -- pixels; see ktui/sheets.lua).
     require("ktui/sheets").drop_snapshot()
