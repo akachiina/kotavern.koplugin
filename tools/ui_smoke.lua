@@ -8707,6 +8707,31 @@ do
         "scroll: the prefetch runs again after the finger lifts")
     Input.gesture_detector = real_gd
 
+    -- (3h) A canvas sheet (the message actions, the chat options): it is
+    -- drawn OVER the chat and paints itself into the screen buffer - the
+    -- CPU belongs to the sheet, not to a prefetch behind the scrim.
+    ok(busy_prefetch(function(appB)
+        appB.state.sheet = { title = "Sheet" }
+    end) == 0,
+        "scroll: the prefetch waits for the canvas sheet")
+
+    -- (3i) The idle pump must not die while a finger is on the screen:
+    -- the lift does NOT repaint, so a pump that gave up would stay dead
+    -- (the prefetch would never come back on a static chat).
+    local appP, viewP = scroll_fixture()
+    Pages.chat(viewP, new_bb(), 0, 0, VW, VH, 999999)
+    ok(ChatBubbles.prefetch_continue ~= nil,
+        "scroll: the prefetch pump exposes its keep-alive rule")
+    Input.gesture_detector = { active_contacts = { [1] = { down = true } } }
+    ok(ChatBubbles.prefetch_continue ~= nil
+        and ChatBubbles.prefetch_continue(viewP, 0, 100) == true,
+        "scroll: the prefetch pump stays armed while the finger is down")
+    Input.gesture_detector = { active_contacts = { [1] = { down = false } } }
+    ok(ChatBubbles.prefetch_continue ~= nil
+        and ChatBubbles.prefetch_continue(viewP, 0, 100) == false,
+        "scroll: the prefetch pump gives up when nothing happens")
+    Input.gesture_detector = real_gd
+
     -- (4) The spoiler tap keeps working after the MuPDF document was
     -- released: the bitmap-only widget answers from the captured links.
     local msgs4 = {}

@@ -1490,6 +1490,10 @@ function ChatBubbles.prefetch_blocked(view)
     -- of it would delay the screen update (the view clears the flag when
     -- it paints).
     if view._chat_repaint_pending then return true end
+    -- A canvas sheet is open (the message actions, the chat options): it
+    -- is drawn OVER the chat and paints itself into the screen buffer, so
+    -- the CPU belongs to the sheet - not to a prefetch behind its scrim.
+    if app.state.sheet then return true end
     -- A native dialog is in front of the chat canvas.
     if native_widget_in_front(view) then return true end
     -- A finger is on the screen (the touch-down is not a gesture yet).
@@ -1578,6 +1582,22 @@ function ChatBubbles.prefetch(view, limit)
     return built
 end
 
+-- Should the idle pump keep ticking? It gives up after a while, so a
+-- repaint that never comes does not leave it spinning forever - but a
+-- FINGER on the screen is a TRANSIENT block: the lift does NOT repaint,
+-- so a pump that gave up would stay dead (the prefetch would never come
+-- back on a static chat). The device is awake anyway while the finger is
+-- down, so the tick costs nothing.
+function ChatBubbles.prefetch_continue(view, built, waited)
+    if built and built > 0 then return true end
+    -- Nothing to build and the UI is not busy: the pump is done.
+    if not ChatBubbles.prefetch_blocked(view) then return false end
+    -- A finger on the screen: keep the pump armed (the lift does not
+    -- repaint, so nothing else would restart it).
+    if finger_is_down() then return true end
+    return (tonumber(waited) or 0) < (ChatBubbles.PREFETCH_WAIT_TICKS or 20)
+end
+
 -- Schedule the idle prefetch pump. ONE body per tick: the UI never blocks
 -- and the drag (which owns the CPU) is never interrupted by a build.
 function ChatBubbles.schedule_prefetch(view)
@@ -1596,10 +1616,9 @@ function ChatBubbles.schedule_prefetch(view)
             waited = waited + 1
         end
         -- Keep waiting while the UI is busy (a drag, a stream, a pending
-        -- repaint) - but not forever: a repaint that never comes must not
-        -- kill the prefetch (the next paint restarts it).
-        local blocked = ChatBubbles.prefetch_blocked(view)
-        if built > 0 or (blocked and waited < (ChatBubbles.PREFETCH_WAIT_TICKS or 20)) then
+        -- repaint, a finger) - but not forever: a repaint that never comes
+        -- must not kill the prefetch (the next paint restarts it).
+        if ChatBubbles.prefetch_continue(view, built, waited) then
             view._chat_prefetch_pending = true
             UIManager:scheduleIn(built > 0 and 0.02 or 0.05, step)
         end
@@ -3061,7 +3080,8 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     end
 
     -- The band + the ordered layouts: the idle prefetch renders the
-    -- messages just above the viewport, so the drag itself only blits.
+    -- messages just above AND below the viewport, so the drag itself only
+    -- blits.
     view._chat_band = { x = x, y = y, w = w, h = h }
     view._chat_layouts = layouts
     ChatBubbles.schedule_prefetch(view)
