@@ -1442,6 +1442,41 @@ local function estimate_bytes(docs, entry, bpp)
     return math.floor(w * h * bpp / 8)
 end
 
+-- A native widget is in front (the Write composer, the message actions):
+-- the chat canvas is BEHIND it and must not steal the CPU (the scheduled
+-- tasks run before the dialog's first paint).
+local function native_widget_in_front(view)
+    local ok, UIManager = pcall(require, "ui/uimanager")
+    if not ok or type(UIManager) ~= "table" then return false end
+    local ok2, top = pcall(function() return UIManager:getTopmostVisibleWidget() end)
+    if not ok2 or top == nil then return false end
+    return top ~= view
+end
+
+-- A finger is on the screen. The touch-down arrives BEFORE the pan is
+-- recognized, so the drag flags do not cover it yet - and the input is
+-- read only AFTER the scheduled tasks, so a build now would delay the
+-- touch response.
+--
+-- The check is the contact's `down` flag, not its mere presence: a lifted
+-- finger leaves the contact alive for the double-tap window (300 ms), and
+-- that is not a finger on the screen (blocking on it would delay the
+-- prefetch after every tap).
+local function finger_is_down()
+    local ok, Input = pcall(require, "device/input")
+    if not ok or type(Input) ~= "table" then return false end
+    local gd = Input.gesture_detector
+    if type(gd) ~= "table" then return false end
+    local contacts = gd.active_contacts
+    if type(contacts) ~= "table" then return false end
+    for slot, contact in pairs(contacts) do
+        if type(contact) == "table" and contact.down == true then
+            return true
+        end
+    end
+    return false
+end
+
 -- Is the prefetch waiting for a quiet moment? The UI owns the CPU: a
 -- build in the middle of a drag, a stream or a pending repaint is the
 -- stutter this prefetch exists to avoid.
@@ -1455,6 +1490,10 @@ function ChatBubbles.prefetch_blocked(view)
     -- of it would delay the screen update (the view clears the flag when
     -- it paints).
     if view._chat_repaint_pending then return true end
+    -- A native dialog is in front of the chat canvas.
+    if native_widget_in_front(view) then return true end
+    -- A finger is on the screen (the touch-down is not a gesture yet).
+    if finger_is_down() then return true end
     return false
 end
 

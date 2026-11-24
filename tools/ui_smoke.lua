@@ -8682,6 +8682,31 @@ do
     end) == 0,
         "scroll: the prefetch stops in the book mode")
 
+    -- (3f) A native widget in front (the Write composer, the message
+    -- actions): the chat canvas is BEHIND it and must not steal the CPU
+    -- (the scheduled tasks run before the dialog's first paint).
+    local UIManager = require("ui/uimanager")
+    local real_top = UIManager.getTopmostVisibleWidget
+    UIManager.getTopmostVisibleWidget = function() return { fake = "dialog" } end
+    ok(busy_prefetch(function() end) == 0,
+        "scroll: the prefetch waits for the native dialog")
+    UIManager.getTopmostVisibleWidget = real_top
+
+    -- (3g) A finger on the screen: the touch-down arrives BEFORE the pan
+    -- is recognized, so the drag flags do not cover it yet - and the input
+    -- is read only after the scheduled tasks.
+    local Input = require("device/input")
+    local real_gd = Input.gesture_detector
+    Input.gesture_detector = { active_contacts = { [1] = { down = true } } }
+    ok(busy_prefetch(function() end) == 0,
+        "scroll: the prefetch waits for the finger")
+    -- The finger lifted: the contact lingers for the double-tap window
+    -- (300 ms) but the screen is free - the prefetch must not die.
+    Input.gesture_detector = { active_contacts = { [1] = { down = false } } }
+    ok(busy_prefetch(function() end) > 0,
+        "scroll: the prefetch runs again after the finger lifts")
+    Input.gesture_detector = real_gd
+
     -- (4) The spoiler tap keeps working after the MuPDF document was
     -- released: the bitmap-only widget answers from the captured links.
     local msgs4 = {}
