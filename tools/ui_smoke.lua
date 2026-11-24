@@ -8411,5 +8411,227 @@ do
     Launcher.close()
 end
 
+-- === Scroll: the offscreen bitmap survives + the idle prefetch =========
+-- The user reports: "quando você arrasta para cima (e ele renderiza a
+-- mensagem de cima), tem um delay e um certo travamento". The MuPDF build
+-- of a message is that cost (a document + 3 font faces + the raster).
+-- Two fixes:
+--   (1) a message that leaves the band keeps its RENDERED BITMAP (the
+--       MuPDF document - the expensive part - goes back), so scrolling
+--       back is a plain blit;
+--   (2) an idle prefetch renders the band ABOVE the viewport, so the drag
+--       that follows only blits.
+do
+    local HtmlBoxWidget = require("ui/widget/htmlboxwidget")
+    local orig_set = HtmlBoxWidget.setContent
+    local builds = 0
+    HtmlBoxWidget.setContent = function(self, ...)
+        builds = builds + 1
+        return orig_set(self, ...)
+    end
+    local function scroll_fixture()
+        local msgs = {}
+        for i = 1, 20 do
+            local body = {}
+            for ln = 1, 8 do
+                body[#body + 1] = "message " .. i .. " line " .. ln
+            end
+            msgs[i] = { role = (i % 2 == 0) and "assistant" or "user",
+                name = (i % 2 == 0) and "Aria" or "You",
+                content = table.concat(body, "\n"),
+                send_date = 4000 + i }
+        end
+        local app = fake_app({ page = "chat", settings = {}, scroll = {},
+            messages = msgs })
+        local view = { app = app, hitboxes = {}, refresh = function() end }
+        return app, view
+    end
+    -- The doc cache state: bitmap-only widgets (the document went back),
+    -- live documents and bitmaps in total.
+    local function doc_state(app)
+        local bitmap_only, live, bitmaps = 0, 0, 0
+        for dk, dv in pairs(app.state.chat_html_docs or {}) do
+            if type(dk) == "string" and type(dv) == "table" and dv.widget then
+                if dv.widget.bb then bitmaps = bitmaps + 1 end
+                if dv.widget.bb and not dv.widget.document then
+                    bitmap_only = bitmap_only + 1
+                elseif dv.widget.document then
+                    live = live + 1
+                end
+            end
+        end
+        return bitmap_only, live, bitmaps
+    end
+    -- The doc of the message whose body carries this text.
+    local function find_doc(app, needle)
+        for dk, dv in pairs(app.state.chat_html_docs or {}) do
+            if type(dk) == "string" and type(dv) == "table"
+                and type(dv.body) == "string"
+                and dv.body:find(needle, 1, true) then
+                return dv
+            end
+        end
+    end
+
+    -- (1) A message that leaves the band keeps its bitmap and gives its
+    -- MuPDF document back (the document is the expensive part).
+    local app, view = scroll_fixture()
+    Pages.chat(view, new_bb(), 0, 0, VW, VH, 999999)
+    local bottom = app.state.scroll[app:scroll_key()] or 0
+    ok(bottom > 0, "scroll: the chat opens at the bottom")
+    local band = view.list_bounds
+    ok(band ~= nil, "scroll: the chat publishes its message band")
+    local last_y = nil
+    for lk, l in pairs(view._chat_layout_cache or {}) do
+        if type(l) == "table" and type(l.y) == "number" then
+            if last_y == nil or l.y > last_y then last_y = l.y end
+        end
+    end
+    ok(last_y ~= nil, "scroll: the fixture has a measured layout")
+    local doc20 = find_doc(app, "message 20")
+    ok(doc20 ~= nil and doc20.widget ~= nil and doc20.widget.bb ~= nil,
+        "scroll: the last message is rendered")
+    local widget20 = doc20 and doc20.widget
+    local bb20 = widget20 and widget20.bb
+    -- Scroll up until the last message drops BELOW the band (it stays in
+    -- the retention window: its bitmap must survive).
+    local away = math.max(0, (last_y or 0) - (band and band.y or 0)
+        - (band and band.h or 0) - 150)
+    Pages.chat(view, new_bb(), 0, 0, VW, VH, away)
+    ok(doc20.widget ~= nil and doc20.widget.bb ~= nil
+        and doc20.widget.document == nil,
+        "scroll: the offscreen message keeps its bitmap and releases its document")
+    -- (2) The scroll back is a blit: the SAME bitmap is painted (no rebuild).
+    builds = 0
+    Pages.chat(view, new_bb(), 0, 0, VW, VH, bottom)
+    ok(doc20.widget == widget20 and doc20.widget.bb == bb20,
+        "scroll: the scroll back reuses the same bitmap (no rebuild)")
+    ok(builds == 0,
+        "scroll: the scroll back does not rebuild the messages (builds="
+        .. builds .. ")")
+
+    -- (3) The prefetch renders the band above the viewport: the same
+    -- scroll position costs no build when the prefetch ran first.
+    local appA, viewA = scroll_fixture()
+    Pages.chat(viewA, new_bb(), 0, 0, VW, VH, 999999)
+    local bottomA = appA.state.scroll[appA:scroll_key()] or 0
+    local targetA = math.max(0, bottomA - 500)
+    builds = 0
+    Pages.chat(viewA, new_bb(), 0, 0, VW, VH, targetA)
+    local without = builds
+    local appB, viewB = scroll_fixture()
+    Pages.chat(viewB, new_bb(), 0, 0, VW, VH, 999999)
+    local bottomB = appB.state.scroll[appB:scroll_key()] or 0
+    ok(type(ChatBubbles.prefetch) == "function",
+        "scroll: the chat exposes the prefetch entry point")
+    if type(ChatBubbles.prefetch) == "function" then
+        local built = ChatBubbles.prefetch(viewB)
+        ok(built > 0,
+            "scroll: the prefetch renders the band above the viewport (built="
+            .. built .. ")")
+        ok(built <= (ChatBubbles.PREFETCH_MAX or 999),
+            "scroll: the prefetch is bounded (built=" .. built .. ")")
+        -- The prefetched messages keep ONLY the bitmap: the MuPDF document
+        -- is the expensive part (~5 MB) and the paint does not need it.
+        local bitmap_only = doc_state(appB)
+        ok(bitmap_only > 0,
+            "scroll: the prefetched messages keep only the bitmap (bitmap-only="
+            .. bitmap_only .. ")")
+        builds = 0
+        Pages.chat(viewB, new_bb(), 0, 0, VW, VH, math.max(0, bottomB - 500))
+        local with_pf = builds
+        ok(with_pf < without,
+            "scroll: the prefetch takes the build off the scroll path (without="
+            .. without .. " with=" .. with_pf .. ")")
+    end
+
+    -- (4) The spoiler tap keeps working after the MuPDF document was
+    -- released: the bitmap-only widget answers from the captured links.
+    local msgs4 = {}
+    for i = 1, 20 do
+        local body4 = {}
+        for ln4 = 1, 8 do
+            body4[#body4 + 1] = "filler " .. i .. " line " .. ln4
+        end
+        msgs4[i] = { role = (i % 2 == 0) and "assistant" or "user",
+            name = (i % 2 == 0) and "Aria" or "You",
+            content = table.concat(body4, "\n"), send_date = 5000 + i }
+    end
+    msgs4[1] = { role = "assistant", name = "Aria",
+        content = "before ||secret|| after", send_date = 5000 }
+    local app4 = fake_app({ page = "chat", settings = {}, scroll = {},
+        messages = msgs4 })
+    local refreshed4 = 0
+    local view4 = { app = app4, hitboxes = {},
+        refresh = function() refreshed4 = refreshed4 + 1 end }
+    Pages.chat(view4, new_bb(), 0, 0, VW, VH, 0)
+    local spl_layout, spl_entry = nil, nil
+    for lk4, l in pairs(view4._chat_layout_cache or {}) do
+        if type(l) == "table" and l.entries then
+            for ek4, e in ipairs(l.entries) do
+                if e.kind == "html" and type(e.fallback) == "string"
+                    and e.fallback:find("secret", 1, true) then
+                    spl_layout, spl_entry = l, e
+                end
+            end
+        end
+    end
+    ok(spl_layout ~= nil and spl_entry ~= nil and spl_entry.widget ~= nil,
+        "scroll spoiler: the spoiler message is rendered")
+    local spl_link = nil
+    if spl_entry and spl_entry.widget and spl_entry.widget.document then
+        local okp, pg = pcall(function() return spl_entry.widget.document:openPage(1) end)
+        if okp and pg then
+            local okp2, links = pcall(function() return pg:getPageLinks() end)
+            pcall(function() pg:close() end)
+            if okp2 and type(links) == "table" then
+                for gl4, lk in ipairs(links) do
+                    if type(lk) == "table" and tostring(lk.uri or lk.url or "") == "kt:spl:1" then
+                        spl_link = lk
+                        break
+                    end
+                end
+            end
+        end
+    end
+    ok(spl_link ~= nil, "scroll spoiler: the masked spoiler exposes a kt:spl:1 link")
+    if spl_link and spl_layout then
+        -- Push the spoiler out of the band: its MuPDF document is released.
+        local band4 = view4.list_bounds
+        local away4 = math.max(0, (spl_layout.y or 0) - (band4 and band4.y or 0) + 300)
+        Pages.chat(view4, new_bb(), 0, 0, VW, VH, away4)
+        local doc4 = app4.state.chat_html_docs
+            and app4.state.chat_html_docs[spl_entry.doc_key]
+        ok(doc4 ~= nil and doc4.widget ~= nil and doc4.widget.bb ~= nil
+            and doc4.widget.document == nil,
+            "scroll spoiler: the offscreen spoiler keeps its bitmap and releases its document")
+        -- Back to the spoiler: the tap must still flip the reveal.
+        Pages.chat(view4, new_bb(), 0, 0, VW, VH, 0)
+        local box4 = nil
+        for hb4_i, hb in ipairs(view4.hitboxes) do
+            if hb.label == "chathtml_" .. tostring(spl_layout.msg_key) then
+                box4 = hb
+                break
+            end
+        end
+        ok(box4 ~= nil, "scroll spoiler: the spoiler band registers a tap hitbox")
+        if box4 then
+            local okp4 = pcall(function()
+                box4.callback(box4.x + (spl_link.x0 or 0) + 2,
+                    box4.y + (spl_link.y0 or 0) + 2)
+            end)
+            ok(okp4, "scroll spoiler: tapping the spoiler does not crash")
+            local rev4 = app4.state.chat_spoilers_revealed
+            local key4 = spl_layout.msg_key
+            ok(rev4 ~= nil and key4 ~= nil and rev4[key4] ~= nil
+                and rev4[key4][1] == true,
+                "scroll spoiler: the tap flips the reveal on a bitmap-only widget")
+            ok(refreshed4 > 0, "scroll spoiler: the tap requests a refresh")
+        end
+    end
+
+    HtmlBoxWidget.setContent = orig_set
+end
+
 print(string.format("\n%d checks, %d failures", checks, fails))
 os.exit(fails == 0 and 0 or 1)

@@ -25,6 +25,15 @@ local _ = require("gettext")
 
 local ChatBubbles = {}
 
+-- The retained offscreen bitmaps are bounded (bytes): a Kindle cannot hold
+-- the renders of a whole chat. The budget is spent by the bitmaps closest
+-- to the band; the farthest ones are dropped first.
+local BITMAP_BUDGET = 8 * 1024 * 1024
+
+-- The idle prefetch renders at most this many messages per call: the
+-- prefetch must never turn into a long stall of its own.
+ChatBubbles.PREFETCH_MAX = 8
+
 -- HH:MM timestamp from a unix epoch (matches the Send / send_date field).
 local function format_time(ts)
     if type(ts) ~= "number" or ts <= 0 then return nil end
@@ -1102,6 +1111,58 @@ local function html_layout_for(app, view, content, width, revealed, det_revealed
     return doc
 end
 
+-- === Scroll performance: the BITMAP is the render ====================
+-- A MuPDF document is expensive: an fz_context + the 3 embedded font
+-- faces (~4-5 MB) per message. The RENDERED BITMAP is what the paint
+-- needs; the document is only needed to produce it (and to answer the
+-- link taps).
+--
+-- So a message that leaves the band keeps its bitmap and gives the
+-- document back: the scroll back is a plain blit (no MuPDF work at all)
+-- and the offscreen messages cost one bitmap each instead of a whole
+-- document. The page links are captured when the bitmap is rendered, so
+-- the spoiler / details taps keep working on the bitmap-only widget.
+
+-- The page links of a rendered widget, as plain Lua tables: the MuPDF
+-- link objects point into the document, so they must be copied before
+-- the document is closed.
+local function capture_links(widget)
+    if not widget or not widget.document then return nil end
+    local ok, links = pcall(function()
+        local page = widget.document:openPage(widget.page_number or 1)
+        if not page then return nil end
+        local list = page:getPageLinks()
+        page:close()
+        return list
+    end)
+    if not ok or type(links) ~= "table" then return nil end
+    local out = {}
+    for i = 1, #links do
+        local link = links[i]
+        if type(link) == "table" then
+            local uri = link.uri or link.url
+            if uri ~= nil then
+                out[#out + 1] = {
+                    x0 = link.x0, y0 = link.y0,
+                    x1 = link.x1, y1 = link.y1,
+                    uri = tostring(uri),
+                }
+            end
+        end
+    end
+    return out
+end
+
+-- Give the MuPDF document back but KEEP the rendered bitmap. The links
+-- were captured at render time, so the taps keep working.
+local function release_document(widget)
+    if not widget or not widget.document then return false end
+    local doc = widget.document
+    widget.document = nil
+    pcall(function() doc:close() end)
+    return true
+end
+
 -- Build the tall bitmap for ONE document (the paint pass): the offscreen
 -- documents stay metadata-only, so a long chat holds a handful of bitmaps
 -- instead of one per message. Returns nil when the build fails - the caller
@@ -1109,7 +1170,10 @@ end
 local function html_widget_for(view, doc)
     if not doc then return nil end
     if doc.widget then
-        if doc.widget.document then return doc.widget end
+        -- A widget that still holds its bitmap is enough for the paint: its
+        -- MuPDF document was released to save memory (the bitmap IS the
+        -- render). Rebuilding it here would be the scroll stutter.
+        if doc.widget.document or doc.widget.bb then return doc.widget end
         pcall(function() doc.widget:free() end)
         doc.widget = nil
     end
@@ -1126,6 +1190,9 @@ local function html_widget_for(view, doc)
             error("chat html body does not fit one page")
         end
         widget:_render()
+        -- The links are captured NOW: the document may be released later
+        -- (the offscreen sweep) and the taps must keep working.
+        widget._kt_links = capture_links(widget)
         doc.widget = widget
     end)
     if not ok or not doc.widget then
@@ -1140,12 +1207,15 @@ end
 -- The widget of a painted entry (built on demand, cached in the doc).
 local function entry_widget(view, entry)
     if not entry then return nil end
-    if entry.widget and entry.widget.document then return entry.widget end
+    local widget = entry.widget
+    -- A bitmap-only widget (its MuPDF document was released to save memory)
+    -- still paints: the bitmap IS the render.
+    if widget and (widget.document or widget.bb) then return widget end
     local app = view and view.app
     local docs = app and app.state and app.state.chat_html_docs
     local doc = docs and docs[entry.doc_key]
     if not doc then return nil end
-    local widget = html_widget_for(view, doc)
+    widget = html_widget_for(view, doc)
     entry.widget = widget
     return widget
 end
@@ -1165,6 +1235,8 @@ function ChatBubbles.free_all(app)
         view._chat_layout_cache = nil
         view._chat_layout_sig = nil
         view._chat_reasoning_cache = nil
+        view._chat_layouts = nil
+        view._chat_band = nil
     end
     local docs = app and app.state and app.state.chat_html_docs
     if type(docs) == "table" then
@@ -1177,6 +1249,104 @@ function ChatBubbles.free_all(app)
         end
         app.state.chat_html_docs = nil
     end
+end
+
+-- === The idle prefetch ================================================
+-- The user reported: "quando você arrasta para cima (e ele renderiza a
+-- mensagem de cima), tem um delay e um certo travamento". The MuPDF build
+-- of a message is that cost (a document + 3 font faces + the raster) and
+-- it happened IN the drag, on the critical path.
+--
+-- The prefetch renders the messages just ABOVE the viewport while the
+-- user is NOT dragging: the drag itself then only blits.
+
+-- Render ONE message body for the prefetch: the bitmap is the render, the
+-- MuPDF document goes back right away (the prefetch only needs the pixels).
+local function prefetch_entry(view, docs, entry)
+    if type(entry) ~= "table" or entry.kind ~= "html" or not entry.doc_key then
+        return false
+    end
+    local doc = docs[entry.doc_key]
+    if not doc then return false end
+    if doc.widget and doc.widget.bb then return false end
+    local widget = html_widget_for(view, doc)
+    if not widget then return false end
+    release_document(widget)
+    return true
+end
+
+-- Build the bitmaps of the messages just above the viewport. Returns the
+-- number of bodies rendered. `limit` caps the work of one call (the idle
+-- pump renders ONE body per tick: a build in the middle of a drag is the
+-- stutter this prefetch exists to avoid).
+function ChatBubbles.prefetch(view, limit)
+    local app = view and view.app
+    if not app or not app.state then return 0 end
+    local docs = app.state.chat_html_docs
+    local layouts = view._chat_layouts
+    local band = view._chat_band
+    if type(docs) ~= "table" or type(layouts) ~= "table"
+        or type(band) ~= "table" then
+        return 0
+    end
+    local max = tonumber(limit) or ChatBubbles.PREFETCH_MAX
+    if max < 1 then return 0 end
+    local scroll = app.state.scroll[app:scroll_key()] or 0
+    local top = scroll + band.y
+    -- The candidates: the bodies in the window ABOVE the band. The list is
+    -- walked backwards: the body closest to the band is the one the next
+    -- drag reaches.
+    local candidates = {}
+    for li = 1, #layouts do
+        local l = layouts[li]
+        local ly = l.y or 0
+        local lh = l.row_h or l.h or 0
+        if ly + lh <= top and ly + lh > top - band.h then
+            candidates[#candidates + 1] = l
+        end
+    end
+    local built = 0
+    for ci = #candidates, 1, -1 do
+        if built >= max then break end
+        local l = candidates[ci]
+        local entries = l.entries or {}
+        for ei = 1, #entries do
+            if built >= max then break end
+            if prefetch_entry(view, docs, entries[ei]) then
+                built = built + 1
+            end
+        end
+        local reasoning_entries = l.reasoning_entries or {}
+        for ri = 1, #reasoning_entries do
+            if built >= max then break end
+            if prefetch_entry(view, docs, reasoning_entries[ri]) then
+                built = built + 1
+            end
+        end
+    end
+    return built
+end
+
+-- Schedule the idle prefetch pump. ONE body per tick: the UI never blocks
+-- and the drag (which owns the CPU) is never interrupted by a build.
+function ChatBubbles.schedule_prefetch(view)
+    if not view or view._chat_prefetch_pending then return end
+    local UIManager = require("ui/uimanager")
+    view._chat_prefetch_pending = true
+    local function step()
+        view._chat_prefetch_pending = false
+        -- The drag owns the CPU: a build in the middle of a drag is the
+        -- stutter this prefetch exists to avoid.
+        if view._list_dragging or view._scroll_dragging then return end
+        local app = view.app
+        if not app or not app.state or app.state.page ~= "chat" then return end
+        local built = ChatBubbles.prefetch(view, 1)
+        if built > 0 then
+            view._chat_prefetch_pending = true
+            UIManager:scheduleIn(0.02, step)
+        end
+    end
+    UIManager:scheduleIn(0.05, step)
 end
 
 -- === Spoiler reveal + HTML-block taps ===
@@ -1275,6 +1445,26 @@ local function invalidate_doc(app, entry)
     end
 end
 
+-- The link under a point: the live document when it is alive, the links
+-- captured at render time when it was released (the bitmap-only widget).
+local function link_at(widget, lx, ly)
+    if not widget then return nil end
+    if widget.document and widget.getLinkByPosition then
+        local ok_t, link = pcall(widget.getLinkByPosition, widget, { x = lx, y = ly })
+        if ok_t then return link end
+        return nil
+    end
+    local links = widget._kt_links
+    if type(links) ~= "table" then return nil end
+    for i = 1, #links do
+        local link = links[i]
+        if lx >= link.x0 and lx < link.x1 and ly >= link.y0 and ly < link.y1 then
+            return link
+        end
+    end
+    return nil
+end
+
 -- Tap inside a chat HTML band, already translated to widget-local
 -- tall-bitmap coords by the hitbox (band offset included). Looks the link up
 -- (getLinkByPosition, same probe the kt: pages use - the global
@@ -1285,9 +1475,9 @@ function ChatBubbles.chat_html_tap(view, entry, msg_key, lx, ly)
     local widget = entry and entry.widget
     -- A message whose build failed (or whose bitmap was already released)
     -- has no live widget: the tap does nothing instead of crashing.
-    if not widget or not widget.document or not widget.getLinkByPosition then return end
-    local ok_t, link = pcall(widget.getLinkByPosition, widget, { x = lx, y = ly })
-    if not ok_t or not link then return end
+    if not widget then return end
+    local link = link_at(widget, lx, ly)
+    if not link then return end
     local uri = tostring(link.uri or link.url or "")
     if uri:find("^kt:spl:", 1) then
         local n = tonumber(uri:match("^kt:spl:(%d+)$"))
@@ -2195,21 +2385,30 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
     -- and nothing was ever evicted in a growing chat (RSS rose with every
     -- message - the "High memory usage" report). Visibility here is exact
     -- for THIS paint (clamped scroll = what pass 2 paints, 100px margin
-    -- like the fast path), so the released docs give back their tall
-    -- bitmap + MuPDF document (fz_context + font cache) NOW; height/tall
-    -- stay cached and html_widget_for rebuilds in place when the message
-    -- scrolls back in (the paint pass builds the bitmap only for the
-    -- visible band).
+    -- like the fast path).
+    --
+    -- Two levels:
+    --   - IN the band: everything stays (the MuPDF document + the bitmap);
+    --   - NEAR the band (one viewport around it): the BITMAP stays and the
+    --     MuPDF document goes back (an fz_context + 3 font faces is the
+    --     expensive part). The scroll back is then a plain blit - the
+    --     "delay when the message from above renders" report;
+    --   - FAR: both go (the height/measure stays cached, so a message that
+    --     comes back is measured again).
     do
         local docs = view.app and view.app.state and view.app.state.chat_html_docs
         if type(docs) == "table" then
             local keep = {}
+            local retain = {}
             local vis_top = scroll + y - 100
             local vis_bottom = scroll + y + h + 100
+            local retain_top = vis_top - h
+            local retain_bottom = vis_bottom + h
             for li = 1, #layouts do
                 local l = layouts[li]
                 local ly = l.y or 0
-                if (ly + (l.row_h or l.h or 0) > vis_top) and (ly < vis_bottom) then
+                local lh = l.row_h or l.h or 0
+                if (ly + lh > vis_top) and (ly < vis_bottom) then
                     for ei = 1, #(l.entries or {}) do
                         local e = l.entries[ei]
                         if type(e) == "table" and e.kind == "html" and e.doc_key then
@@ -2222,14 +2421,71 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
                             keep[re.doc_key] = true
                         end
                     end
+                elseif (ly + lh > retain_top) and (ly < retain_bottom) then
+                    -- The distance from the band: the bitmap budget spends
+                    -- it on the closest ones and drops the farthest first.
+                    local dist
+                    if ly + lh <= vis_top then
+                        dist = vis_top - (ly + lh)
+                    else
+                        dist = ly - vis_bottom
+                    end
+                    for ei = 1, #(l.entries or {}) do
+                        local e = l.entries[ei]
+                        if type(e) == "table" and e.kind == "html" and e.doc_key then
+                            local old = retain[e.doc_key]
+                            retain[e.doc_key] = old and math.min(old, dist) or dist
+                        end
+                    end
+                    for ri = 1, #(l.reasoning_entries or {}) do
+                        local re = l.reasoning_entries[ri]
+                        if type(re) == "table" and re.kind == "html" and re.doc_key then
+                            local old = retain[re.doc_key]
+                            retain[re.doc_key] = old and math.min(old, dist) or dist
+                        end
+                    end
                 end
             end
             local freed = 0
             for k, v in pairs(docs) do
                 if type(k) == "string" and type(v) == "table" and v.widget
                     and not keep[k] then
-                    pcall(function() v.widget:free() end)
-                    v.widget = nil
+                    if retain[k] then
+                        -- Near the band: the bitmap stays, the document goes.
+                        release_document(v.widget)
+                    else
+                        pcall(function() v.widget:free() end)
+                        v.widget = nil
+                        freed = freed + 1
+                    end
+                end
+            end
+            -- The retained bitmaps are bounded: a Kindle cannot hold the
+            -- renders of a whole chat. The budget is spent by the bitmaps
+            -- closest to the band; the farthest ones go first (they are the
+            -- cheapest to rebuild).
+            local bytes = 0
+            local victims = {}
+            for k, v in pairs(docs) do
+                if type(k) == "string" and type(v) == "table" and v.widget
+                    and v.widget.bb and not keep[k] then
+                    local bb = v.widget.bb
+                    local size = (bb:getWidth() or 0) * (bb:getHeight() or 0)
+                    bytes = bytes + size
+                    victims[#victims + 1] = {
+                        doc = v, size = size, dist = retain[k] or 0,
+                    }
+                end
+            end
+            if bytes > BITMAP_BUDGET then
+                table.sort(victims, function(a, b) return a.dist > b.dist end)
+                for vi = 1, #victims do
+                    if bytes <= BITMAP_BUDGET then break end
+                    local victim = victims[vi]
+                    local w = victim.doc.widget
+                    pcall(function() w:freeBb() end)
+                    victim.doc.widget = nil
+                    bytes = bytes - victim.size
                     freed = freed + 1
                 end
             end
@@ -2637,6 +2893,12 @@ function ChatBubbles.draw(view, bb, x, y, w, h, scroll, messages, char_name, is_
             end
         end
     end
+
+    -- The band + the ordered layouts: the idle prefetch renders the
+    -- messages just above the viewport, so the drag itself only blits.
+    view._chat_band = { x = x, y = y, w = w, h = h }
+    view._chat_layouts = layouts
+    ChatBubbles.schedule_prefetch(view)
 
     return total_h
 end
