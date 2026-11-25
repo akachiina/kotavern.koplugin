@@ -889,6 +889,31 @@ function App:show()
     self:refresh(true)
 end
 
+-- Make sure KOReader is left with a window.
+--
+-- The book mode REPLACES the FileManager: the native reader closes it
+-- (frontend/apps/reader/readerui.lua doShowReader ->
+-- FileManager.instance:onClose()), so the plugin's canvas view can be
+-- the LAST widget on the UIManager stack. Closing it leaves the stack
+-- EMPTY, and an empty stack makes the UIManager tear down ("No dialogs
+-- left to show") - which EXITS KOReader (exit code 0; the Kindle's
+-- koreader.sh only restarts on 85). The e-ink keeps the plugin's last
+-- frame and no touch responds: the frozen screen the user reported
+-- ("book actions -> close the book -> 3 dots -> Quit").
+--
+-- Put the FileManager back so the device always has a home screen.
+function App:_ensure_home_screen()
+    if UIManager:getNthTopWidget(1) ~= nil then return false end
+    local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+    if not ok or type(FileManager) ~= "table" then return false end
+    local shown, err = pcall(function() FileManager:showFiles() end)
+    if not shown then
+        require("logger").warn("kotavern: cannot restore the file manager:", tostring(err))
+        return false
+    end
+    return true
+end
+
 function App:close()
     self:_cancel_generation()
     require("ktui/gifanim").stop_all(self)
@@ -902,6 +927,8 @@ function App:close()
     if self.view then
         UIManager:close(self.view)
     end
+    -- Never leave KOReader without a window (see _ensure_home_screen).
+    self:_ensure_home_screen()
     I18n.uninstall()
 end
 

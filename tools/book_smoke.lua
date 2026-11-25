@@ -1294,6 +1294,23 @@ UIManager:scheduleIn(15.4, function()
                 os.remove(fixture_dir .. "/chooser.json")
                 os.remove(fixture_dir)
 
+                -- T27: the Quit must never leave KOReader without a window.
+                -- The book mode REPLACES the FileManager (the native reader
+                -- closes it: readerui.lua doShowReader ->
+                -- FileManager.instance:onClose()), so our Quit can be the
+                -- LAST window on the stack - and an empty stack makes the
+                -- UIManager tear down ("No dialogs left to show"), which
+                -- EXITS KOReader (code 0; the Kindle's koreader.sh only
+                -- restarts on 85). The e-ink keeps the plugin's last frame
+                -- and nothing responds: the frozen screen the user
+                -- reported after "book actions -> close the book -> Quit".
+                local window_before = UIManager:getNthTopWidget(1)
+                app.view:onClose()
+                local window_after = UIManager:getNthTopWidget(1)
+                ok(window_before ~= nil and window_after ~= nil,
+                    "T27: the Quit leaves KOReader with a window (the FileManager came back)")
+                require("kt_i18n").install()
+
                 print(string.format("\n%d checks, %d failures", checks, fails))
                 UIManager:quit()
                 os.exit(fails == 0 and 0 or 1)

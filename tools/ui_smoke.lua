@@ -8409,6 +8409,45 @@ do
     ok(built == 2,
         "quit: the launcher drops the closed instance (built=" .. built .. ")")
     Launcher.close()
+
+    -- (3) The Quit must never leave KOReader without a window. The book
+    -- mode REPLACES the FileManager (the native reader closes it:
+    -- readerui.lua doShowReader -> FileManager.instance:onClose()), so
+    -- our Quit can be the LAST window on the stack - and an empty stack
+    -- makes the UIManager tear down ("No dialogs left to show"), which
+    -- EXITS KOReader (exit code 0; the Kindle's koreader.sh only
+    -- restarts on 85). The e-ink keeps the plugin's last frame and
+    -- nothing responds: the frozen screen the user reported.
+    local UIManager = require("ui/uimanager")
+    local home_shown = 0
+    local real_top = UIManager.getNthTopWidget
+    -- The real FileManager module cannot be loaded in this harness (it
+    -- pulls the FocusManager, which needs a real device): stub it.
+    local real_fm = package.loaded["apps/filemanager/filemanager"]
+    package.loaded["apps/filemanager/filemanager"] = {
+        showFiles = function() home_shown = home_shown + 1 end,
+    }
+    -- An empty window stack: the plugin was the last window.
+    UIManager.getNthTopWidget = function() return nil end
+    local app3 = setmetatable({
+        state = {
+            page = "chat", settings = {}, scroll = {}, messages = {},
+            chats_index = {}, personas = { list = {}, active = nil },
+            is_generating = false,
+        },
+    }, { __index = App })
+    app3:close()
+    ok(home_shown == 1,
+        "quit: the close brings the file manager back when it was the last window (shown="
+        .. home_shown .. ")")
+    -- Another window is open: the FileManager stays closed.
+    UIManager.getNthTopWidget = function() return { fake = "filemanager" } end
+    app3:close()
+    ok(home_shown == 1,
+        "quit: the close leaves the file manager alone when another window is open")
+    UIManager.getNthTopWidget = real_top
+    package.loaded["apps/filemanager/filemanager"] = real_fm
+    require("kt_i18n").install()
 end
 
 -- === Scroll: the offscreen bitmap survives + the idle prefetch =========
