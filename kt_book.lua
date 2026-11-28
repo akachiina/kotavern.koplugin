@@ -22,6 +22,7 @@
 
 local Storage = require("kt_storage")
 local Md = require("ktui/md")
+local BookTheme = require("kt_book_theme")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
@@ -270,8 +271,11 @@ end
 
 -- === Document parts ===
 
-local function stylesheet()
-    return table.concat({
+-- The book stylesheet. The base rules are the book's own look; the theme
+-- adds the rules it owns (spacing, separators, code blocks, spoilers...).
+local function stylesheet(theme)
+    theme = theme or BookTheme.normalize(nil)
+    local css = {
         "body { margin: 0; }",
         ".cover { text-align: center; padding: 2em 1em; }",
         ".book-title { font-size: 1.6em; font-weight: bold; }",
@@ -301,16 +305,79 @@ local function stylesheet()
         ".img-placeholder { font-style: italic; }",
         ".colophon { margin-top: 2em; page-break-before: always; }",
         ".compose { margin: .8em 0; }",
-    }, "\n")
+    }
+    if theme.paragraph_spacing == "compact" then
+        css[#css + 1] = "p { margin: .2em 0 .4em 0; }"
+    elseif theme.paragraph_spacing == "airy" then
+        css[#css + 1] = "p { margin: .6em 0 1em 0; }"
+    end
+    if theme.justify then
+        css[#css + 1] = "p, li, blockquote { text-align: justify; }"
+    end
+    if theme.hyphenate then
+        css[#css + 1] = "p, li { hyphens: auto; -webkit-hyphens: auto; }"
+    end
+    if theme.separator == "line" then
+        css[#css + 1] = ".msg + .msg { border-top: 1px solid #888; padding-top: .6em; }"
+    elseif theme.separator == "ornament" then
+        css[#css + 1] = ".msg + .msg { border-top: 1px solid #888; padding-top: .6em; }"
+        css[#css + 1] = ".kt-ornament { text-align: center; margin: .8em 0; }"
+    elseif theme.separator == "none" then
+        css[#css + 1] = ".message-title { margin: .3em 0 .2em 0; }"
+    end
+    if theme.code_style == "box" then
+        css[#css + 1] = "pre { border: 1px solid #888; padding: .3em .4em; }"
+    elseif theme.code_style == "indent" then
+        css[#css + 1] = "pre { margin-left: 1.5em; }"
+    end
+    if not theme.table_border then
+        css[#css + 1] = "td, th { border: none; }"
+    end
+    if theme.spoiler == "reveal" then
+        css[#css + 1] = ".ktspl { background: transparent !important; color: inherit !important; }"
+    end
+    if theme.emoji_size == "small" then
+        css[#css + 1] = ".ktemoji { font-size: .85em; }"
+    elseif theme.emoji_size == "large" then
+        css[#css + 1] = ".ktemoji { font-size: 1.15em; }"
+    end
+    if theme.drop_cap then
+        css[#css + 1] = ".ktdropcap { float: left; font-size: 2.2em; line-height: .9; padding-right: .08em; }"
+    end
+    if theme.user_style == "panel" then
+        css[#css + 1] = ".msg-user > blockquote { border: 1px solid #888; padding: .3em .5em; }"
+    elseif theme.user_style == "plain" then
+        css[#css + 1] = "blockquote { border: none; padding: 0; margin: .2em 0; }"
+    end
+    if theme.system_style == "plain" then
+        css[#css + 1] = ".msg-system, .msg-hidden { opacity: 1; font-style: normal; }"
+    elseif theme.system_style == "hidden" then
+        css[#css + 1] = ".msg-system { display: none; }"
+    end
+    if theme.toc then
+        css[#css + 1] = "h2.toc-entry { font-size: .95em; margin: 1.2em 0 .2em 0; }"
+    end
+    if theme.custom_css ~= "" then
+        css[#css + 1] = theme.custom_css
+    end
+    return table.concat(css, "\n")
 end
 
-local function speaker_for(msg, data)
-    if msg.role == "user" then
-        return data.persona_name or _("You")
-    elseif msg.role == "system" then
-        return _("System")
+-- The speaker of a message. The names are the theme's labels: the user can
+-- rename them (an empty override keeps the translated default).
+local function speaker_for(msg, data, labels)
+    labels = labels or {}
+    local function L(key, default)
+        local value = labels[key]
+        if type(value) == "string" and value ~= "" then return value end
+        return default
     end
-    return msg.name or data.character_name or _("Assistant")
+    if msg.role == "user" then
+        return data.persona_name or L("you", _("You"))
+    elseif msg.role == "system" then
+        return L("system", _("System"))
+    end
+    return msg.name or data.character_name or L("assistant", _("Assistant"))
 end
 
 local function format_time(ts)
@@ -461,39 +528,108 @@ local function render_body(text, data, link_prefix)
     return emoji_html(html)
 end
 
-local function message_html(msg, index, data)
+-- Wrap the first letter of a body in a drop-cap span (the first letter
+-- AFTER the opening tag: the body is HTML).
+local function drop_cap_html(html)
+    local open = html:find("<p[^>]*>")
+    if not open then return html end
+    local text_start = html:find(">", open, true)
+    if not text_start then return html end
+    text_start = text_start + 1
+    local first = html:sub(text_start, text_start)
+    if first == "" or first:match("%s") then return html end
+    return html:sub(1, text_start - 1)
+        .. '<span class="ktdropcap">' .. first .. "</span>"
+        .. html:sub(text_start + 1)
+end
+
+-- One message section. The theme owns the title block, the user/system
+-- styles, the reasoning and the action link.
+local function message_html(msg, index, data, theme, labels, prev)
     local role = msg.role or "assistant"
     local classes = { "msg", "msg-" .. tostring(role) }
     if msg.hidden == true then
         classes[#classes + 1] = "msg-hidden"
     end
+    -- The system style "hidden" drops the whole section (the anchors of the
+    -- other messages keep their numbers).
+    if role == "system" and theme.system_style == "hidden" then
+        return ""
+    end
+
+    local function L(key, default)
+        local value = labels and labels[key]
+        if type(value) == "string" and value ~= "" then return value end
+        return default
+    end
 
     local out = {}
+    local style = theme.page_break and ' style="page-break-before: always;"' or ""
     out[#out + 1] = '<section class="' .. table.concat(classes, " ")
-        .. '" id="m' .. index .. '">'
-    local meta = "#" .. index
+        .. '" id="m' .. index .. '"' .. style .. ">"
+
+    -- The title block: the theme decides what it carries.
+    local kind = theme.message_title
+    local speaker = speaker_for(msg, data, labels)
     local timestamp = format_time(msg.send_date)
-    if timestamp then meta = timestamp .. " · " .. meta end
-    out[#out + 1] = '<div class="message-title">'
-    out[#out + 1] = '<span class="speaker">' .. esc(speaker_for(msg, data)) .. "</span>"
-    out[#out + 1] = '<span class="message-meta">' .. meta .. "</span>"
-    out[#out + 1] = "</div>"
+    local number = "#" .. index
+    local speaker_text, meta_text
+    if kind == "speaker" then
+        speaker_text = speaker
+        meta_text = timestamp and (timestamp .. " · " .. number) or number
+    elseif kind == "speaker_time" then
+        speaker_text = speaker
+        meta_text = timestamp or number
+    elseif kind == "time" then
+        meta_text = timestamp or number
+    elseif kind == "number" then
+        meta_text = number
+    end
+    if theme.toc then
+        -- A real heading: the native reader's TOC lists the messages.
+        local toc_text = (speaker_text or "") .. " · " .. number
+        out[#out + 1] = '<h2 class="toc-entry">' .. esc(toc_text) .. "</h2>"
+    end
+    if kind ~= "none" then
+        local merged = false
+        if theme.merge_speakers and prev and prev.role == role
+            and speaker_for(prev, data, labels) == speaker then
+            merged = true
+        end
+        if not merged then
+            out[#out + 1] = '<div class="message-title">'
+            if speaker_text then
+                out[#out + 1] = '<span class="speaker">' .. esc(speaker_text) .. "</span>"
+            end
+            if meta_text then
+                out[#out + 1] = '<span class="message-meta">' .. esc(meta_text) .. "</span>"
+            end
+            out[#out + 1] = "</div>"
+        end
+    end
 
     local body = render_body(msg.content, data, tostring(index) .. ":")
     if role == "user" then
-        out[#out + 1] = "<blockquote>" .. body .. "</blockquote>"
+        if theme.user_style ~= "hidden" then
+            out[#out + 1] = "<blockquote>" .. body .. "</blockquote>"
+        end
     else
+        if theme.drop_cap then
+            body = drop_cap_html(body)
+        end
         out[#out + 1] = body
     end
 
-    if data.show_reasoning and type(msg.reasoning) == "string"
+    if theme.show_reasoning and type(msg.reasoning) == "string"
         and msg.reasoning ~= "" then
         out[#out + 1] = '<blockquote class="reasoning">'
             .. render_body(msg.reasoning, data, tostring(index) .. "r:") .. "</blockquote>"
     end
 
-    out[#out + 1] = '<p class="actions"><a href="kt:msg/' .. index .. '">... '
-        .. _("Actions") .. "</a></p>"
+    if theme.message_actions then
+        out[#out + 1] = '<p class="actions"><a href="kt:msg/' .. index .. '">... '
+            .. L("actions", _("Actions")) .. "</a></p>"
+    end
     out[#out + 1] = "</section>"
     return table.concat(out, "\n")
 end
@@ -502,6 +638,7 @@ end
 
 -- data = {
 --   messages, chat_name, character_name, persona_name, created_at,
+--   theme (a normalized BookTheme), labels (the theme's label overrides),
 --   show_reasoning, revealed_spoilers, revealed_details
 -- }
 function Book.build(data)
@@ -510,6 +647,19 @@ function Book.build(data)
     local chat_name = data.chat_name
         or (type(data.character_name) == "string" and data.character_name)
         or _("Chat")
+    local theme
+    if data.theme == nil then
+        -- A caller without a theme (the old API) keeps its own reasoning flag.
+        theme = BookTheme.normalize({ show_reasoning = data.show_reasoning == true })
+    else
+        theme = BookTheme.normalize(data.theme)
+    end
+    local labels = type(data.labels) == "table" and data.labels or {}
+    local function L(key, default)
+        local value = labels[key]
+        if type(value) == "string" and value ~= "" then return value end
+        return default
+    end
 
     local out = {
         "<!DOCTYPE html>",
@@ -518,36 +668,60 @@ function Book.build(data)
         '<meta charset="utf-8">',
         "<title>" .. esc(chat_name) .. "</title>",
     }
+    -- The theme signature: any look change changes the bytes, so the
+    -- session's no-op guard reloads the book when the look changed.
+    out[#out + 1] = '<meta name="kotavern-book-theme" content="'
+        .. esc(BookTheme.sig(theme)) .. '">'
     if data.character_name then
         out[#out + 1] = '<meta name="author" content="'
             .. esc(data.character_name) .. '">'
     end
-    out[#out + 1] = "<style>" .. stylesheet() .. "</style>"
+    out[#out + 1] = "<style>" .. stylesheet(theme) .. "</style>"
     out[#out + 1] = "</head>"
     out[#out + 1] = "<body>"
 
     -- Cover
-    out[#out + 1] = '<div class="cover">'
-    out[#out + 1] = '<div class="book-title">' .. esc(chat_name) .. "</div>"
-    local subtitle = {}
-    if data.character_name then table.insert(subtitle, esc(data.character_name)) end
-    if data.persona_name then table.insert(subtitle, esc(data.persona_name)) end
-    if #subtitle > 0 then
-        out[#out + 1] = '<div class="book-sub">' .. table.concat(subtitle, " · ") .. "</div>"
+    if theme.cover then
+        local cover_title = chat_name
+        if theme.cover_title == "character" then
+            cover_title = data.character_name or chat_name
+        elseif theme.cover_title == "both" and data.character_name then
+            cover_title = chat_name .. " · " .. data.character_name
+        end
+        out[#out + 1] = '<div class="cover">'
+        out[#out + 1] = '<div class="book-title">' .. esc(cover_title) .. "</div>"
+        local subtitle = {}
+        if data.character_name and theme.cover_title ~= "character" then
+            table.insert(subtitle, esc(data.character_name))
+        end
+        if data.persona_name then table.insert(subtitle, esc(data.persona_name)) end
+        if #subtitle > 0 then
+            out[#out + 1] = '<div class="book-sub">' .. table.concat(subtitle, " · ") .. "</div>"
+        end
+        local meta = {}
+        if theme.cover_date and data.created_at then
+            table.insert(meta, esc(os.date("%Y-%m-%d", tonumber(data.created_at) or os.time())))
+        end
+        table.insert(meta, _("Messages") .. ": " .. tostring(#messages))
+        out[#out + 1] = '<div class="book-meta">' .. table.concat(meta, " · ") .. "</div>"
+        if theme.cover_actions then
+            out[#out + 1] = '<p class="actions"><a href="kt:end">'
+                .. L("go_end", _("Go to the end")) .. "</a></p>"
+        end
+        out[#out + 1] = "</div>"
     end
-    local meta = {}
-    if data.created_at then
-        table.insert(meta, esc(os.date("%Y-%m-%d", tonumber(data.created_at) or os.time())))
-    end
-    table.insert(meta, _("Messages") .. ": " .. tostring(#messages))
-    out[#out + 1] = '<div class="book-meta">' .. table.concat(meta, " · ") .. "</div>"
-    out[#out + 1] = '<p class="actions"><a href="kt:end">'
-        .. _("Go to the end") .. "</a></p>"
-    out[#out + 1] = "</div>"
 
     -- Messages stay in chat order, without generated turn/chapter boundaries.
+    local prev = nil
     for index, msg in ipairs(messages) do
-        out[#out + 1] = message_html(msg, index, data)
+        local html = message_html(msg, index, data, theme, labels, prev)
+        prev = msg
+        if html ~= "" then
+            if theme.separator == "ornament" and index > 1 then
+                out[#out + 1] = '<p class="kt-ornament">&#10087;</p>'
+            end
+            out[#out + 1] = html
+        end
     end
 
     if #messages == 0 then
@@ -555,14 +729,16 @@ function Book.build(data)
     end
 
     -- Colophon
-    out[#out + 1] = '<div class="colophon">'
-    out[#out + 1] = '<p class="compose"><a href="kt:new">&gt; '
-        .. _("Write next message") .. "</a></p>"
-    out[#out + 1] = '<p class="compose"><a href="kt:continue">&gt; '
-        .. _("Continue last reply") .. "</a></p>"
-    out[#out + 1] = '<p class="compose"><a href="kt:menu">&gt; '
-        .. _("Book actions") .. "</a></p>"
-    out[#out + 1] = "</div>"
+    if theme.colophon then
+        out[#out + 1] = '<div class="colophon">'
+        out[#out + 1] = '<p class="compose"><a href="kt:new">&gt; '
+            .. L("write_next", _("Write next message")) .. "</a></p>"
+        out[#out + 1] = '<p class="compose"><a href="kt:continue">&gt; '
+            .. L("continue_last", _("Continue last reply")) .. "</a></p>"
+        out[#out + 1] = '<p class="compose"><a href="kt:menu">&gt; '
+            .. L("book_actions", _("Book actions")) .. "</a></p>"
+        out[#out + 1] = "</div>"
+    end
 
     out[#out + 1] = "</body>"
     out[#out + 1] = "</html>"

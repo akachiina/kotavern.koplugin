@@ -349,6 +349,76 @@ ok(invalid_html:find(overlong_emoji, 1, true) ~= nil
 Book.remove(chat_path)
 ok(not Book.exists(chat_path), "T7: Book.remove drops the generated file")
 
+-- === T27: the book theme drives the generated HTML ==========================
+do
+    local BookTheme = require("kt_book_theme")
+    local base_data = {
+        messages = {
+            { role = "user", content = "Hello", name = "User", send_date = 1700000000 },
+            { role = "assistant", content = "Hi there", name = "SmokeChar",
+                reasoning = "hidden thoughts" },
+            { role = "system", content = "A system line" },
+        },
+        chat_name = "Smoke chat",
+        character_name = "SmokeChar",
+        persona_name = "Tester",
+        created_at = 1700000000,
+    }
+    local function build(theme, labels)
+        local data = {}
+        for k, v in pairs(base_data) do data[k] = v end
+        data.theme = BookTheme.normalize(theme or {})
+        data.labels = labels or {}
+        return Book.build(data)
+    end
+
+    local plain = build({})
+    ok(plain:find('name="kotavern-book-theme"', 1, true) ~= nil,
+        "T27a: the book carries the theme signature")
+    ok(plain:find("A system line", 1, true) ~= nil,
+        "T27b: the default theme keeps the system message")
+
+    local no_cover = build({ cover = false })
+    ok(no_cover:find('<div class="book-title">', 1, true) == nil,
+        "T27c: cover = false removes the cover")
+    ok(no_cover:find('<div class="book-title">', 1, true)
+        ~= plain:find('<div class="book-title">', 1, true),
+        "T27d: the cover toggle changes the bytes")
+
+    local no_actions = build({ message_actions = false })
+    ok(no_actions:find("kt:msg/", 1, true) == nil,
+        "T27e: message_actions = false removes the per-message action link")
+
+    local no_colophon = build({ colophon = false })
+    ok(no_colophon:find("kt:menu", 1, true) == nil,
+        "T27f: colophon = false removes the colophon links")
+
+    local hidden_user = build({ user_style = "hidden" })
+    ok(hidden_user:find("Hello", 1, true) == nil,
+        "T27g: user_style = hidden drops the user message body")
+
+    local titled = build({ message_title = "number" })
+    ok(titled:find('<div class="message-title">', 1, true) ~= nil,
+        "T27h: message_title = number still renders a title block")
+    local untitled = build({ message_title = "none" })
+    ok(untitled:find('<div class="message-title">', 1, true) == nil,
+        "T27i: message_title = none removes the title block")
+
+    local toc = build({ toc = true })
+    ok(toc:find("<h2", 1, true) ~= nil,
+        "T27j: toc = true emits real headings for the native TOC")
+
+    local labeled = build({}, { actions = "Ações do livro" })
+    ok(labeled:find("Ações do livro", 1, true) ~= nil,
+        "T27k: a custom label reaches the generated HTML")
+
+    local reasoning = build({ show_reasoning = true })
+    ok(reasoning:find("hidden thoughts", 1, true) ~= nil,
+        "T27l: show_reasoning = true renders the reasoning block")
+    ok(plain:find("hidden thoughts", 1, true) == nil,
+        "T27m: the default theme hides the reasoning")
+end
+
 -- === T8..T15: the native reader ==============================================
 
 local App = require("kt_app")
