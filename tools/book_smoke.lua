@@ -419,6 +419,35 @@ do
         "T27m: the default theme hides the reasoning")
 end
 
+-- === T28: per-document reader settings ====================================
+do
+    local BookTheme = require("kt_book_theme")
+    local DocSettings = require("docsettings")
+    local path = Book.path_for(chat_path)
+    local before_ds = DocSettings:open(path)
+    local position = before_ds:readSetting("last_xpointer")
+    local okp, err = BookTheme.apply_reader_settings(path,
+        BookTheme.normalize({ font_size = 30, line_spacing = 120, margin = "wide" }))
+    ok(okp, "T28a: the reader settings are written (" .. tostring(err) .. ")")
+    local ds = DocSettings:open(path)
+    ok(ds:readSetting("copt_font_size") == 30,
+        "T28b: the font size lands in the sidecar")
+    ok(ds:readSetting("copt_line_spacing") == 120,
+        "T28c: the line spacing lands in the sidecar")
+    local margins = ds:readSetting("copt_h_page_margins")
+    ok(type(margins) == "table" and margins[1] == 20 and margins[2] == 20,
+        "T28d: the wide margins land in the sidecar")
+    ok(ds:readSetting("last_xpointer") == position,
+        "T28e: writing the settings keeps the reader position")
+
+    BookTheme.apply_reader_settings(path, BookTheme.normalize({}))
+    local ds2 = DocSettings:open(path)
+    ok(ds2:readSetting("copt_font_size") == nil
+        and ds2:readSetting("copt_line_spacing") == nil
+        and ds2:readSetting("copt_h_page_margins") == nil,
+        "T28f: an empty theme removes the settings again (follow the reader)")
+end
+
 -- === T8..T15: the native reader ==============================================
 
 local App = require("kt_app")
