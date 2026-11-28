@@ -1624,10 +1624,12 @@ do
     ok(started == true, "update: the background check starts")
     local socket = require("socket")
     local tries = 0
-    while not got and tries < 100 do
+    while not got and tries < 200 do
         tries = tries + 1
         local fn = table.remove(queue, 1)
-        if fn then fn() else socket.sleep(0.02) end
+        if fn then fn() end
+        -- The command runs detached: always give it a moment to land.
+        socket.sleep(0.02)
     end
     ok(got ~= nil and got[1] == true and got[2] and got[2].version == "0.4.0",
         "update: the background check parses the fixture release")
@@ -1650,6 +1652,44 @@ do
         { channel = "commits", commit = "aaa" }, {})
     ok(newer_commit == true,
         "update: a newer commit snapshot prompts")
+end
+
+-- === 4m-ter. Release notes page ===========================================
+do
+    local app = fake_app({ page = "release_notes" })
+    app.state.settings.update_notes_cache = {
+        channel = "stable", target = "new", title = "Nightly", version = "0.4.0",
+        body = "# Heading\n\nSome **bold** text.\n\n- one\n- two",
+        items = {}, truncated = false, fetched_at = os.time(),
+    }
+    local view = { app = app, hitboxes = {} }
+    local bb = new_bb()
+    local okp, err = pcall(function()
+        Pages.release_notes(view, bb, 0, 0, VW, VH - Theme.metrics().nav_h, 0)
+    end)
+    ok(okp, "release notes: the page renders (" .. tostring(err) .. ")")
+    ok(ink_ratio(bb) > 50, "release notes: the page paints text")
+    dump(bb, "release_notes")
+
+    local app2 = fake_app({ page = "release_notes" })
+    app2.state.settings.update_notes_cache = {
+        channel = "commits", target = "new", title = "Commits", items = {
+            { sha = "abc1234", message = "a commit", date = "2026-11-20" },
+        }, body = "", truncated = false,
+    }
+    local bb2 = new_bb()
+    local okp2, err2 = pcall(function()
+        Pages.release_notes({ app = app2, hitboxes = {} }, bb2, 0, 0, VW, VH - Theme.metrics().nav_h, 0)
+    end)
+    ok(okp2, "release notes: the commits channel renders (" .. tostring(err2) .. ")")
+
+    -- No cache at all: the empty state, no crash.
+    local app3 = fake_app({ page = "release_notes" })
+    local bb3 = new_bb()
+    local okp3, err3 = pcall(function()
+        Pages.release_notes({ app = app3, hitboxes = {} }, bb3, 0, 0, VW, VH - Theme.metrics().nav_h, 0)
+    end)
+    ok(okp3, "release notes: the empty cache renders (" .. tostring(err3) .. ")")
 end
 
 -- === 4n. Nav labels follow the active language (never frozen) ==================

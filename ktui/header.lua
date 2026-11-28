@@ -82,8 +82,11 @@ local function page_title(view)
             settings_language = _("Language"),
             settings_data = _("Data"),
             settings_debug = _("Debug"),
+            settings_updates = _("Updates"),
         }
         return names[page] or _("Settings")
+    elseif page == "release_notes" then
+        return _("What's new")
     elseif page == "theme_edit" then
         -- The editor's title = the theme being edited (the B6 design
         -- promised it; the header never had the branch).

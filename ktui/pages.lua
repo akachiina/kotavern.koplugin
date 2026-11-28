@@ -1633,10 +1633,168 @@ function Pages.settings_updates(view, bb, x, y, w, h, scroll)
         { text = _("Status"), icon = "bolt",
             value = function() return tostring(view.app.state.update_status or "-") end,
             callback = function() end },
+        { text = _("What's new"), icon = "info-circle",
+            value = function()
+                -- When something newer exists the row says so: the page then
+                -- shows the NEW notes (that is what "what's new" means).
+                local entry = app.state.settings.update_last_entry
+                if type(entry) == "table" and entry.tag then
+                    local installed = Update.installed_build(app.state.settings.installed_build)
+                    if Update.is_newer({ channel = entry.channel, version = entry.version,
+                        commit = entry.commit }, installed) then
+                        return _("Update available")
+                    end
+                end
+                local installed = Update.installed_build(app.state.settings.installed_build)
+                return Update.about_title(installed)
+            end,
+            callback = function() app:show_release_notes() end },
+        { text = _("Check for updates automatically"), icon = "refresh", toggle = true,
+            value = function() return app.state.settings.update_auto_check ~= false end,
+            callback = function()
+                app:save_setting("update_auto_check",
+                    app.state.settings.update_auto_check == false)
+            end },
         { text = _("Check for updates"), icon = "download",
             callback = function() app:check_updates_now() end },
     }
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
+
+-- === Release notes ("What's new") ==========================================
+-- The cached release notes (stable) or the commits since the installed one
+-- (artifact). The markdown is parsed with ktui/md and painted with the canvas
+-- primitives: no MuPDF, no bitmap per block. Every text block is clipped to
+-- the content area (a block scrolled half out of view must not bleed under
+-- the header).
+function Pages.release_notes(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local Md = require("ktui/md")
+    P.rect(bb, x, y, w, h, Theme.bg)
+    local m = Theme.metrics()
+    local pad = m.pad
+    local gutter = Theme.scrollbar_w()
+    local cache = app.state.settings.update_notes_cache or {}
+    local list_x = x + pad
+    local list_w = w - pad * 2 - gutter
+    local list_y = y + Theme.scale(6)
+    local list_h = h - (list_y - y)
+    local gap = Theme.scale(8)
+
+    local title = tostring(cache.title or "")
+    local version = tostring(cache.version or "")
+    local commit = tostring(cache.commit or "")
+    local items = (type(cache.items) == "table") and cache.items or {}
+    local body = (type(cache.body) == "string") and cache.body or ""
+
+    if title == "" and version == "" and commit == "" and #items == 0 and body == "" then
+        Widgets.empty_state(view, bb, {
+            x = x, y = list_y, w = w, h = list_h,
+            icon = "info-circle",
+            text = _("No release notes yet."),
+            action = { label = _("Check for updates"), icon = "download",
+                on_tap = function() app:check_updates_now() end },
+        })
+        Scroll.set_list_bounds(view, x, y, w, h, h)
+        return 0
+    end
+
+    -- Inline markdown markers are stripped: the canvas renderer paints plain
+    -- text, and a literal "**bold**" reads as noise.
+    local function plain(text)
+        local s = tostring(text or "")
+        s = s:gsub("%*%*(.-)%*%*", "%1")
+        s = s:gsub("`([^`]+)`", "%1")
+        return s
+    end
+
+    local entries = {}
+    local function add(text, role, bold, color)
+        if text == nil or text == "" then return end
+        local lines = P.paragraph_line_count(text, list_w, role or "default", { bold = bold })
+        local lh = Theme.line_h(role or "default")
+        entries[#entries + 1] = {
+            text = text, role = role or "default", bold = bold, color = color,
+            h = math.max(lh, lines * lh),
+        }
+    end
+
+    -- Header: what these notes are about.
+    local head = title ~= "" and title or _("Commits")
+    add(head, "default", true, nil)
+    local sub = (cache.channel == "commits") and commit or version
+    if cache.target == "new" then
+        add(_("New in %s"):format(sub ~= "" and sub or "?"), "tiny", false, Theme.muted)
+    elseif sub ~= "" then
+        add(_("Installed version") .. " · " .. sub, "tiny", false, Theme.muted)
+    end
+
+    -- The artifact channel: one block per commit since the installed one.
+    for _ci, item in ipairs(items) do
+        add(tostring(item.sha or "") .. " · " .. plain(item.message or ""),
+            "default", false, nil)
+        local date = tostring(item.date or "")
+        if date ~= "" then
+            add(date, "tiny", false, Theme.muted)
+        end
+    end
+
+    -- The stable channel: the release body, parsed as markdown.
+    if body ~= "" then
+        for _bi, block in ipairs(Md.parse(body) or {}) do
+            local kind = block.kind
+            if kind == "heading" then
+                add(plain(block.text), "default", true, nil)
+            elseif kind == "list" then
+                add(plain(block.text), "default", false, nil)
+            elseif kind == "quote" then
+                add(plain(block.text), "default", false, Theme.muted)
+            elseif kind == "code" then
+                add(plain(block.text), "small", false, nil)
+            elseif kind == "rule" then
+                add("────────", "small", false, Theme.soft)
+            elseif kind == "image" then
+                add(_("[Image: %1]"):format(tostring(block.alt or "")), "default", false, Theme.muted)
+            elseif kind == "table" then
+                local lines = {}
+                if type(block.header) == "table" then
+                    lines[#lines + 1] = table.concat(block.header, " | ")
+                end
+                for _ri, row in ipairs(block.rows or {}) do
+                    lines[#lines + 1] = table.concat(row, " | ")
+                end
+                add(table.concat(lines, "\n"), "small", false, nil)
+            else
+                add(plain(block.text), "default", false, nil)
+            end
+        end
+    end
+
+    -- Layout: the blocks are stacked and the page scrolls as a whole.
+    local total = 0
+    for _, entry in ipairs(entries) do
+        entry.top = total
+        total = total + entry.h + gap
+    end
+    local max_scroll = math.max(0, total - list_h)
+    local sc = math.max(0, math.min(scroll or 0, max_scroll))
+    for _, entry in ipairs(entries) do
+        local top = list_y + entry.top - sc
+        local bottom = top + entry.h
+        if bottom > list_y and top < list_y + list_h then
+            -- Clip the block to the content area: the part above the viewport
+            -- is skipped (offset) and the part below is cut.
+            local clipped = math.max(0, list_y - top)
+            local draw_y = top + clipped
+            local visible_h = math.min(entry.h - clipped, list_y + list_h - draw_y)
+            local off = math.max(0, sc - entry.top) + clipped
+            P.scrollable_paragraph(bb, entry.text, list_x, draw_y, list_w,
+                math.max(Theme.line_h(entry.role), visible_h), entry.role, off,
+                { bold = entry.bold, color = entry.color })
+        end
+    end
+    Scroll.set_list_bounds(view, x, y, w, h, list_h)
+    return max_scroll
 end
 
 -- === Presets ===

@@ -6765,6 +6765,21 @@ function App:check_updates_now()
         commit = res.commit,
         tag = Update.entry_tag(res),
     }
+    -- The release body came with the check: cache it instead of asking the
+    -- network a second time for the same page.
+    if type(s.update_notes_cache) ~= "table" and res.channel == "stable" then
+        s.update_notes_cache = {
+            channel = "stable",
+            target = "new",
+            title = res.name or res.tag or "",
+            version = res.version,
+            commit = nil,
+            body = res.body or "",
+            items = {},
+            truncated = false,
+            fetched_at = os.time(),
+        }
+    end
     Storage.save_settings(s)
     Sheets.show(self, { title = _("Update available"), actions = {
         { label = _("Download & install") .. " (" .. tag .. ")", icon = "download",
@@ -6772,6 +6787,57 @@ function App:check_updates_now()
             self_ref:_install_update(res)
           end },
     } })
+end
+
+-- === Release notes ("What's new") ==========================================
+-- The notes are cached in the settings: the page works offline and keeps
+-- showing the notes of the version the user runs after an install.
+
+function App:show_release_notes()
+    local Update = require("kt_update")
+    local s = self.state.settings
+    local installed = Update.installed_build(s.installed_build)
+    local cache = s.update_notes_cache
+    local stale = true
+    if type(cache) == "table" then
+        if cache.channel == "commits" then
+            stale = (tostring(cache.commit or "") ~= tostring(installed.commit or ""))
+        else
+            stale = (tostring(cache.version or "") ~= tostring(installed.version or ""))
+        end
+    end
+    if stale then
+        self:refresh_release_notes()
+    end
+    self:navigate("release_notes")
+end
+
+function App:refresh_release_notes()
+    local Modals = require("ktui/modals")
+    local InfoMessage = require("ui/widget/infomessage")
+    local Update = require("kt_update")
+    local _ = require("gettext")
+    local s = self.state.settings
+    local repo = Util.trim(tostring(s.update_repo or ""))
+    if repo == "" then
+        repo = Update.default_repo()
+    end
+    Modals.status(_("Fetching release notes…"))
+    UIManager:forceRePaint()
+    local notes, err = Update.notes({
+        repo = repo,
+        channel = Update.normalize_channel(s.update_channel),
+    }, Update.installed_build(s.installed_build))
+    Modals.close_status()
+    if not notes then
+        UIManager:show(InfoMessage:new{ text = tostring(err or "?"), timeout = 4 })
+        return false
+    end
+    notes.fetched_at = os.time()
+    s.update_notes_cache = notes
+    Storage.save_settings(s)
+    self:refresh(true)
+    return true
 end
 
 -- === Storage: usage, backup export/import, data folder ===========================
