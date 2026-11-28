@@ -772,6 +772,9 @@ msgstr "Claro"
 msgid "List"
 msgstr "Lista"
 
+msgid "List (SillyTavern) or Book (native reader)"
+msgstr "Lista (SillyTavern) ou Livro (leitor nativo)"
+
 msgid "Live"
 msgstr "Ao vivo"
 
