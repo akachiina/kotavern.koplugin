@@ -4668,11 +4668,11 @@ do
         return app, view, okp, bb
     end
 
-    -- Without Debug Mode: the Chat mode row is there anyway (5 rows).
+    -- Without Debug Mode: the Chat mode row is there anyway (6 rows).
     local app_nd, view_nd, okp_nd = appearance_fixture({
         theme = "light", base_font_size = 22, debug_mode = false, chat_mode = "list" })
     ok(okp_nd, "appearance: paints without Debug Mode")
-    ok(#view_nd.hitboxes == 5,
+    ok(#view_nd.hitboxes == 6,
         "appearance: the Chat mode row shows without Debug Mode (got "
         .. #view_nd.hitboxes .. " rows)")
 
@@ -4680,7 +4680,7 @@ do
     local app_d, view_d, okp_d, bb_d = appearance_fixture({
         theme = "light", base_font_size = 22, debug_mode = true, chat_mode = "list" })
     ok(okp_d, "appearance: paints with Debug Mode")
-    ok(#view_d.hitboxes == 5,
+    ok(#view_d.hitboxes == 6,
         "appearance: Debug Mode does not change the row count (got "
         .. #view_d.hitboxes .. " rows)")
     dump(bb_d, "appearance_debug_list")
@@ -4698,7 +4698,7 @@ do
     local app_b, view_b, okp_b, bb_b = appearance_fixture({
         theme = "light", base_font_size = 22, debug_mode = true, chat_mode = "book" })
     ok(okp_b, "appearance: paints in book mode")
-    ok(#view_b.hitboxes == 5,
+    ok(#view_b.hitboxes == 6,
         "appearance: book mode keeps the chat theme launcher (got "
         .. #view_b.hitboxes .. " rows)")
     dump(bb_b, "appearance_debug_book")
@@ -6000,6 +6000,47 @@ do
         ok(type(font.name) == "string" and font.name ~= "",
             "book look: every font carries a name")
         break
+    end
+end
+
+-- === 4w-quater. The book appearance page ===================================
+do
+    local App = require("kt_app")
+    local app = fake_app({ page = "settings_book",
+        settings = { chat_mode = "book", book_theme = { cover = false } } })
+    setmetatable(app, { __index = App })
+    function app:navigate(page) self._nav = page end
+    function app:refresh() end
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local bb = new_bb()
+    local max_scroll = 0
+    local okp, err = pcall(function()
+        max_scroll = Pages.settings_book(view, bb, 0, 0, VW, VH - Theme.metrics().nav_h, 0)
+    end)
+    ok(okp, "book look: the page paints (" .. tostring(err) .. ")")
+    -- The list only registers hitboxes for the VISIBLE rows, so the page
+    -- length is asserted through the scroll extent, not through the hits.
+    ok(max_scroll > 0, "book look: the page is longer than the viewport")
+    ok(#view.hitboxes >= 5,
+        "book look: the visible rows are tappable (got " .. #view.hitboxes .. ")")
+    dump(bb, "settings_book")
+
+    -- The preset row opens the preset sheet.
+    local app2 = fake_app({ page = "settings_book", settings = {} })
+    setmetatable(app2, { __index = App })
+    function app2:navigate(page) self._nav = page end
+    function app2:apply_book_preset(id) self._preset = id end
+    function app2:refresh() end
+    local view2 = { app = app2, hitboxes = {}, refresh = function() end }
+    Pages.settings_book(view2, new_bb(), 0, 0, VW, VH - Theme.metrics().nav_h, 0)
+    view2.hitboxes[1].callback(0, 0)
+    local sheet = app2.state.sheet
+    ok(sheet ~= nil and #sheet.actions == 5,
+        "book look: the preset sheet offers the four presets plus Custom")
+    if sheet and sheet.actions[2] then
+        sheet.actions[2].on_tap()
+        ok(app2._preset == "novel",
+            "book look: picking a preset applies it")
     end
 end
 
@@ -8460,10 +8501,10 @@ do
             end)
             ok(okp_r2, "r2: Appearance paints without the density row")
             -- Rows: Theme(1) Font size(2) Chat mode(3) Chat themes(4)
-            -- Dashboard(5) - and no 6th row: density must not have crept
-            -- back in.
-            ok(#view_r2.hitboxes == 5,
-                "r2: Appearance = 5 tappable rows, no density (got "
+            -- Book appearance(5) Dashboard(6) - and no 7th row: density must
+            -- not have crept back in.
+            ok(#view_r2.hitboxes == 6,
+                "r2: Appearance = 6 tappable rows, no density (got "
                 .. #view_r2.hitboxes .. ")")
             local Theme_r2 = require("ktui/theme")
             ok(app_r2b.state.settings.density == "normal"

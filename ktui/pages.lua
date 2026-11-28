@@ -505,6 +505,12 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
         icon = "sliders",
         callback = function() app:navigate("settings_appearance_chat") end,
     }
+    -- The book's own look (the reader paints the chat in Book mode).
+    rows[#rows + 1] = {
+        text = _("Book appearance"),
+        icon = "book",
+        callback = function() app:navigate("settings_book") end,
+    }
     rows[#rows + 1] = {
         text = _("Dashboard"), callback = function() app:navigate("settings_dashboard") end }
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
@@ -556,6 +562,259 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
+
+-- === Book appearance ========================================================
+-- The look of the generated book: the presets, the reader's typography (the
+-- per-document settings), the structure of the HTML and the labels. Every
+-- row writes through App:set_book_theme_key, which saves the settings,
+-- refreshes the open book and repaints the page.
+function Pages.settings_book(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    local BookTheme = require("kt_book_theme")
+    local theme = app:book_theme()
+
+    local function pick_row(text, current, options, on_pick)
+        return {
+            text = text,
+            value = function() return current end,
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                local actions = {}
+                for oi = 1, #options do
+                    local opt = options[oi]
+                    actions[#actions + 1] = {
+                        label = opt.label,
+                        checked = (tostring(opt.value) == tostring(current)),
+                        on_tap = function()
+                            on_pick(opt.value)
+                        end,
+                    }
+                end
+                Sheets.show(app, { title = text, actions = actions })
+            end,
+        }
+    end
+
+    local function toggle_row(text, current, key)
+        return {
+            text = text,
+            toggle = true,
+            value = function() return current end,
+            callback = function()
+                app:set_book_theme_key(key, not current)
+                app:refresh(true)
+            end,
+        }
+    end
+
+    local preset_labels = {
+        default = _("Default"), novel = _("Novel"),
+        compact = _("Compact"), minimal = _("Minimal"),
+    }
+    local margin_labels = {
+        narrow = _("Narrow"), normal = _("Normal"), wide = _("Wide"),
+    }
+    local preset_names = {}
+    for _, preset in ipairs(BookTheme.PRESETS()) do
+        preset_names[preset.id] = preset_labels[preset.id] or preset.name
+    end
+
+    local rows = {
+        {
+            text = _("Book preset"),
+            icon = "star",
+            value = function()
+                return preset_names[theme.preset] or _("Custom")
+            end,
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                local actions = {}
+                for _, preset in ipairs(BookTheme.PRESETS()) do
+                    local id = preset.id
+                    actions[#actions + 1] = {
+                        label = preset_names[id] or preset.name,
+                        checked = (theme.preset == id),
+                        on_tap = function()
+                            app:apply_book_preset(id)
+                        end,
+                    }
+                end
+                actions[#actions + 1] = {
+                    label = _("Custom"),
+                    checked = (theme.preset == "custom"),
+                    on_tap = function() end,
+                }
+                Sheets.show(app, { title = _("Book preset"), actions = actions })
+            end,
+        },
+        { section = true, text = _("Page") },
+        {
+            text = _("Book font"),
+            value = function()
+                local face = theme.font_face or ""
+                return (face ~= "") and face or _("Follow the reader")
+            end,
+            callback = function() app:choose_book_font() end,
+        },
+        pick_row(_("Font size"),
+            theme.font_size > 0 and tostring(theme.font_size) or _("Follow the reader"),
+            {
+                { label = _("Follow the reader"), value = 0 },
+                { label = "18", value = 18 },
+                { label = "20", value = 20 },
+                { label = "22", value = 22 },
+                { label = "24", value = 24 },
+                { label = "26", value = 26 },
+                { label = "28", value = 28 },
+                { label = "30", value = 30 },
+            },
+            function(value) app:set_book_theme_key("font_size", value) end),
+        pick_row(_("Line spacing"),
+            theme.line_spacing > 0 and tostring(theme.line_spacing) or _("Follow the reader"),
+            {
+                { label = _("Follow the reader"), value = 0 },
+                { label = "90", value = 90 },
+                { label = "100", value = 100 },
+                { label = "110", value = 110 },
+                { label = "120", value = 120 },
+                { label = "130", value = 130 },
+                { label = "150", value = 150 },
+            },
+            function(value) app:set_book_theme_key("line_spacing", value) end),
+        pick_row(_("Font weight"),
+            theme.font_weight > 0 and tostring(theme.font_weight) or _("Follow the reader"),
+            {
+                { label = _("Follow the reader"), value = 0 },
+                { label = _("Regular"), value = 400 },
+                { label = _("Medium"), value = 600 },
+                { label = _("Bold"), value = 700 },
+            },
+            function(value) app:set_book_theme_key("font_weight", value) end),
+        pick_row(_("Margins"), margin_labels[theme.margin] or theme.margin,
+            {
+                { label = _("Narrow"), value = "narrow" },
+                { label = _("Normal"), value = "normal" },
+                { label = _("Wide"), value = "wide" },
+            },
+            function(value) app:set_book_theme_key("margin", value) end),
+        toggle_row(_("Justify text"), theme.justify, "justify"),
+        toggle_row(_("Hyphenation"), theme.hyphenate, "hyphenate"),
+        pick_row(_("Paragraph spacing"), theme.paragraph_spacing,
+            {
+                { label = _("Compact"), value = "compact" },
+                { label = _("Normal"), value = "normal" },
+                { label = _("Airy"), value = "airy" },
+            },
+            function(value) app:set_book_theme_key("paragraph_spacing", value) end),
+        { section = true, text = _("Structure") },
+        toggle_row(_("Cover"), theme.cover, "cover"),
+        pick_row(_("Cover title"), theme.cover_title,
+            {
+                { label = _("Chat name"), value = "chat" },
+                { label = _("Character name"), value = "character" },
+                { label = _("Both"), value = "both" },
+            },
+            function(value) app:set_book_theme_key("cover_title", value) end),
+        toggle_row(_("Show date"), theme.cover_date, "cover_date"),
+        toggle_row(_("Go to the end link"), theme.cover_actions, "cover_actions"),
+        toggle_row(_("Table of contents"), theme.toc, "toc"),
+        pick_row(_("Message titles"), theme.message_title,
+            {
+                { label = _("Speaker"), value = "speaker" },
+                { label = _("Speaker and time"), value = "speaker_time" },
+                { label = _("Time"), value = "time" },
+                { label = _("Number"), value = "number" },
+                { label = _("None"), value = "none" },
+            },
+            function(value) app:set_book_theme_key("message_title", value) end),
+        pick_row(_("User messages"), theme.user_style,
+            {
+                { label = _("Quote"), value = "quote" },
+                { label = _("Panel"), value = "panel" },
+                { label = _("Plain"), value = "plain" },
+                { label = _("Hidden"), value = "hidden" },
+            },
+            function(value) app:set_book_theme_key("user_style", value) end),
+        pick_row(_("System messages"), theme.system_style,
+            {
+                { label = _("Dimmed"), value = "dim" },
+                { label = _("Plain"), value = "plain" },
+                { label = _("Hidden"), value = "hidden" },
+            },
+            function(value) app:set_book_theme_key("system_style", value) end),
+        toggle_row(_("Show reasoning"), theme.show_reasoning, "show_reasoning"),
+        toggle_row(_("Colophon"), theme.colophon, "colophon"),
+        toggle_row(_("Actions link per message"), theme.message_actions, "message_actions"),
+        pick_row(_("Separator"), theme.separator,
+            {
+                { label = _("Line"), value = "line" },
+                { label = _("Ornament"), value = "ornament" },
+                { label = _("Space"), value = "space" },
+                { label = _("None"), value = "none" },
+            },
+            function(value) app:set_book_theme_key("separator", value) end),
+        toggle_row(_("Merge same speaker"), theme.merge_speakers, "merge_speakers"),
+        toggle_row(_("Page break per message"), theme.page_break, "page_break"),
+        toggle_row(_("Drop cap"), theme.drop_cap, "drop_cap"),
+        { section = true, text = _("Content") },
+        pick_row(_("Code blocks"), theme.code_style,
+            {
+                { label = _("Boxed"), value = "box" },
+                { label = _("Indented"), value = "indent" },
+                { label = _("Plain"), value = "plain" },
+            },
+            function(value) app:set_book_theme_key("code_style", value) end),
+        toggle_row(_("Table borders"), theme.table_border, "table_border"),
+        pick_row(_("Spoilers"), theme.spoiler,
+            {
+                { label = _("Masked"), value = "mask" },
+                { label = _("Reveal"), value = "reveal" },
+            },
+            function(value) app:set_book_theme_key("spoiler", value) end),
+        pick_row(_("Emoji size"), theme.emoji_size,
+            {
+                { label = _("Small"), value = "small" },
+                { label = _("Normal"), value = "normal" },
+                { label = _("Large"), value = "large" },
+            },
+            function(value) app:set_book_theme_key("emoji_size", value) end),
+        pick_row(_("Inline images"), theme.inline_images,
+            {
+                { label = _("Placeholder"), value = "placeholder" },
+                { label = _("Hidden"), value = "hidden" },
+            },
+            function(value) app:set_book_theme_key("inline_images", value) end),
+        { section = true, text = _("Advanced") },
+        {
+            text = _("Custom CSS"),
+            value = function()
+                local css = theme.custom_css or ""
+                return (css ~= "") and tostring(#css) .. " chars" or _("None")
+            end,
+            callback = function() app:prompt_book_custom_css() end,
+        },
+        {
+            text = _("Text labels"),
+            icon = "edit",
+            callback = function() app:navigate("settings_book_labels") end,
+        },
+        {
+            text = _("Restore defaults"),
+            icon = "refresh",
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                Sheets.confirm(app, {
+                    title = _("Restore defaults"),
+                    text = _("The book look goes back to the default preset. Labels are kept."),
+                    ok_label = _("Restore"),
+                    on_ok = function() app:reset_book_look() end,
+                })
+            end,
+        },
+    }
+
+    return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
+end
 
 -- Appearance > Chat > Bubble themes: manage the saved chat-look themes and
 -- pick the global default. Per-theme actions live in a sheet (apply to THIS
