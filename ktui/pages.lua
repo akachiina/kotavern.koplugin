@@ -1969,6 +1969,15 @@ function Pages.settings_updates(view, bb, x, y, w, h, scroll)
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
+-- The pixel offset INSIDE a block that is half scrolled out: the page scroll
+-- minus the block's top. It is counted ONCE (the block's own top already
+-- moved with the scroll).
+function Pages.release_notes_offset(scroll, entry_top)
+    local offset = (tonumber(scroll) or 0) - (tonumber(entry_top) or 0)
+    if offset < 0 then return 0 end
+    return offset
+end
+
 -- === Release notes ("What's new") ==========================================
 -- The cached release notes (stable) or the commits since the installed one
 -- (artifact). The markdown is parsed with ktui/md and painted with the canvas
@@ -2080,13 +2089,13 @@ function Pages.release_notes(view, bb, x, y, w, h, scroll)
 
     -- Layout: the blocks are stacked and the page scrolls as a whole.
     local total = 0
-    for _, entry in ipairs(entries) do
+    for _ei, entry in ipairs(entries) do
         entry.top = total
         total = total + entry.h + gap
     end
     local max_scroll = math.max(0, total - list_h)
     local sc = math.max(0, math.min(scroll or 0, max_scroll))
-    for _, entry in ipairs(entries) do
+    for _ei, entry in ipairs(entries) do
         local top = list_y + entry.top - sc
         local bottom = top + entry.h
         if bottom > list_y and top < list_y + list_h then
@@ -2095,7 +2104,7 @@ function Pages.release_notes(view, bb, x, y, w, h, scroll)
             local clipped = math.max(0, list_y - top)
             local draw_y = top + clipped
             local visible_h = math.min(entry.h - clipped, list_y + list_h - draw_y)
-            local off = math.max(0, sc - entry.top) + clipped
+            local off = Pages.release_notes_offset(sc, entry.top)
             P.scrollable_paragraph(bb, entry.text, list_x, draw_y, list_w,
                 math.max(Theme.line_h(entry.role), visible_h), entry.role, off,
                 { bold = entry.bold, color = entry.color })

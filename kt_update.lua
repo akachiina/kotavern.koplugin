@@ -101,7 +101,7 @@ function Update.commit_notes(commits, installed_commit)
     local anchor = tostring(installed_commit or "")
     anchor = anchor:gsub("^%s+", ""):gsub("%s+$", "")
     local found = false
-    for _, c in ipairs(commits or {}) do
+    for _ci, c in ipairs(commits or {}) do
         if type(c) == "table" then
             local sha = tostring(c.sha or "")
             if anchor ~= "" and sha ~= ""
@@ -687,7 +687,7 @@ function Update.notes(opts, installed)
     end
 
     local function release_by_tag(tag)
-        for _, r in ipairs(releases) do
+        for _ri, r in ipairs(releases) do
             if type(r) == "table" and tostring(r.tag_name or "") == tostring(tag or "") then
                 return r
             end

@@ -145,7 +145,7 @@ function BookTheme.normalize(raw)
         for field, allowed in pairs(ENUMS) do
             out[field] = enum_or(raw, field, allowed, BookTheme.DEFAULTS[field])
         end
-        for _, field in ipairs(BOOLEANS) do
+        for _bi, field in ipairs(BOOLEANS) do
             -- An explicit false is a choice; a missing key keeps the default.
             if raw[field] == nil then
                 out[field] = BookTheme.DEFAULTS[field]
@@ -191,7 +191,7 @@ function BookTheme.sig(theme)
     for field, _allowed in pairs(ENUMS) do
         put(field, t[field])
     end
-    for _, field in ipairs(BOOLEANS) do
+    for _bi, field in ipairs(BOOLEANS) do
         put(field, t[field] and 1 or 0)
     end
     put("font", t.font_face)
@@ -203,7 +203,7 @@ function BookTheme.sig(theme)
     local keys = {}
     for key in pairs(t.labels) do keys[#keys + 1] = key end
     table.sort(keys)
-    for _, key in ipairs(keys) do
+    for _ki, key in ipairs(keys) do
         put("l:" .. key, t.labels[key])
     end
     return table.concat(parts, "|")

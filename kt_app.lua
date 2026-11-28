@@ -6671,15 +6671,30 @@ function App:_install_update(entry, on_done)
     }
     Storage.save_settings(s)
     s.update_status = _("Up to date")
+    self:_confirm_install(ver)
+    if on_done then on_done(true, tostring(ver)) end
+end
+
+-- The restart offer. Over the native reader the canvas sheet would be
+-- painted UNDER it (invisible), so the native dialog is used there.
+function App:_confirm_install(version)
+    local _ = require("gettext")
+    if self.state.book_active then
+        local Modals = require("ktui/modals")
+        Modals.confirm(tostring(version), _("Restart now"), function()
+            UIManager:restartKOReader()
+        end)
+        return
+    end
+    local Sheets = require("ktui/sheets")
     Sheets.confirm(self, {
         title = _("Update installed"),
-        text = tostring(ver),
+        text = tostring(version),
         ok_label = _("Restart now"),
         on_ok = function()
             UIManager:restartKOReader()
         end,
     })
-    if on_done then on_done(true, tostring(ver)) end
 end
 
 function App:update_channel_label()
@@ -6788,20 +6803,21 @@ end
 -- The notes are cached in the settings: the page works offline and keeps
 -- showing the notes of the version the user runs after an install.
 
-function App:show_release_notes()
-    local Update = require("kt_update")
-    local s = self.state.settings
-    local installed = Update.installed_build(s.installed_build)
-    local cache = s.update_notes_cache
-    local stale = true
-    if type(cache) == "table" then
-        if cache.channel == "commits" then
-            stale = (tostring(cache.commit or "") ~= tostring(installed.commit or ""))
-        else
-            stale = (tostring(cache.version or "") ~= tostring(installed.version or ""))
-        end
+-- The cache is stale when there is no cache at all, or when a newer update
+-- exists whose notes were never fetched (the cache describes ONE tag).
+function App:_notes_cache_stale(settings)
+    settings = settings or self.state.settings
+    local cache = settings.update_notes_cache
+    if type(cache) ~= "table" then return true end
+    local entry = settings.update_last_entry
+    if type(entry) == "table" and type(entry.tag) == "string" and entry.tag ~= "" then
+        if tostring(cache.tag or "") ~= entry.tag then return true end
     end
-    if stale then
+    return false
+end
+
+function App:show_release_notes()
+    if self:_notes_cache_stale() then
         self:refresh_release_notes()
     end
     self:navigate("release_notes")
@@ -6876,7 +6892,7 @@ end
 
 function App:apply_book_preset(id)
     local BookTheme = require("kt_book_theme")
-    for _, preset in ipairs(BookTheme.PRESETS()) do
+    for _pi, preset in ipairs(BookTheme.PRESETS()) do
         if preset.id == id then
             local theme = BookTheme.normalize(preset.theme)
             theme.preset = id
@@ -6910,24 +6926,43 @@ function App:reset_book_labels()
     self:_save_book_theme(BookTheme.normalize(theme))
 end
 
+-- Back to the default preset, but the user's labels are KEPT (the reset
+-- dialog promises it).
 function App:reset_book_look()
-    return self:apply_book_preset("default")
+    local BookTheme = require("kt_book_theme")
+    local current = BookTheme.from_settings(self.state.settings)
+    for _pi, preset in ipairs(BookTheme.PRESETS()) do
+        if preset.id == "default" then
+            local theme = BookTheme.normalize(preset.theme)
+            theme.labels = current.labels
+            theme.preset = "default"
+            self:_save_book_theme(theme)
+            return true
+        end
+    end
+    return false
 end
 
 -- The installed fonts, by NAME: the reader's per-document "font_face" is the
--- font name, not the file path.
+-- font name, not the file path. FontList.fontinfo is a DICT (path -> the
+-- faces of that file), so it must be walked with pairs().
 function App:list_book_fonts()
     local out = {}
     local ok, FontList = pcall(require, "fontlist")
     if not ok or not FontList or type(FontList.fontinfo) ~= "table" then
         return out
     end
-    for _, info in ipairs(FontList.fontinfo) do
-        local entry = info[1]
-        local path = info[2]
-        if type(entry) == "table" and type(entry.name) == "string"
-            and entry.name ~= "" then
-            out[#out + 1] = { name = entry.name, path = tostring(path or "") }
+    for path, faces in pairs(FontList.fontinfo) do
+        if type(faces) == "table" then
+            for _fi, face in ipairs(faces) do
+                if type(face) == "table" and type(face.name) == "string"
+                    and face.name ~= "" then
+                    out[#out + 1] = {
+                        name = face.name,
+                        path = tostring(face.path or path or ""),
+                    }
+                end
+            end
         end
     end
     table.sort(out, function(a, b) return a.name < b.name end)

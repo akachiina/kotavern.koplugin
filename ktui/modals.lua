@@ -206,8 +206,8 @@ end
 function Modals.build_update_prompt(tag, on_update, on_later, on_cancel)
     local dialog
     local rows = Modals.update_prompt_rows(tag, on_update, on_later, on_cancel)
-    for _, r in ipairs(rows) do
-        for _, button in ipairs(r) do
+    for _ri, r in ipairs(rows) do
+        for _bi, button in ipairs(r) do
             local action = button.callback
             button.callback = function()
                 UIManager:close(dialog)

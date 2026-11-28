@@ -357,6 +357,8 @@ do
             { role = "user", content = "Hello", name = "User", send_date = 1700000000 },
             { role = "assistant", content = "Hi there", name = "SmokeChar",
                 reasoning = "hidden thoughts" },
+            { role = "assistant", content = "**Bold** start\n\n"
+                .. "![alt](https://example.org/x.png)" },
             { role = "system", content = "A system line" },
         },
         chat_name = "Smoke chat",
@@ -417,6 +419,116 @@ do
         "T27l: show_reasoning = true renders the reasoning block")
     ok(plain:find("hidden thoughts", 1, true) == nil,
         "T27m: the default theme hides the reasoning")
+
+    -- The drop cap must wrap the first LETTER, never a tag or an entity.
+    local cap = build({ drop_cap = true })
+    ok(cap:find('<span class="ktdropcap">B</span>old', 1, true) ~= nil,
+        "T27n: the drop cap wraps the first letter")
+    ok(cap:find('<span class="ktdropcap"><', 1, true) == nil,
+        "T27o: the drop cap never wraps a tag")
+    ok(cap:find('<span class="ktdropcap">&', 1, true) == nil,
+        "T27p: the drop cap never wraps an entity")
+
+    -- The inline images knob must do something.
+    ok(plain:find('<p class="img-placeholder">', 1, true) ~= nil,
+        "T27q: the default theme shows the image placeholder")
+    local no_images = build({ inline_images = "hidden" })
+    ok(no_images:find('<p class="img-placeholder">', 1, true) == nil,
+        "T27r: inline_images = hidden drops the image placeholder")
+end
+
+-- === T8..T15: the native reader ==============================================
+
+local App = require("kt_app")
+local Session = require("kt_book_session")
+local BookUI = require("kt_book_ui")
+
+local app = App:new(nil)
+app.state.settings.chat_mode = "book"
+app:show()
+
+-- The chat fixture must be the app's live chat (the book reads the live
+-- message list first).
+app:_load_chat_state(CHAR, chat_path, nil)
+app.state.settings.book_show_reasoning = true
+
+-- === T31: the native menus, the reasoning toggle and the reset =============
+do
+    local _ = require("gettext")
+    local Modals = require("ktui/modals")
+    local captured = {}
+    local real_actions = Modals.actions
+    Modals.actions = function(title, rows)
+        captured[#captured + 1] = { title = title, rows = rows }
+    end
+    local real_set = app.set_book_theme_key
+    app.set_book_theme_key = function(self, key, value)
+        self._written = { key = key, value = value }
+    end
+    app.state.settings.book_theme = {
+        labels = { book_actions_title = "ZZ book menu", quick_reply = "ZZ quick" },
+    }
+    BookUI.global_actions(app)
+    Modals.actions = real_actions
+    ok(captured[1] and captured[1].title == "ZZ book menu",
+        "T31a: the native dialog title uses the custom label")
+    ok(find_row(captured[1] and captured[1].rows or {}, "ZZ quick") ~= nil,
+        "T31b: the native rows use the custom labels")
+
+    -- The reasoning toggle writes the THEME key (one writer, one setting).
+    app._written = nil
+    BookUI.toggle_reasoning(app)
+    ok(app._written ~= nil and app._written.key == "show_reasoning",
+        "T31c: the reasoning toggle writes the theme key")
+
+    app.set_book_theme_key = real_set
+    app.state.settings.book_theme = nil
+end
+
+-- === T32: the reset keeps the labels; the install confirm follows the reader
+do
+    local App = require("kt_app")
+    local app2 = App:new(nil)
+    local real_changed = app2._book_look_changed
+    app2._book_look_changed = function() end
+    app2.state.settings.book_theme = {
+        cover = false, labels = { actions = "Ações do livro" },
+    }
+    app2:reset_book_look()
+    ok(app2:book_theme().labels.actions == "Ações do livro",
+        "T32a: the reset keeps the user's labels")
+    ok(app2:book_theme().cover == true,
+        "T32b: the reset restores the default preset")
+    app2._book_look_changed = real_changed
+
+    -- The install confirm must be NATIVE while the reader is on top (the
+    -- canvas sheet would be painted under it).
+    local Modals = require("ktui/modals")
+    local Sheets = require("ktui/sheets")
+    local native_calls, sheet_calls = 0, 0
+    local real_confirm = Modals.confirm
+    local real_sheet = Sheets.confirm
+    Modals.confirm = function() native_calls = native_calls + 1 end
+    Sheets.confirm = function() sheet_calls = sheet_calls + 1 end
+    app2.state.book_active = true
+    app2:_confirm_install("v0.4.0")
+    ok(native_calls == 1 and sheet_calls == 0,
+        "T32c: the install confirm is native while the reader is on top")
+    app2.state.book_active = nil
+    app2:_confirm_install("v0.4.0")
+    ok(sheet_calls == 1 and native_calls == 1,
+        "T32d: the install confirm is a canvas sheet without the reader")
+    Modals.confirm = real_confirm
+    Sheets.confirm = real_sheet
+
+    -- The notes cache: stale when a newer entry exists.
+    ok(app2:_notes_cache_stale({}) == true,
+        "T32e: no cache means stale")
+    ok(app2:_notes_cache_stale({ update_notes_cache = { tag = "v0.4.0" } }) == false,
+        "T32f: a cache without a newer entry is fresh")
+    ok(app2:_notes_cache_stale({ update_notes_cache = { tag = "v0.3.0" },
+        update_last_entry = { tag = "v0.4.0" } }) == true,
+        "T32g: a cache of an older version is stale")
 end
 
 -- === T28: per-document reader settings ====================================
@@ -447,21 +559,6 @@ do
         and ds2:readSetting("copt_h_page_margins") == nil,
         "T28f: an empty theme removes the settings again (follow the reader)")
 end
-
--- === T8..T15: the native reader ==============================================
-
-local App = require("kt_app")
-local Session = require("kt_book_session")
-local BookUI = require("kt_book_ui")
-
-local app = App:new(nil)
-app.state.settings.chat_mode = "book"
-app:show()
-
--- The chat fixture must be the app's live chat (the book reads the live
--- message list first).
-app:_load_chat_state(CHAR, chat_path, nil)
-app.state.settings.book_show_reasoning = true
 
 local reader_before = nil
 local reload_seen = false

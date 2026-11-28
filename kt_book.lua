@@ -232,7 +232,8 @@ end
 local function render_blocks(text, opts)
     local blocks = Md.parse(text or "")
     local out = {}
-    for _, block in ipairs(blocks) do
+    -- NOT "_": the body calls gettext.
+    for _bi, block in ipairs(blocks) do
         local kind = block.kind
         if kind == "paragraph" then
             if block.text and block.text ~= "" then
@@ -255,8 +256,12 @@ local function render_blocks(text, opts)
             out[#out + 1] = render_table(block)
         elseif kind == "image" then
             local alt = tostring(block.alt or "")
-            out[#out + 1] = '<p class="img-placeholder">['
-                .. _("Image") .. ": " .. esc(alt) .. "]</p>"
+            -- The theme can hide the placeholder entirely.
+            local theme = opts.theme or {}
+            if theme.inline_images ~= "hidden" then
+                out[#out + 1] = '<p class="img-placeholder">['
+                    .. _("Image") .. ": " .. esc(alt) .. "]</p>"
+            end
         else
             if block.text and block.text ~= "" then
                 out[#out + 1] = "<p>" .. inline_html(block.text) .. "</p>"
@@ -528,19 +533,37 @@ local function render_body(text, data, link_prefix)
     return emoji_html(html)
 end
 
--- Wrap the first letter of a body in a drop-cap span (the first letter
--- AFTER the opening tag: the body is HTML).
+-- Wrap the first letter of a body in a drop-cap span. The letter may live
+-- INSIDE a tag (<b>Bold</b>), so the tags are skipped; an entity (&) is
+-- skipped as a whole (it must not be broken) and a body that starts with
+-- something else than a letter gets NO cap.
 local function drop_cap_html(html)
     local open = html:find("<p[^>]*>")
     if not open then return html end
-    local text_start = html:find(">", open, true)
-    if not text_start then return html end
-    text_start = text_start + 1
-    local first = html:sub(text_start, text_start)
-    if first == "" or first:match("%s") then return html end
-    return html:sub(1, text_start - 1)
+    local pos = html:find(">", open, true)
+    if not pos then return html end
+    pos = pos + 1
+    -- Skip the markup that starts AT the cursor: a tag (<b>Bold</b>) or an
+    -- entity (&). The text after it may be the first letter.
+    while true do
+        local char = html:sub(pos, pos)
+        if char == "<" then
+            local tag_close = html:find(">", pos, true)
+            if not tag_close then return html end
+            pos = tag_close + 1
+        elseif char == "&" then
+            local semi = html:find(";", pos, true)
+            if not semi then return html end
+            pos = semi + 1
+        else
+            break
+        end
+    end
+    local first = html:sub(pos, pos)
+    if not first:match("^[%a]") then return html end
+    return html:sub(1, pos - 1)
         .. '<span class="ktdropcap">' .. first .. "</span>"
-        .. html:sub(text_start + 1)
+        .. html:sub(pos + 1)
 end
 
 -- One message section. The theme owns the title block, the user/system

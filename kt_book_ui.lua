@@ -33,6 +33,16 @@ local function toast(text, timeout)
     UIManager:show(InfoMessage:new{ text = text, timeout = timeout or 3 })
 end
 
+-- The theme's labels: the user can rename every text of the book (the
+-- in-book links, the speaker names and the native menus). An empty override
+-- keeps the translated default.
+local function label(app, key, default)
+    local ok, BookTheme = pcall(require, "kt_book_theme")
+    if not ok or not BookTheme then return default end
+    local settings = app and app.state and app.state.settings or {}
+    return BookTheme.label(BookTheme.from_settings(settings), key, default)
+end
+
 -- === Small text helpers (no canvas deps) ===
 
 -- Last `max_bytes` of a string without cutting a UTF-8 sequence.
@@ -583,11 +593,11 @@ function BookUI.choose_connection(app)
 end
 
 function BookUI.toggle_reasoning(app)
-    local s = app.state.settings
-    local value = not s.book_show_reasoning
-    app:save_setting("book_show_reasoning", value)
+    -- The theme owns the flag (one writer, one setting). The app API also
+    -- refreshes the open book, so no extra refresh is needed here.
+    local value = not app:book_theme().show_reasoning
+    app:set_book_theme_key("show_reasoning", value)
     toast(value and _("Reasoning shown in the book.") or _("Reasoning hidden in the book."), 2)
-    session().on_chat_changed(app.state.current_chat_path, { kind = "mutation" })
 end
 
 function BookUI.go_to_last(app)
@@ -668,7 +678,8 @@ function BookUI.book_appearance(app)
             end,
         },
         {
-            text = theme.show_reasoning and _("Hide reasoning") or _("Show reasoning"),
+            text = theme.show_reasoning and label(app, "hide_reasoning", _("Hide reasoning"))
+                or label(app, "show_reasoning", _("Show reasoning")),
             callback = function()
                 app:set_book_theme_key("show_reasoning", not theme.show_reasoning)
             end,
@@ -703,22 +714,22 @@ function BookUI.global_actions(app)
     local busy = app.state and app.state.is_generating
     local rows = {
         {
-            text = _("Write next message"),
+            text = label(app, "write_next", _("Write next message")),
             icon = "edit",
             callback = function() BookUI.write_next(app) end,
         },
         {
-            text = _("Quick Reply"),
+            text = label(app, "quick_reply", _("Quick Reply")),
             icon = "bolt",
             callback = function() BookUI.quick_replies(app) end,
         },
         {
-            text = _("Continue last reply"),
+            text = label(app, "continue_last", _("Continue last reply")),
             icon = "forward",
             callback = function() BookUI.continue_last(app) end,
         },
         {
-            text = _("Regenerate last reply"),
+            text = label(app, "regenerate", _("Regenerate last reply")),
             icon = "refresh",
             callback = function() BookUI.regenerate_last(app) end,
         },
@@ -731,77 +742,78 @@ function BookUI.global_actions(app)
         }
     end
     rows[#rows + 1] = {
-        text = _("Go to last message"),
+        text = label(app, "go_last", _("Go to last message")),
         icon = "arrow-down",
         callback = function() BookUI.go_to_last(app) end,
     }
-    local show_reasoning = app.state.settings and app.state.settings.book_show_reasoning
+    local show_reasoning = app:book_theme().show_reasoning
     rows[#rows + 1] = {
-        text = show_reasoning and _("Hide reasoning") or _("Show reasoning"),
+        text = show_reasoning and label(app, "hide_reasoning", _("Hide reasoning"))
+            or label(app, "show_reasoning", _("Show reasoning")),
         icon = "eye",
         callback = function() BookUI.toggle_reasoning(app) end,
     }
     rows[#rows + 1] = {
-        text = _("Book appearance"),
+        text = label(app, "book_appearance", _("Book appearance")),
         icon = "sliders",
         callback = function() BookUI.book_appearance(app) end,
     }
     rows[#rows + 1] = {
-        text = _("Author's Note"),
+        text = label(app, "authors_note", _("Author's Note")),
         icon = "edit",
         callback = function() BookUI.authors_note(app) end,
     }
     rows[#rows + 1] = {
-        text = _("Add System Note"),
+        text = label(app, "system_note", _("Add System Note")),
         icon = "info-circle",
         callback = function() app:add_system_note() end,
     }
     rows[#rows + 1] = {
-        text = _("Impersonate"),
+        text = label(app, "impersonate", _("Impersonate")),
         icon = "user",
         callback = function() app:impersonate() end,
     }
     rows[#rows + 1] = {
-        text = _("Persona"),
+        text = label(app, "persona", _("Persona")),
         icon = "user",
         callback = function() BookUI.choose_persona(app) end,
     }
     rows[#rows + 1] = {
-        text = _("Preset"),
+        text = label(app, "preset", _("Preset")),
         icon = "sliders",
         callback = function() BookUI.choose_preset(app) end,
     }
     rows[#rows + 1] = {
-        text = _("API connection"),
+        text = label(app, "api", _("API connection")),
         icon = "plug",
         callback = function() BookUI.choose_connection(app) end,
     }
     rows[#rows + 1] = {
-        text = _("Rename Chat"),
+        text = label(app, "rename", _("Rename Chat")),
         icon = "edit",
         callback = function() BookUI.rename_chat(app) end,
     }
     rows[#rows + 1] = {
-        text = _("Export Chat"),
+        text = label(app, "export_chat", _("Export Chat")),
         icon = "upload",
         callback = function() app:export_chat() end,
     }
     rows[#rows + 1] = {
-        text = _("Export TXT"),
+        text = label(app, "export_txt", _("Export TXT")),
         icon = "file",
         callback = function() app:export_chat_txt() end,
     }
     rows[#rows + 1] = {
-        text = _("Open in list view"),
+        text = label(app, "open_list", _("Open in list view")),
         icon = "list",
         callback = function() BookUI.open_in_list(app) end,
     }
     rows[#rows + 1] = {
-        text = _("Close book"),
+        text = label(app, "close_book", _("Close book")),
         icon = "back",
         callback = function() session().close() end,
     }
-    Modals.actions(_("Book actions"), rows)
+    Modals.actions(label(app, "book_actions_title", _("Book actions")), rows)
 end
 
 -- === End of book ===
@@ -809,27 +821,27 @@ end
 function BookUI.end_of_book(app)
     local rows = {
         {
-            text = _("Write next message"),
+            text = label(app, "write_next", _("Write next message")),
             icon = "edit",
             callback = function() BookUI.write_next(app) end,
         },
         {
-            text = _("Quick Reply"),
+            text = label(app, "quick_reply", _("Quick Reply")),
             icon = "bolt",
             callback = function() BookUI.quick_replies(app) end,
         },
         {
-            text = _("Continue last reply"),
+            text = label(app, "continue_last", _("Continue last reply")),
             icon = "forward",
             callback = function() BookUI.continue_last(app) end,
         },
         {
-            text = _("Close book"),
+            text = label(app, "close_book", _("Close book")),
             icon = "back",
             callback = function() session().close() end,
         },
     }
-    Modals.actions(_("End of chat"), rows)
+    Modals.actions(label(app, "end_of_chat", _("End of chat")), rows)
 end
 
 -- === Reader main menu ===
@@ -866,9 +878,9 @@ function BookUI.add_to_main_menu(menu_items)
             items[#items + 1] = menu_item(_("Go to last message"),
                 function() BookUI.go_to_last(app) end)
             items[#items + 1] = {
-                text = _("Show reasoning"),
+                text = label(app, "show_reasoning", _("Show reasoning")),
                 checked_func = function()
-                    return app.state.settings and app.state.settings.book_show_reasoning
+                    return app:book_theme().show_reasoning
                 end,
                 keep_menu_open = false,
                 callback = function()

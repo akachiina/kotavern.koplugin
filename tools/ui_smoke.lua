@@ -1942,9 +1942,9 @@ end
 do
     -- Baseline: the bare-`_` loop vars that predate this guard (per file).
     local BASELINE = {
-        ["kt_app.lua"] = 66,
+        ["kt_app.lua"] = 67,
         ["kt_backup.lua"] = 2,
-        ["kt_book.lua"] = 7,
+        ["kt_book.lua"] = 6,
         ["kt_book_reader.lua"] = 3,
         ["kt_book_ui.lua"] = 3,
         ["kt_client.lua"] = 4,
@@ -1954,6 +1954,7 @@ do
         ["kt_storage.lua"] = 9,
         ["kt_update.lua"] = 1,
         ["kt_world_info.lua"] = 10,
+        ["main.lua"] = 2,
         ["ktui/cards.lua"] = 1,
         ["ktui/chat_bubbles.lua"] = 4,
         ["ktui/deck.lua"] = 4,
@@ -1963,9 +1964,8 @@ do
         ["ktui/kthtml.lua"] = 10,
         ["ktui/md.lua"] = 1,
         ["ktui/modals.lua"] = 1,
-        ["ktui/pages.lua"] = 18,
+        ["ktui/pages.lua"] = 20,
         ["ktui/scroll.lua"] = 2,
-        ["main.lua"] = 2,
     }
     local lfs = require("libs/libkoreader-lfs")
     local files = {}
@@ -1982,7 +1982,8 @@ do
     collect(PLUGIN, "")
     collect(PLUGIN .. "/ktui", "ktui/")
     local bad = {}
-    for rel in ipairs(files) do
+    -- ipairs yields the INDEX: the file name is the second value.
+    for _fi, rel in ipairs(files) do
         local f = io.open(PLUGIN .. "/" .. rel, "r")
         if f then
             local n = 0
@@ -5994,13 +5995,35 @@ do
             "book look: the app exposes " .. name)
     end
     -- The font list exposes NAMES (the reader's font_face is a name).
+    -- FontList.fontinfo is a DICT (path -> faces), so an ipairs() over it
+    -- yields nothing: the check below is the one that catches it.
+    local FontList = require("fontlist")
+    pcall(function() FontList:getFontList() end)
+    local known = 0
+    for _k, _v in pairs(FontList.fontinfo or {}) do known = known + 1 end
     local fonts = app:list_book_fonts()
     ok(type(fonts) == "table", "book look: the font list is a table")
+    ok(known == 0 or #fonts > 0,
+        "book look: the font list is not empty when the fonts are known ("
+        .. #fonts .. " of " .. tostring(known) .. ")")
     for _i, font in ipairs(fonts) do
-        ok(type(font.name) == "string" and font.name ~= "",
-            "book look: every font carries a name")
+        ok(type(font.name) == "string" and font.name ~= ""
+            and type(font.path) == "string",
+            "book look: every font carries a name and a path")
         break
     end
+end
+
+-- === 4w-oct. The release notes page: the scroll offset =====================
+do
+    -- The offset into a block is the page scroll minus the block's top. It
+    -- must NOT be counted twice (the block would start one line late).
+    ok(Pages.release_notes_offset(100, 40) == 60,
+        "release notes: the block offset is the scroll minus the block top")
+    ok(Pages.release_notes_offset(30, 40) == 0,
+        "release notes: a block above the viewport starts at its own top")
+    ok(Pages.release_notes_offset(0, 0) == 0,
+        "release notes: no scroll means no offset")
 end
 
 -- === 4w-quater. The book appearance page ===================================
