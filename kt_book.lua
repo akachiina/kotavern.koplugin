@@ -587,7 +587,11 @@ local function message_html(msg, index, data, theme, labels, prev)
     end
 
     local out = {}
-    local style = theme.page_break and ' style="page-break-before: always;"' or ""
+    -- A page break per message: the FIRST message keeps the cover's flow.
+    local style = ""
+    if theme.page_break and index > 1 then
+        style = ' style="page-break-before: always;"'
+    end
     out[#out + 1] = '<section class="' .. table.concat(classes, " ")
         .. '" id="m' .. index .. '"' .. style .. ">"
 

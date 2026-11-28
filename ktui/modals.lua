@@ -186,7 +186,6 @@ function Modals.search(title, input, hint, callback)
     show_input_dialog(dialog)
 end
 
--- Native ButtonDialog menu (ZenPM's Modals.actions). opts:
 -- The update prompt's three actions, as ButtonDialog button rows. Pure (no
 -- widget), so the headless harness can assert the actions and their order.
 function Modals.update_prompt_rows(tag, on_update, on_later, on_cancel)
@@ -231,6 +230,7 @@ end
 --   anchor (Geom from the tapped hitbox), anchor_right (hang left off anchor)
 --   compact + compact_min_width, align, title + title_icon (icon + title row),
 --   show_cancel (default true), cancel_callback
+-- Native ButtonDialog menu (ZenPM's Modals.actions). opts:
 function Modals.actions(title, rows, options)
     options = options or {}
     local dialog

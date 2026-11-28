@@ -503,6 +503,7 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
     rows[#rows + 1] = {
         text = _("Chat themes"),
         icon = "sliders",
+        subtext = _("Applies to the List mode only"),
         callback = function() app:navigate("settings_appearance_chat") end,
     }
     -- The book's own look (the reader paints the chat in Book mode).
@@ -517,9 +518,9 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
 end
 
 -- Settings > Appearance > Chat themes: the theme launcher. The display
--- mode (List | Book) moved up to Appearance (it only shows with Debug Mode
--- armed) and the theme knobs live in the per-theme editor, so this page
--- only routes - create, manage, and the global default picker.
+-- mode (List | Book) lives in Appearance and the theme knobs live in the
+-- per-theme editor, so this page only routes - create, manage, and the
+-- global default picker.
 function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     -- B6 LAUNCHER: the knobs moved into the per-theme editor
     -- (Pages.theme_edit); this page only routes - create, manage, and
@@ -573,10 +574,12 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
     local BookTheme = require("kt_book_theme")
     local theme = app:book_theme()
 
-    local function pick_row(text, current, options, on_pick)
+    -- A picker row. `current` is the RAW value (the checkmark compares it
+    -- with the option values); `display` is what the row shows.
+    local function pick_row(text, current, options, on_pick, display)
         return {
             text = text,
-            value = function() return current end,
+            value = function() return display or current end,
             callback = function()
                 local Sheets = require("ktui/sheets")
                 local actions = {}
@@ -613,6 +616,37 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
     }
     local margin_labels = {
         narrow = _("Narrow"), normal = _("Normal"), wide = _("Wide"),
+    }
+    local paragraph_labels = {
+        compact = _("Compact"), normal = _("Normal"), airy = _("Airy"),
+    }
+    local cover_title_labels = {
+        chat = _("Chat name"), character = _("Character name"), both = _("Both"),
+    }
+    local message_title_labels = {
+        speaker = _("Speaker"), speaker_time = _("Speaker and time"),
+        time = _("Time"), number = _("Number"), none = _("None"),
+    }
+    local user_style_labels = {
+        quote = _("Quote"), panel = _("Panel"), plain = _("Plain"), hidden = _("Hidden"),
+    }
+    local system_style_labels = {
+        dim = _("Dimmed"), plain = _("Plain"), hidden = _("Hidden"),
+    }
+    local separator_labels = {
+        line = _("Line"), ornament = _("Ornament"), space = _("Space"), none = _("None"),
+    }
+    local code_style_labels = {
+        box = _("Boxed"), indent = _("Indented"), plain = _("Plain"),
+    }
+    local spoiler_labels = {
+        mask = _("Masked"), reveal = _("Reveal"),
+    }
+    local emoji_size_labels = {
+        small = _("Small"), normal = _("Normal"), large = _("Large"),
+    }
+    local inline_images_labels = {
+        placeholder = _("Placeholder"), hidden = _("Hidden"),
     }
     local preset_names = {}
     for _, preset in ipairs(BookTheme.PRESETS()) do
@@ -656,8 +690,7 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
             end,
             callback = function() app:choose_book_font() end,
         },
-        pick_row(_("Font size"),
-            theme.font_size > 0 and tostring(theme.font_size) or _("Follow the reader"),
+        pick_row(_("Font size"), theme.font_size,
             {
                 { label = _("Follow the reader"), value = 0 },
                 { label = "18", value = 18 },
@@ -668,9 +701,9 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = "28", value = 28 },
                 { label = "30", value = 30 },
             },
-            function(value) app:set_book_theme_key("font_size", value) end),
-        pick_row(_("Line spacing"),
-            theme.line_spacing > 0 and tostring(theme.line_spacing) or _("Follow the reader"),
+            function(value) app:set_book_theme_key("font_size", value) end,
+            theme.font_size > 0 and tostring(theme.font_size) or _("Follow the reader")),
+        pick_row(_("Line spacing"), theme.line_spacing,
             {
                 { label = _("Follow the reader"), value = 0 },
                 { label = "90", value = 90 },
@@ -680,23 +713,25 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = "130", value = 130 },
                 { label = "150", value = 150 },
             },
-            function(value) app:set_book_theme_key("line_spacing", value) end),
-        pick_row(_("Font weight"),
-            theme.font_weight > 0 and tostring(theme.font_weight) or _("Follow the reader"),
+            function(value) app:set_book_theme_key("line_spacing", value) end,
+            theme.line_spacing > 0 and tostring(theme.line_spacing) or _("Follow the reader")),
+        pick_row(_("Font weight"), theme.font_weight,
             {
                 { label = _("Follow the reader"), value = 0 },
                 { label = _("Regular"), value = 400 },
                 { label = _("Medium"), value = 600 },
                 { label = _("Bold"), value = 700 },
             },
-            function(value) app:set_book_theme_key("font_weight", value) end),
-        pick_row(_("Margins"), margin_labels[theme.margin] or theme.margin,
+            function(value) app:set_book_theme_key("font_weight", value) end,
+            theme.font_weight > 0 and tostring(theme.font_weight) or _("Follow the reader")),
+        pick_row(_("Margins"), theme.margin,
             {
                 { label = _("Narrow"), value = "narrow" },
                 { label = _("Normal"), value = "normal" },
                 { label = _("Wide"), value = "wide" },
             },
-            function(value) app:set_book_theme_key("margin", value) end),
+            function(value) app:set_book_theme_key("margin", value) end,
+            margin_labels[theme.margin] or theme.margin),
         toggle_row(_("Justify text"), theme.justify, "justify"),
         toggle_row(_("Hyphenation"), theme.hyphenate, "hyphenate"),
         pick_row(_("Paragraph spacing"), theme.paragraph_spacing,
@@ -705,7 +740,8 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = _("Normal"), value = "normal" },
                 { label = _("Airy"), value = "airy" },
             },
-            function(value) app:set_book_theme_key("paragraph_spacing", value) end),
+            function(value) app:set_book_theme_key("paragraph_spacing", value) end,
+            paragraph_labels[theme.paragraph_spacing] or theme.paragraph_spacing),
         { section = true, text = _("Structure") },
         toggle_row(_("Cover"), theme.cover, "cover"),
         pick_row(_("Cover title"), theme.cover_title,
@@ -714,7 +750,8 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = _("Character name"), value = "character" },
                 { label = _("Both"), value = "both" },
             },
-            function(value) app:set_book_theme_key("cover_title", value) end),
+            function(value) app:set_book_theme_key("cover_title", value) end,
+            cover_title_labels[theme.cover_title] or theme.cover_title),
         toggle_row(_("Show date"), theme.cover_date, "cover_date"),
         toggle_row(_("Go to the end link"), theme.cover_actions, "cover_actions"),
         toggle_row(_("Table of contents"), theme.toc, "toc"),
@@ -726,7 +763,8 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = _("Number"), value = "number" },
                 { label = _("None"), value = "none" },
             },
-            function(value) app:set_book_theme_key("message_title", value) end),
+            function(value) app:set_book_theme_key("message_title", value) end,
+            message_title_labels[theme.message_title] or theme.message_title),
         pick_row(_("User messages"), theme.user_style,
             {
                 { label = _("Quote"), value = "quote" },
@@ -734,14 +772,16 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = _("Plain"), value = "plain" },
                 { label = _("Hidden"), value = "hidden" },
             },
-            function(value) app:set_book_theme_key("user_style", value) end),
+            function(value) app:set_book_theme_key("user_style", value) end,
+            user_style_labels[theme.user_style] or theme.user_style),
         pick_row(_("System messages"), theme.system_style,
             {
                 { label = _("Dimmed"), value = "dim" },
                 { label = _("Plain"), value = "plain" },
                 { label = _("Hidden"), value = "hidden" },
             },
-            function(value) app:set_book_theme_key("system_style", value) end),
+            function(value) app:set_book_theme_key("system_style", value) end,
+            system_style_labels[theme.system_style] or theme.system_style),
         toggle_row(_("Show reasoning"), theme.show_reasoning, "show_reasoning"),
         toggle_row(_("Colophon"), theme.colophon, "colophon"),
         toggle_row(_("Actions link per message"), theme.message_actions, "message_actions"),
@@ -752,7 +792,8 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = _("Space"), value = "space" },
                 { label = _("None"), value = "none" },
             },
-            function(value) app:set_book_theme_key("separator", value) end),
+            function(value) app:set_book_theme_key("separator", value) end,
+            separator_labels[theme.separator] or theme.separator),
         toggle_row(_("Merge same speaker"), theme.merge_speakers, "merge_speakers"),
         toggle_row(_("Page break per message"), theme.page_break, "page_break"),
         toggle_row(_("Drop cap"), theme.drop_cap, "drop_cap"),
@@ -763,27 +804,31 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
                 { label = _("Indented"), value = "indent" },
                 { label = _("Plain"), value = "plain" },
             },
-            function(value) app:set_book_theme_key("code_style", value) end),
+            function(value) app:set_book_theme_key("code_style", value) end,
+            code_style_labels[theme.code_style] or theme.code_style),
         toggle_row(_("Table borders"), theme.table_border, "table_border"),
         pick_row(_("Spoilers"), theme.spoiler,
             {
                 { label = _("Masked"), value = "mask" },
                 { label = _("Reveal"), value = "reveal" },
             },
-            function(value) app:set_book_theme_key("spoiler", value) end),
+            function(value) app:set_book_theme_key("spoiler", value) end,
+            spoiler_labels[theme.spoiler] or theme.spoiler),
         pick_row(_("Emoji size"), theme.emoji_size,
             {
                 { label = _("Small"), value = "small" },
                 { label = _("Normal"), value = "normal" },
                 { label = _("Large"), value = "large" },
             },
-            function(value) app:set_book_theme_key("emoji_size", value) end),
+            function(value) app:set_book_theme_key("emoji_size", value) end,
+            emoji_size_labels[theme.emoji_size] or theme.emoji_size),
         pick_row(_("Inline images"), theme.inline_images,
             {
                 { label = _("Placeholder"), value = "placeholder" },
                 { label = _("Hidden"), value = "hidden" },
             },
-            function(value) app:set_book_theme_key("inline_images", value) end),
+            function(value) app:set_book_theme_key("inline_images", value) end,
+            inline_images_labels[theme.inline_images] or theme.inline_images),
         { section = true, text = _("Advanced") },
         {
             text = _("Custom CSS"),
@@ -2054,6 +2099,10 @@ function Pages.release_notes(view, bb, x, y, w, h, scroll)
         if date ~= "" then
             add(date, "tiny", false, Theme.muted)
         end
+    end
+    if cache.truncated then
+        -- The installed commit is older than the window: the list is partial.
+        add(_("Only the newest commits are shown."), "tiny", false, Theme.muted)
     end
 
     -- The stable channel: the release body, parsed as markdown.

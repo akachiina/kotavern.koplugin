@@ -504,22 +504,13 @@ function Update.cancel_bg()
     bg_state.status_file = nil
 end
 
--- Check for updates without blocking. opts = { repo, channel };
--- callback(ok, entry_or_err). deps = { cmd, sched, now } are injection points
--- for the headless harness (a fake command and a fake scheduler).
-function Update.check_bg(opts, callback, deps)
+-- Run a detached GET and hand the decoded body to the callback. Only ONE
+-- background request may run at a time (the update check and the release
+-- notes share the slot). deps = { cmd, sched, now } are injection points for
+-- the headless harness.
+local function bg_fetch(url, deps, callback)
     if bg_state.active then return false end
-    opts = opts or {}
     deps = deps or {}
-    local repo = tostring(opts.repo or ""):match("^%s*(.-)%s*$")
-    if repo == "" then
-        repo = Update.default_repo()
-    end
-    local channel = Update.normalize_channel(opts.channel)
-    local url = (channel == "stable")
-        and (repo_api(repo) .. "/releases?per_page=100")
-        or (repo_api(repo) .. "/commits?per_page=1&sha=" .. Update.BRANCH)
-
     local body_file = os.tmpname()
     local status_file = os.tmpname()
     local cmd_for = deps.cmd or function(b, s)
@@ -569,42 +560,7 @@ function Update.check_bg(opts, callback, deps)
                 finish(false, "Could not read the GitHub response.")
                 return
             end
-            local parsed = Util.clean_json(decoded)
-            if channel == "stable" then
-                if type(parsed) ~= "table" then
-                    finish(false, "Could not read release information.")
-                    return
-                end
-                local entry = Update.pick_stable_release(parsed)
-                if not entry then
-                    finish(false, "No stable KOTavern release found.")
-                    return
-                end
-                entry.channel = "stable"
-                entry.download_url = entry.asset.browser_download_url
-                entry.digest = entry.asset.digest
-                entry.asset_name = entry.asset.name
-                finish(true, entry)
-                return
-            end
-            if type(parsed) ~= "table" then
-                finish(false, "Could not read the latest commit.")
-                return
-            end
-            local commit = Update.pick_latest_commit(parsed)
-            if not commit then
-                finish(false, "Could not read the latest commit.")
-                return
-            end
-            finish(true, {
-                channel = "commits",
-                version = nil,
-                tag = nil,
-                commit = commit,
-                asset_name = "repo snapshot " .. commit,
-                download_url = zipball_url(repo),
-                digest = nil,
-            })
+            finish(true, Util.clean_json(decoded))
             return
         end
         if now() - started_at > 45 then
@@ -615,6 +571,65 @@ function Update.check_bg(opts, callback, deps)
     end
     sched(poll, 0.5)
     return true
+end
+
+-- Check for updates without blocking. opts = { repo, channel };
+-- callback(ok, entry_or_err).
+function Update.check_bg(opts, callback, deps)
+    opts = opts or {}
+    local repo = tostring(opts.repo or ""):match("^%s*(.-)%s*$")
+    if repo == "" then
+        repo = Update.default_repo()
+    end
+    if not repo:match("^[%w%.%-]+/[%w%.%-]+$") then
+        return false, "Repository must look like owner/name."
+    end
+    local channel = Update.normalize_channel(opts.channel)
+    local url = (channel == "stable")
+        and (repo_api(repo) .. "/releases?per_page=100")
+        or (repo_api(repo) .. "/commits?per_page=1&sha=" .. Update.BRANCH)
+
+    return bg_fetch(url, deps, function(okc, payload)
+        if not okc then
+            callback(false, payload)
+            return
+        end
+        if channel == "stable" then
+            if type(payload) ~= "table" then
+                callback(false, "Could not read release information.")
+                return
+            end
+            local entry = Update.pick_stable_release(payload)
+            if not entry then
+                callback(false, "No stable KOTavern release found.")
+                return
+            end
+            entry.channel = "stable"
+            entry.download_url = entry.asset.browser_download_url
+            entry.digest = entry.asset.digest
+            entry.asset_name = entry.asset.name
+            callback(true, entry)
+            return
+        end
+        if type(payload) ~= "table" then
+            callback(false, "Could not read the latest commit.")
+            return
+        end
+        local commit = Update.pick_latest_commit(payload)
+        if not commit then
+            callback(false, "Could not read the latest commit.")
+            return
+        end
+        callback(true, {
+            channel = "commits",
+            version = nil,
+            tag = nil,
+            commit = commit,
+            asset_name = "repo snapshot " .. commit,
+            download_url = zipball_url(repo),
+            digest = nil,
+        })
+    end)
 end
 
 -- Should the automatic check open the update prompt for this entry?
@@ -646,48 +661,45 @@ function Update.is_newer(entry, installed)
     return Update.version_gt(entry.version, installed.version or "0")
 end
 
--- The release notes for the "What's new" page.
--- opts = { repo, channel }; installed = { channel, version, commit }.
--- Returns { channel, target, title, version, commit, body, items, truncated }
--- where target is "new" (something newer than the installed build exists) or
--- "installed" (the user is up to date and wants the notes of what they run).
-function Update.notes(opts, installed)
-    opts = opts or {}
+-- The release notes for the "What's new" page, from an ALREADY fetched
+-- payload (pure: the sync and the background paths share it).
+-- installed = { channel, version, commit }.
+-- Returns { channel, target, title, version, commit, tag, body, items,
+-- truncated }, where target is "new" (something newer than the installed
+-- build exists) or "installed" (the user is up to date and wants the notes
+-- of what they run).
+function Update.notes_from_payload(channel, payload, installed)
     installed = installed or {}
     local _ = require("gettext")
-    local repo = tostring(opts.repo or ""):match("^%s*(.-)%s*$")
-    if repo == "" then
-        repo = Update.default_repo()
-    end
-    local channel = Update.normalize_channel(opts.channel)
 
     if channel == "commits" then
-        local commits, err = api_get(repo_api(repo) .. "/commits?per_page=30&sha=" .. Update.BRANCH)
-        if not commits then return nil, err end
-        if type(commits) ~= "table" then
+        if type(payload) ~= "table" then
             return nil, "Could not read the commit list."
         end
-        local list = Update.commit_notes(commits, installed.commit or "")
+        local list = Update.commit_notes(payload, installed.commit or "")
+        local newest = ""
+        if type(payload[1]) == "table" then
+            newest = tostring(payload[1].sha or ""):sub(1, 7)
+        end
         return {
             channel = "commits",
             target = (#list.items > 0) and "new" or "installed",
             title = _("Commits"),
             version = nil,
-            commit = installed.commit,
+            commit = newest,
+            tag = (newest ~= "") and ("commits:" .. newest) or nil,
             body = "",
             items = list.items,
             truncated = list.truncated,
         }
     end
 
-    local releases, err = api_get(repo_api(repo) .. "/releases?per_page=100")
-    if not releases then return nil, err end
-    if type(releases) ~= "table" then
+    if type(payload) ~= "table" then
         return nil, "Could not read release information."
     end
 
     local function release_by_tag(tag)
-        for _ri, r in ipairs(releases) do
+        for _ri, r in ipairs(payload) do
             if type(r) == "table" and tostring(r.tag_name or "") == tostring(tag or "") then
                 return r
             end
@@ -695,7 +707,7 @@ function Update.notes(opts, installed)
         return nil
     end
 
-    local newest = Update.pick_stable_release(releases)
+    local newest = Update.pick_stable_release(payload)
     local installed_version = tostring(installed.version or ""):gsub("^v", "")
     local installed_release = nil
     if installed_version ~= "" then
@@ -718,16 +730,63 @@ function Update.notes(opts, installed)
 
     local title = type(release.name) == "string" and release.name or ""
     if title == "" then title = tostring(release.tag_name or "") end
+    local version = tostring(release.tag_name or ""):gsub("^v", "")
     return {
         channel = "stable",
         target = target,
         title = title,
-        version = tostring(release.tag_name or ""):gsub("^v", ""),
+        version = version,
         commit = nil,
+        tag = "v" .. version,
         body = type(release.body) == "string" and release.body or "",
         items = {},
         truncated = false,
     }
+end
+
+-- The release notes, fetched SYNCHRONOUSLY (the manual path).
+function Update.notes(opts, installed)
+    opts = opts or {}
+    local repo = tostring(opts.repo or ""):match("^%s*(.-)%s*$")
+    if repo == "" then
+        repo = Update.default_repo()
+    end
+    local channel = Update.normalize_channel(opts.channel)
+    local url = (channel == "stable")
+        and (repo_api(repo) .. "/releases?per_page=100")
+        or (repo_api(repo) .. "/commits?per_page=30&sha=" .. Update.BRANCH)
+    local payload, err = api_get(url)
+    if not payload then return nil, err end
+    return Update.notes_from_payload(channel, payload, installed)
+end
+
+-- The release notes, fetched in the BACKGROUND: the page opens immediately
+-- and fills in when the notes arrive (a frozen screen would be a bug).
+function Update.notes_bg(opts, installed, callback, deps)
+    opts = opts or {}
+    local repo = tostring(opts.repo or ""):match("^%s*(.-)%s*$")
+    if repo == "" then
+        repo = Update.default_repo()
+    end
+    if not repo:match("^[%w%.%-]+/[%w%.%-]+$") then
+        return false, "Repository must look like owner/name."
+    end
+    local channel = Update.normalize_channel(opts.channel)
+    local url = (channel == "stable")
+        and (repo_api(repo) .. "/releases?per_page=100")
+        or (repo_api(repo) .. "/commits?per_page=30&sha=" .. Update.BRANCH)
+    return bg_fetch(url, deps, function(okc, payload)
+        if not okc then
+            callback(false, payload)
+            return
+        end
+        local notes, err = Update.notes_from_payload(channel, payload, installed)
+        if not notes then
+            callback(false, err)
+            return
+        end
+        callback(true, notes)
+    end)
 end
 
 -- Full install: download + verify + extract + swap. Returns ok, version/err.

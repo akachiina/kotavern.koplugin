@@ -91,6 +91,9 @@ msgstr "Siempre visible"
 msgid "Appearance"
 msgstr "Apariencia"
 
+msgid "Applies to the List mode only"
+msgstr "Solo se aplica al modo Lista"
+
 msgid "Apply to"
 msgstr "Aplicar a"
 
@@ -1137,6 +1140,9 @@ msgstr "Apagado"
 
 msgid "Oldest"
 msgstr "Más antiguos"
+
+msgid "Only the newest commits are shown."
+msgstr "Solo se muestran los commits más recientes."
 
 msgid "Only when favorite"
 msgstr "Solo si es favorito"

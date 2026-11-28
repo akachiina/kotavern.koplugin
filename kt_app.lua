@@ -884,6 +884,7 @@ function App:show()
     self:refresh(true)
     -- The automatic update check runs AFTER the first paint (it is a
     -- background network call; it must never delay the screen).
+    self._opened = true
     self:_schedule_update_check()
 end
 
@@ -916,6 +917,7 @@ function App:close()
     self:_cancel_generation()
     -- A background update check must never open a dialog on a closed app:
     -- invalidate the pending callback and stop the poll.
+    self._opened = false
     self._update_check_token = (self._update_check_token or 0) + 1
     self._update_check_busy = false
     pcall(function() require("kt_update").cancel_bg() end)
@@ -2554,10 +2556,10 @@ function App:open_chat_in_list(chat_path)
     end
 end
 
--- Switch the global display mode (list | book). Book mode is an
--- EXPERIMENTAL feature: its switch lives in the Debug category and the
--- Appearance picker only shows while Debug Mode is armed. Both entries
--- land here so there is a single writer for chat_mode.
+-- Switch the global display mode (list | book). Book mode is the DEFAULT
+-- and the recommended one (the reader's own pagination); its picker lives
+-- in Appearance and both entries land here so there is a single writer for
+-- chat_mode.
 --
 -- The switch is visible AT ONCE: Book -> List closes the reader (the
 -- canvas chat underneath comes back), List -> Book opens the book for the
@@ -6594,7 +6596,9 @@ end
 function App:_auto_check_updates()
     local Update = require("kt_update")
     local s = self.state.settings
-    if not self.view then return end
+    -- The app can be closed while the check is scheduled (the view object
+    -- survives the close: the launcher reuses the instance).
+    if not self._opened then return end
     if s.update_auto_check == false then return end
     local now = os.time()
     if now < (tonumber(s.update_snooze_until) or 0) then return end
@@ -6614,7 +6618,7 @@ function App:_auto_check_updates()
     }, function(ok, res)
         if token ~= self._update_check_token then return end
         self._update_check_busy = false
-        if not self.view then return end
+        if not self._opened then return end
         s.update_checked_at = os.time()
         Storage.save_settings(s)
         if not ok then return end -- a failed check stays silent
@@ -6628,6 +6632,23 @@ function App:_auto_check_updates()
         local installed = Update.installed_build(s.installed_build)
         local prompt = Update.should_prompt(res, installed, s)
         if not prompt then return end
+        -- The release body came with the check: cache it for "What's new"
+        -- (the page then shows the notes of the release that was offered).
+        if res.channel == "stable" and type(res.body) == "string" then
+            s.update_notes_cache = {
+                channel = "stable",
+                target = "new",
+                title = res.name or res.tag or "",
+                version = res.version,
+                commit = nil,
+                tag = Update.entry_tag(res),
+                body = res.body,
+                items = {},
+                truncated = false,
+                fetched_at = os.time(),
+            }
+            Storage.save_settings(s)
+        end
         local Modals = require("ktui/modals")
         local self_ref = self
         Modals.update_prompt(Update.entry_tag(res),
@@ -6777,14 +6798,15 @@ function App:check_updates_now()
     }
     -- The release body came with the check: cache it instead of asking the
     -- network a second time for the same page.
-    if type(s.update_notes_cache) ~= "table" and res.channel == "stable" then
+    if res.channel == "stable" and type(res.body) == "string" then
         s.update_notes_cache = {
             channel = "stable",
             target = "new",
             title = res.name or res.tag or "",
             version = res.version,
             commit = nil,
-            body = res.body or "",
+            tag = Update.entry_tag(res),
+            body = res.body,
             items = {},
             truncated = false,
             fetched_at = os.time(),
@@ -6817,38 +6839,36 @@ function App:_notes_cache_stale(settings)
 end
 
 function App:show_release_notes()
+    -- The page opens IMMEDIATELY (with the cached notes) and the fetch fills
+    -- it in when it lands: the network must never freeze the screen.
+    self:navigate("release_notes")
     if self:_notes_cache_stale() then
         self:refresh_release_notes()
     end
-    self:navigate("release_notes")
 end
 
 function App:refresh_release_notes()
-    local Modals = require("ktui/modals")
-    local InfoMessage = require("ui/widget/infomessage")
     local Update = require("kt_update")
-    local _ = require("gettext")
     local s = self.state.settings
     local repo = Util.trim(tostring(s.update_repo or ""))
     if repo == "" then
         repo = Update.default_repo()
     end
-    Modals.status(_("Fetching release notes…"))
-    UIManager:forceRePaint()
-    local notes, err = Update.notes({
+    local self_ref = self
+    local started = Update.notes_bg({
         repo = repo,
         channel = Update.normalize_channel(s.update_channel),
-    }, Update.installed_build(s.installed_build))
-    Modals.close_status()
-    if not notes then
-        UIManager:show(InfoMessage:new{ text = tostring(err or "?"), timeout = 4 })
-        return false
-    end
-    notes.fetched_at = os.time()
-    s.update_notes_cache = notes
-    Storage.save_settings(s)
-    self:refresh(true)
-    return true
+    }, Update.installed_build(s.installed_build), function(ok, notes)
+        if not ok then
+            -- Keep the old cache: the page shows what it has.
+            return
+        end
+        notes.fetched_at = os.time()
+        s.update_notes_cache = notes
+        Storage.save_settings(s)
+        self_ref:refresh(true)
+    end)
+    return started
 end
 
 -- === Book look (the Book-mode theme) =======================================

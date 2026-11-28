@@ -188,7 +188,12 @@ function BookTheme.sig(theme)
     local function put(key, value)
         parts[#parts + 1] = key .. "=" .. tostring(value)
     end
-    for field, _allowed in pairs(ENUMS) do
+    -- The fields are sorted: a hash-table order would change the signature
+    -- when a key is added, and every stored book would look different.
+    local enum_fields = {}
+    for field in pairs(ENUMS) do enum_fields[#enum_fields + 1] = field end
+    table.sort(enum_fields)
+    for _ei, field in ipairs(enum_fields) do
         put(field, t[field])
     end
     for _bi, field in ipairs(BOOLEANS) do
