@@ -220,6 +220,20 @@ function Update.api_cmd(url)
     return cmd .. " " .. shell_quote(url)
 end
 
+-- The same GET, detached: the body lands in body_file, the HTTP code in
+-- status_file. The trailing "&" is what makes it non-blocking - the caller
+-- runs it in the background and polls the status file.
+function Update.api_bg_cmd(url, body_file, status_file)
+    local cmd = "curl -s --max-time 30 --connect-timeout 15"
+    for k, v in pairs(api_headers()) do
+        cmd = cmd .. " -H " .. shell_quote(k .. ": " .. v)
+    end
+    return cmd .. " " .. shell_quote(url)
+        .. " -o " .. shell_quote(body_file)
+        .. " -w '%{http_code}' > " .. shell_quote(status_file)
+        .. " 2>/dev/null &"
+end
+
 local function api_get(url)
     local cmd = Update.api_cmd(url)
     local p = io.popen(cmd .. " 2>/dev/null", "r")
@@ -466,6 +480,141 @@ function Update.check(opts)
         download_url = url,
         digest = nil, -- no digest for zipballs: layout check only
     }
+end
+
+-- === Background check (never blocks the UI) =================================
+--
+-- The automatic check runs when the plugin opens: it must not freeze the
+-- first paint, so curl is spawned DETACHED and the result is polled from the
+-- UI timer. Only one check may be in flight; cancel_bg() kills the poll.
+
+local bg_state = {
+    active = false,
+    token = 0,
+    body_file = nil,
+    status_file = nil,
+}
+
+function Update.cancel_bg()
+    bg_state.token = bg_state.token + 1
+    bg_state.active = false
+    if bg_state.body_file then os.remove(bg_state.body_file) end
+    if bg_state.status_file then os.remove(bg_state.status_file) end
+    bg_state.body_file = nil
+    bg_state.status_file = nil
+end
+
+-- Check for updates without blocking. opts = { repo, channel };
+-- callback(ok, entry_or_err). deps = { cmd, sched, now } are injection points
+-- for the headless harness (a fake command and a fake scheduler).
+function Update.check_bg(opts, callback, deps)
+    if bg_state.active then return false end
+    opts = opts or {}
+    deps = deps or {}
+    local repo = tostring(opts.repo or ""):match("^%s*(.-)%s*$")
+    if repo == "" then
+        repo = Update.default_repo()
+    end
+    local channel = Update.normalize_channel(opts.channel)
+    local url = (channel == "stable")
+        and (repo_api(repo) .. "/releases?per_page=100")
+        or (repo_api(repo) .. "/commits?per_page=1&sha=" .. Update.BRANCH)
+
+    local body_file = os.tmpname()
+    local status_file = os.tmpname()
+    local cmd_for = deps.cmd or function(b, s)
+        return Update.api_bg_cmd(url, b, s)
+    end
+    local sched = deps.sched or function(fn, delay)
+        return require("ui/uimanager"):scheduleIn(delay, fn)
+    end
+    local now = deps.now or function()
+        return require("socket").gettime()
+    end
+
+    bg_state.active = true
+    bg_state.token = bg_state.token + 1
+    bg_state.body_file = body_file
+    bg_state.status_file = status_file
+    local token = bg_state.token
+    local started_at = now()
+
+    os.execute("(" .. cmd_for(body_file, status_file) .. ") >/dev/null 2>&1 &")
+
+    local function finish(okc, res)
+        os.remove(body_file)
+        os.remove(status_file)
+        if bg_state.token ~= token then return end
+        bg_state.active = false
+        bg_state.body_file = nil
+        bg_state.status_file = nil
+        if callback then callback(okc, res) end
+    end
+
+    local poll
+    poll = function()
+        if bg_state.token ~= token then return end
+        local fs = io.open(status_file, "r")
+        local content = fs and (fs:read("*a") or "") or ""
+        if fs then fs:close() end
+        if content:match("%d%d%d") then
+            local body = ""
+            local bf = io.open(body_file, "r")
+            if bf then
+                body = bf:read("*a") or ""
+                bf:close()
+            end
+            local ok_decode, decoded = pcall(JSON.decode, body)
+            if not ok_decode or decoded == nil then
+                finish(false, "Could not read the GitHub response.")
+                return
+            end
+            local parsed = Util.clean_json(decoded)
+            if channel == "stable" then
+                if type(parsed) ~= "table" then
+                    finish(false, "Could not read release information.")
+                    return
+                end
+                local entry = Update.pick_stable_release(parsed)
+                if not entry then
+                    finish(false, "No stable KOTavern release found.")
+                    return
+                end
+                entry.channel = "stable"
+                entry.download_url = entry.asset.browser_download_url
+                entry.digest = entry.asset.digest
+                entry.asset_name = entry.asset.name
+                finish(true, entry)
+                return
+            end
+            if type(parsed) ~= "table" then
+                finish(false, "Could not read the latest commit.")
+                return
+            end
+            local commit = Update.pick_latest_commit(parsed)
+            if not commit then
+                finish(false, "Could not read the latest commit.")
+                return
+            end
+            finish(true, {
+                channel = "commits",
+                version = nil,
+                tag = nil,
+                commit = commit,
+                asset_name = "repo snapshot " .. commit,
+                download_url = zipball_url(repo),
+                digest = nil,
+            })
+            return
+        end
+        if now() - started_at > 45 then
+            finish(false, "The update check timed out.")
+            return
+        end
+        sched(poll, 0.5)
+    end
+    sched(poll, 0.5)
+    return true
 end
 
 -- Is entry newer than the installed build? installed = { channel, version,

@@ -1591,6 +1591,49 @@ do
         "update: a missing anchor truncates the window")
     ok(Update.commit_notes(nil, "") and #Update.commit_notes(nil, "").items == 0,
         "update: commit notes of an empty list")
+
+    local bg = Update.api_bg_cmd("https://api.github.com/x", "/tmp/body", "/tmp/status")
+    ok(bg:find("https://api.github.com/x", 1, true) ~= nil
+        and bg:find("/tmp/body", 1, true) ~= nil
+        and bg:find("/tmp/status", 1, true) ~= nil
+        and bg:find("&", 1, true) ~= nil,
+        "update: the background command detaches and names both files")
+    ok(bg:find("Authorization", 1, true) == nil,
+        "update: the background command carries no token")
+
+    -- The background runner must be testable without the network: inject the
+    -- command and the scheduler. The command runs DETACHED, so the poll has
+    -- to wait for the files to land: the scheduler only queues the poll and
+    -- the test drains the queue.
+    local fixture = '[{"tag_name":"v0.4.0","prerelease":false,"published_at":"2026-11-20",'
+        .. '"body":"notes here","name":"Nightly",'
+        .. '"assets":[{"name":"kotavern.koplugin-0.4.0.zip",'
+        .. '"browser_download_url":"https://github.com/o/r/releases/download/v0.4.0/kotavern.koplugin-0.4.0.zip",'
+        .. '"digest":"sha256:' .. string.rep("c", 64) .. '"}]}]'
+    local got = nil
+    local queue = {}
+    local started = Update.check_bg({ repo = "o/r", channel = "stable" },
+        function(okc, res) got = { okc, res } end,
+        {
+            cmd = function(body_file, status_file)
+                return "printf '%s' '" .. fixture .. "' > " .. body_file
+                    .. " && printf '200' > " .. status_file
+            end,
+            sched = function(fn) queue[#queue + 1] = fn end,
+        })
+    ok(started == true, "update: the background check starts")
+    local socket = require("socket")
+    local tries = 0
+    while not got and tries < 100 do
+        tries = tries + 1
+        local fn = table.remove(queue, 1)
+        if fn then fn() else socket.sleep(0.02) end
+    end
+    ok(got ~= nil and got[1] == true and got[2] and got[2].version == "0.4.0",
+        "update: the background check parses the fixture release")
+    ok(got ~= nil and got[2] and got[2].body == "notes here",
+        "update: the background check carries the release body")
+    Update.cancel_bg()
 end
 
 -- === 4n. Nav labels follow the active language (never frozen) ==================
