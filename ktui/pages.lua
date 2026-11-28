@@ -816,6 +816,72 @@ function Pages.settings_book(view, bb, x, y, w, h, scroll)
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
 end
 
+-- === Book labels ============================================================
+-- The renameable texts of the book: the in-book links, the speaker names and
+-- the native menus. An empty value falls back to the translated default.
+-- The rows are built by a PURE function so the whole list can be checked
+-- without painting it.
+function Pages.book_label_rows(app)
+    local BookTheme = require("kt_book_theme")
+    local theme = app:book_theme()
+    local labels = theme.labels or {}
+    local group_titles = {
+        book = _("In the book"),
+        speaker = _("Speakers"),
+        dialog = _("Menus"),
+    }
+    local rows = {
+        {
+            text = _("Restore all labels"),
+            icon = "refresh",
+            callback = function()
+                local Sheets = require("ktui/sheets")
+                Sheets.confirm(app, {
+                    title = _("Restore all labels"),
+                    text = _("Every renamed text goes back to its default."),
+                    ok_label = _("Restore"),
+                    on_ok = function() app:reset_book_labels() end,
+                })
+            end,
+        },
+    }
+    local current_group = nil
+    -- NOT "_": the loop variable would shadow gettext inside this closure.
+    for _li, entry in ipairs(BookTheme.LABEL_KEYS) do
+        if entry.group ~= current_group then
+            current_group = entry.group
+            rows[#rows + 1] = {
+                section = true,
+                text = group_titles[entry.group] or entry.group,
+            }
+        end
+        local key = entry.key
+        local default_text = _(entry.default_text)
+        rows[#rows + 1] = {
+            text = default_text,
+            value = function()
+                local value = labels[key]
+                if type(value) == "string" and value ~= "" then return value end
+                return _("Default")
+            end,
+            callback = function()
+                local Modals = require("ktui/modals")
+                Modals.input(default_text, labels[key] or "",
+                    _("Leave empty to use the default"), _("Save"), function(text)
+                        app:set_book_label(key, text)
+                    end)
+            end,
+        }
+    end
+    return rows
+end
+
+function Pages.settings_book_labels(view, bb, x, y, w, h, scroll)
+    local app = view.app
+    return Pages.settings_section(view, bb, x, y, w, h, scroll,
+        Pages.book_label_rows(app))
+end
+
 -- Appearance > Chat > Bubble themes: manage the saved chat-look themes and
 -- pick the global default. Per-theme actions live in a sheet (apply to THIS
 -- chat, set default, rename, duplicate, delete); creating snapshots the

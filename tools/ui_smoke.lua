@@ -6044,6 +6044,32 @@ do
     end
 end
 
+-- === 4w-quin. The book labels page =========================================
+do
+    local BookTheme = require("kt_book_theme")
+    local App = require("kt_app")
+    local app = fake_app({ page = "settings_book_labels",
+        settings = { book_theme = { labels = { actions = "Ações do livro" } } } })
+    setmetatable(app, { __index = App })
+    function app:navigate(page) self._nav = page end
+    function app:refresh() end
+    local view = { app = app, hitboxes = {}, refresh = function() end }
+    local bb = new_bb()
+    local max_scroll = 0
+    local okp, err = pcall(function()
+        max_scroll = Pages.settings_book_labels(view, bb, 0, 0, VW, VH - Theme.metrics().nav_h, 0)
+    end)
+    ok(okp, "book labels: the page paints (" .. tostring(err) .. ")")
+    ok(max_scroll > 0, "book labels: the page is longer than the viewport")
+    -- The row builder is pure, so the COMPLETE list can be checked even
+    -- though the page only paints the visible rows.
+    local rows = Pages.book_label_rows(app)
+    ok(#rows >= #BookTheme.LABEL_KEYS,
+        "book labels: every label has a row (got " .. #rows
+        .. " rows for " .. #BookTheme.LABEL_KEYS .. " labels)")
+    dump(bb, "settings_book_labels")
+end
+
 -- === 5. Icon sheet: every SVG asset rasterizes ==============================
 do
     -- Direct probe: capture the raw failure for any asset NanoSVG rejects.

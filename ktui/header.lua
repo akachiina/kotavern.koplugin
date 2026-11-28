@@ -77,6 +77,7 @@ local function page_title(view)
             settings_appearance_chat = _("Chat themes"),
             settings_bubble_themes = _("Themes"),
             settings_book = _("Book appearance"),
+            settings_book_labels = _("Text labels"),
             settings_dashboard = _("Dashboard"),
             settings_behavior = _("Behavior"),
             settings_network = _("Network"),
