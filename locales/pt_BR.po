@@ -49,6 +49,9 @@ msgstr "Sobre / versão"
 msgid "Actions"
 msgstr "Ações"
 
+msgid "Actions link per message"
+msgstr "Link de ações por mensagem"
+
 msgid "Activate (this chat)"
 msgstr "Ativar (neste chat)"
 
@@ -130,11 +133,26 @@ msgstr "Comportamento"
 msgid "Blank = built-in default"
 msgstr "Em branco = padrão interno"
 
+msgid "Bold"
+msgstr "Negrito"
+
 msgid "Book actions"
 msgstr "Ações do livro"
 
+msgid "Book appearance"
+msgstr "Aparência do livro"
+
+msgid "Book font"
+msgstr "Fonte do livro"
+
+msgid "Book preset"
+msgstr "Predefinição do livro"
+
 msgid "Both"
 msgstr "Ambos"
+
+msgid "Boxed"
+msgstr "Com caixa"
 
 msgid "Branch created: "
 msgstr "Ramificação criada: "
@@ -184,6 +202,9 @@ msgstr "Personagem duplicado!"
 msgid "Character imported!"
 msgstr "Personagem importado!"
 
+msgid "Character name"
+msgstr "Nome do personagem"
+
 msgid "Chat"
 msgstr "Chat"
 
@@ -198,6 +219,9 @@ msgstr "Chat exportado para "
 
 msgid "Chat imported!"
 msgstr "Chat importado!"
+
+msgid "Chat name"
+msgstr "Nome do chat"
 
 msgid "Chat not fully configured."
 msgstr "Chat sem configuração completa."
@@ -235,8 +259,14 @@ msgstr "Limpar nota"
 msgid "Close book"
 msgstr "Fechar livro"
 
+msgid "Code blocks"
+msgstr "Blocos de código"
+
 msgid "Collapse newlines"
 msgstr "Recolher quebras de linha"
+
+msgid "Colophon"
+msgstr "Colofão"
 
 msgid "Columns"
 msgstr "Colunas"
@@ -325,6 +355,12 @@ msgstr "Não foi possível salvar o lorebook."
 msgid "Could not update the book."
 msgstr "Não foi possível atualizar o livro."
 
+msgid "Cover"
+msgstr "Capa"
+
+msgid "Cover title"
+msgstr "Título da capa"
+
 msgid "Covers"
 msgstr "Capas"
 
@@ -333,6 +369,9 @@ msgstr "Criar"
 
 msgid "Creator Notes"
 msgstr "Notas do criador"
+
+msgid "Custom"
+msgstr "Personalizado"
 
 msgid "Dashboard"
 msgstr "Painel"
@@ -442,6 +481,9 @@ msgstr "Descrição (enviada como contexto à IA)"
 msgid "Developed by akachiina · GitHub"
 msgstr "Desenvolvido por akachiina · GitHub"
 
+msgid "Dimmed"
+msgstr "Esmaecido"
+
 msgid "Disabled"
 msgstr "Desativado"
 
@@ -456,6 +498,9 @@ msgstr "Baixar e instalar"
 
 msgid "Downloading update…"
 msgstr "Baixando update…"
+
+msgid "Drop cap"
+msgstr "Letra capitular"
 
 msgid "Duplicate"
 msgstr "Duplicar"
@@ -514,6 +559,9 @@ msgstr "Edite sua mensagem"
 msgid "Edit your message, then Send"
 msgstr "Edite sua mensagem e toque Enviar"
 
+msgid "Emoji size"
+msgstr "Tamanho dos emojis"
+
 msgid "Empty to disable"
 msgstr "Vazio para desativar"
 
@@ -537,6 +585,9 @@ msgstr "Erro"
 
 msgid "Every N user messages"
 msgstr "A cada N mensagens do usuário"
+
+msgid "Every renamed text goes back to its default."
+msgstr "Todo texto renomeado volta ao padrão."
 
 msgid "Exclude from recursion"
 msgstr "Excluir da recursão"
@@ -625,11 +676,20 @@ msgstr "Plano"
 msgid "Follow system"
 msgstr "Seguir o sistema"
 
+msgid "Follow the reader"
+msgstr "Seguir o leitor"
+
 msgid "Font size"
 msgstr "Tamanho da fonte"
 
+msgid "Font weight"
+msgstr "Peso da fonte"
+
 msgid "From this character card"
 msgstr "Deste card de personagem"
+
+msgid "Full settings"
+msgstr "Abrir as configurações"
 
 msgid "Generating…"
 msgstr "Gerando…"
@@ -645,6 +705,9 @@ msgstr "Ir para a última mensagem"
 
 msgid "Go to the end"
 msgstr "Ir para o final"
+
+msgid "Go to the end link"
+msgstr "Link para o final"
 
 msgid "Greeting"
 msgstr "Saudação"
@@ -664,6 +727,12 @@ msgstr "Oculta"
 msgid "Hide"
 msgstr "Ocultar"
 
+msgid "Hide colophon"
+msgstr "Ocultar colofão"
+
+msgid "Hide cover"
+msgstr "Ocultar capa"
+
 msgid "Hide reasoning"
 msgstr "Ocultar raciocínio"
 
@@ -675,6 +744,9 @@ msgstr "Início"
 
 msgid "How often the screen repaints while streaming"
 msgstr "Com que frequência a tela repinta durante o stream"
+
+msgid "Hyphenation"
+msgstr "Hifenização"
 
 msgid "Image"
 msgstr "Imagem"
@@ -715,8 +787,14 @@ msgstr "Importando backup…"
 msgid "In prompt"
 msgstr "No prompt"
 
+msgid "In the book"
+msgstr "No livro"
+
 msgid "In-chat @ depth"
 msgstr "No chat @ profundidade"
+
+msgid "Indented"
+msgstr "Recuado"
 
 msgid "Injected into the AI context"
 msgstr "Injetado no contexto da IA"
@@ -748,6 +826,9 @@ msgstr "Pasta inválida."
 msgid "Inverted"
 msgstr "Invertido"
 
+msgid "Justify text"
+msgstr "Texto justificado"
+
 msgid "KOTavern"
 msgstr "KOTavern"
 
@@ -766,8 +847,14 @@ msgstr "Idioma"
 msgid "Large"
 msgstr "Grande"
 
+msgid "Leave empty to use the default"
+msgstr "Deixe vazio para usar o padrão"
+
 msgid "Light"
 msgstr "Claro"
+
+msgid "Line"
+msgstr "Linha"
 
 msgid "List"
 msgstr "Lista"
@@ -799,8 +886,20 @@ msgstr "Lorebook salvo!"
 msgid "Lorebooks"
 msgstr "Lorebooks"
 
+msgid "Margins"
+msgstr "Margens"
+
+msgid "Masked"
+msgstr "Mascarado"
+
 msgid "Match whole words"
 msgstr "Palavras inteiras"
+
+msgid "Menus"
+msgstr "Menus"
+
+msgid "Merge same speaker"
+msgstr "Unir falas do mesmo personagem"
 
 msgid "Message"
 msgstr "Mensagem"
@@ -813,6 +912,12 @@ msgstr "Info da mensagem"
 
 msgid "Message no longer exists."
 msgstr "A mensagem não existe mais."
+
+msgid "Message titles"
+msgstr "Títulos das mensagens"
+
+msgid "Minimal"
+msgstr "Mínimo"
 
 msgid "Model ID contains…"
 msgstr "ID do modelo contém…"
@@ -1018,6 +1123,9 @@ msgstr "Nada para editar."
 msgid "Nothing to view."
 msgstr "Nada para ver."
 
+msgid "Novel"
+msgstr "Romance"
+
 msgid "Number"
 msgstr "Número"
 
@@ -1048,8 +1156,23 @@ msgstr "Operação falhou: "
 msgid "Options"
 msgstr "Opções"
 
+msgid "Ornament"
+msgstr "Ornamento"
+
 msgid "Outline user bubbles"
 msgstr "Contornar bolhas do usuário"
+
+msgid "Page"
+msgstr "Página"
+
+msgid "Page break per message"
+msgstr "Quebra de página por mensagem"
+
+msgid "Panel"
+msgstr "Painel"
+
+msgid "Paragraph spacing"
+msgstr "Espaçamento dos parágrafos"
 
 msgid "Past Chats"
 msgstr "Chats passados"
@@ -1063,11 +1186,17 @@ msgstr "Personalidade"
 msgid "Personas"
 msgstr "Personas"
 
+msgid "Placeholder"
+msgstr "Espaço reservado"
+
 msgid "Placeholder sent if you submit an empty message (ST send_if_empty)"
 msgstr "Mensagem provisória enviada se você submeter texto vazio (ST send_if_empty)"
 
 msgid "Placement"
 msgstr "Aplicação"
+
+msgid "Plain"
+msgstr "Simples"
 
 msgid "Please give the persona a name."
 msgstr "Dê um nome à persona."
@@ -1180,6 +1309,9 @@ msgstr "Scripts de regex"
 msgid "Regex scripts"
 msgstr "Scripts de regex"
 
+msgid "Regular"
+msgstr "Normal"
+
 msgid "Remind me later"
 msgstr "Lembrar depois"
 
@@ -1228,6 +1360,12 @@ msgstr "A resposta foi cortada pelo limite de tokens - use Continuar para termin
 msgid "Restart now"
 msgstr "Reiniciar agora"
 
+msgid "Restore"
+msgstr "Restaurar"
+
+msgid "Restore all labels"
+msgstr "Restaurar todos os rótulos"
+
 msgid "Restore complete"
 msgstr "Restauração concluída"
 
@@ -1240,17 +1378,68 @@ msgstr "Tentativas (429/5xx)"
 msgid "Retry"
 msgstr "Tentar de novo"
 
+msgid "Reveal"
+msgstr "Revelar"
+
+msgid "Separator"
+msgstr "Separador"
+
+msgid "Show colophon"
+msgstr "Mostrar colofão"
+
+msgid "Show cover"
+msgstr "Mostrar capa"
+
+msgid "Show date"
+msgstr "Mostrar data"
+
 msgid "Show reasoning"
 msgstr "Mostrar raciocínio"
+
+msgid "Space"
+msgstr "Espaço"
+
+msgid "Speaker"
+msgstr "Falante"
+
+msgid "Speaker and time"
+msgstr "Falante e hora"
+
+msgid "Speakers"
+msgstr "Falantes"
+
+msgid "Spoilers"
+msgstr "Spoilers"
 
 msgid "Stop generating"
 msgstr "Parar de gerar"
 
+msgid "Structure"
+msgstr "Estrutura"
+
 msgid "System"
 msgstr "Sistema"
 
+msgid "System messages"
+msgstr "Mensagens do sistema"
+
+msgid "Table borders"
+msgstr "Bordas das tabelas"
+
+msgid "Table of contents"
+msgstr "Sumário"
+
+msgid "Text labels"
+msgstr "Rótulos de texto"
+
+msgid "The book look goes back to the default preset. Labels are kept."
+msgstr "A aparência do livro volta para a predefinição padrão. Os rótulos são mantidos."
+
 msgid "Thinking…"
 msgstr "Pensando…"
+
+msgid "Time"
+msgstr "Hora"
 
 msgid "Turn"
 msgstr "Turno"
