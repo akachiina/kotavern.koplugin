@@ -5975,6 +5975,11 @@ do
         "book theme: the legacy reasoning flag seeds the theme")
     ok(BookTheme.from_settings({ book_theme = { show_reasoning = false } }).show_reasoning == false,
         "book theme: an explicit theme wins over the legacy flag")
+    -- The seed survives a theme that exists but has no explicit value (the
+    -- user changed another knob before the theme owned the flag).
+    ok(BookTheme.from_settings({ book_show_reasoning = true,
+        book_theme = { cover = false } }).show_reasoning == true,
+        "book theme: the legacy flag still seeds a theme without the value")
 end
 
 -- === 4w-ter. The book look app API ========================================

@@ -270,16 +270,17 @@ function BookTheme.label(theme, key, default_text)
     return default_text
 end
 
--- The theme of the app settings. Before the theme existed the reasoning
--- flag lived in its own setting: seed it once, then the theme owns it.
+-- The theme of the app settings. Before the theme existed the reasoning flag
+-- lived in its own setting: it seeds the theme while the theme carries no
+-- explicit value (so touching another knob never drops the user's choice).
 function BookTheme.from_settings(settings)
     settings = settings or {}
     local raw = settings.book_theme
     if type(raw) ~= "table" then
         raw = {}
-        if settings.book_show_reasoning == true then
-            raw.show_reasoning = true
-        end
+    end
+    if raw.show_reasoning == nil and settings.book_show_reasoning == true then
+        raw.show_reasoning = true
     end
     return BookTheme.normalize(raw)
 end
