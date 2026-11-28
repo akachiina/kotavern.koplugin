@@ -1634,6 +1634,22 @@ do
     ok(got ~= nil and got[2] and got[2].body == "notes here",
         "update: the background check carries the release body")
     Update.cancel_bg()
+
+    ok(Update.should_prompt({ channel = "stable", version = "0.3.0" },
+        { channel = "stable", version = "0.2.0" }, {}) == true,
+        "update: a newer stable entry prompts")
+    local skipped, reason = Update.should_prompt({ channel = "stable", version = "0.3.0" },
+        { channel = "stable", version = "0.2.0" }, { update_skip_version = "v0.3.0" })
+    ok(skipped == false and reason == "skipped",
+        "update: a cancelled version never prompts again")
+    local same, same_reason = Update.should_prompt({ channel = "stable", version = "0.2.0" },
+        { channel = "stable", version = "0.2.0" }, {})
+    ok(same == false and same_reason == "up_to_date",
+        "update: the installed version never prompts")
+    local newer_commit = Update.should_prompt({ channel = "commits", commit = "bbb" },
+        { channel = "commits", commit = "aaa" }, {})
+    ok(newer_commit == true,
+        "update: a newer commit snapshot prompts")
 end
 
 -- === 4n. Nav labels follow the active language (never frozen) ==================
@@ -6678,6 +6694,27 @@ do
     })
     local opts = captured.opts or {}
     ok(#(opts.buttons or {}) == 2, "modals: actions rows mapped (show_cancel=false)")
+    -- The update prompt: three actions, in order (now / later / cancel). The
+    -- native dialog widget chain cannot load headless, so the prompt is
+    -- checked through its row builder and the stubbed construction.
+    local prompt_rows = Modals.update_prompt_rows("v0.3.0",
+        function() end, function() end, function() end)
+    ok(#prompt_rows == 3, "modals: the update prompt has three actions")
+    local prompt_labels = {}
+    for _i, row in ipairs(prompt_rows) do
+        for _j, button in ipairs(row) do prompt_labels[#prompt_labels + 1] = button.text end
+    end
+    local GT = require("gettext")
+    ok(prompt_labels[1] == GT("Update now")
+        and prompt_labels[2] == GT("Remind me later")
+        and prompt_labels[3] == GT("Cancel"),
+        "modals: the update prompt order is now / later / cancel")
+    captured.opts = nil
+    Modals.build_update_prompt("v0.3.0", function() end, function() end, function() end)
+    ok(captured.opts and #(captured.opts.buttons or {}) == 3,
+        "modals: the update prompt builds three button rows")
+    ok(tostring((captured.opts or {}).title or ""):find("v0.3.0", 1, true) ~= nil,
+        "modals: the update prompt title carries the version")
     ok(opts.shrink_unneeded_width == true and opts.shrink_min_width == 220,
         "modals: compact options forwarded")
     ok(captured.anchor_geom ~= nil and captured.anchor_geom.x == 400 + 42 - 0 - 8,

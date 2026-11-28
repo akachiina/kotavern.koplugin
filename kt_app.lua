@@ -887,6 +887,9 @@ function App:show()
     -- (the core promotes it to a real flash every FULL_REFRESH_COUNT), so
     -- re-opening the plugin no longer pays a full-screen flash every time.
     self:refresh(true)
+    -- The automatic update check runs AFTER the first paint (it is a
+    -- background network call; it must never delay the screen).
+    self:_schedule_update_check()
 end
 
 -- Make sure KOReader is left with a window.
@@ -916,6 +919,11 @@ end
 
 function App:close()
     self:_cancel_generation()
+    -- A background update check must never open a dialog on a closed app:
+    -- invalidate the pending callback and stop the poll.
+    self._update_check_token = (self._update_check_token or 0) + 1
+    self._update_check_busy = false
+    pcall(function() require("kt_update").cancel_bg() end)
     require("ktui/gifanim").stop_all(self)
     require("ktui/sheets").drop_snapshot()
     -- Release the heavy caches BEFORE the view goes away: the chat HTML
@@ -6572,6 +6580,113 @@ end
 -- Two channels (stable Releases, repo snapshot per commit); install swaps
 -- the plugin dir with backup + rollback, then restarts KOReader. No token.
 
+-- The automatic check: one per day, in the background.
+App.UPDATE_CHECK_INTERVAL = 24 * 3600
+-- "Remind me later": how long the prompt stays quiet.
+App.UPDATE_SNOOZE = 24 * 3600
+
+-- Schedule the automatic check one second after the app is shown (the first
+-- paint is never delayed by it).
+function App:_schedule_update_check()
+    UIManager:scheduleIn(1, function()
+        self:_auto_check_updates()
+    end)
+end
+
+-- The automatic update check. It never blocks: the network call runs detached
+-- and the result comes back through the UI timer. A failed check stays
+-- silent - the user asked for a prompt when an update IS available.
+function App:_auto_check_updates()
+    local Update = require("kt_update")
+    local s = self.state.settings
+    if not self.view then return end
+    if s.update_auto_check == false then return end
+    local now = os.time()
+    if now < (tonumber(s.update_snooze_until) or 0) then return end
+    if now - (tonumber(s.update_checked_at) or 0) < App.UPDATE_CHECK_INTERVAL then return end
+    if self._update_check_busy then return end
+
+    local repo = Util.trim(tostring(s.update_repo or ""))
+    if repo == "" then
+        repo = Update.default_repo()
+    end
+    self._update_check_token = (self._update_check_token or 0) + 1
+    local token = self._update_check_token
+    self._update_check_busy = true
+    Update.check_bg({
+        repo = repo,
+        channel = Update.normalize_channel(s.update_channel),
+    }, function(ok, res)
+        if token ~= self._update_check_token then return end
+        self._update_check_busy = false
+        if not self.view then return end
+        s.update_checked_at = os.time()
+        Storage.save_settings(s)
+        if not ok then return end -- a failed check stays silent
+        s.update_last_entry = {
+            channel = res.channel,
+            version = res.version,
+            commit = res.commit,
+            tag = Update.entry_tag(res),
+        }
+        Storage.save_settings(s)
+        local installed = Update.installed_build(s.installed_build)
+        local prompt = Update.should_prompt(res, installed, s)
+        if not prompt then return end
+        local Modals = require("ktui/modals")
+        local self_ref = self
+        Modals.update_prompt(Update.entry_tag(res),
+            function() self_ref:_install_update(res) end,
+            function()
+                s.update_snooze_until = os.time() + App.UPDATE_SNOOZE
+                Storage.save_settings(s)
+            end,
+            function()
+                s.update_skip_version = Update.entry_tag(res)
+                Storage.save_settings(s)
+            end)
+    end)
+end
+
+-- Download + install + the restart offer. Shared by the automatic prompt
+-- and the manual check.
+function App:_install_update(entry, on_done)
+    local Modals = require("ktui/modals")
+    local InfoMessage = require("ui/widget/infomessage")
+    local Sheets = require("ktui/sheets")
+    local Update = require("kt_update")
+    local _ = require("gettext")
+    local s = self.state.settings
+    Modals.status(_("Downloading update…"))
+    UIManager:forceRePaint()
+    local ok, ver = Update.install(entry)
+    Modals.close_status()
+    if not ok then
+        s.update_status = tostring(ver)
+        UIManager:show(InfoMessage:new{ text = tostring(ver), timeout = 4 })
+        self:refresh(true)
+        if on_done then on_done(false, tostring(ver)) end
+        return
+    end
+    local Constants = require("kt_constants")
+    s.installed_build = {
+        channel = entry.channel,
+        version = entry.version or Constants.VERSION,
+        commit = entry.commit,
+    }
+    Storage.save_settings(s)
+    s.update_status = _("Up to date")
+    Sheets.confirm(self, {
+        title = _("Update installed"),
+        text = tostring(ver),
+        ok_label = _("Restart now"),
+        on_ok = function()
+            UIManager:restartKOReader()
+        end,
+    })
+    if on_done then on_done(true, tostring(ver)) end
+end
+
 function App:update_channel_label()
     local _ = require("gettext")
     local Update = require("kt_update")
@@ -6643,36 +6758,19 @@ function App:check_updates_now()
     local tag = res.channel == "commits" and ("commits " .. tostring(res.commit or ""))
         or ("v" .. tostring(res.version or "?"))
     self.state.update_status = tag
+    s.update_checked_at = os.time()
+    s.update_last_entry = {
+        channel = res.channel,
+        version = res.version,
+        commit = res.commit,
+        tag = Update.entry_tag(res),
+    }
+    Storage.save_settings(s)
     Sheets.show(self, { title = _("Update available"), actions = {
         { label = _("Download & install") .. " (" .. tag .. ")", icon = "download",
           on_tap = function()
-            Modals.status(_("Downloading update…"))
-            UIManager:forceRePaint()
-            local ok2, ver = Update.install(res)
-            Modals.close_status()
-            if not ok2 then
-                self_ref.state.update_status = tostring(ver)
-                UIManager:show(InfoMessage:new{ text = tostring(ver), timeout = 4 })
-                self_ref:refresh(true)
-                return
-            end
-            local Constants = require("kt_constants")
-            s.installed_build = {
-                channel = res.channel,
-                version = res.version or Constants.VERSION,
-                commit = res.commit,
-            }
-            Storage.save_settings(s)
-            self_ref.state.update_status = _("Up to date")
-            Sheets.confirm(self_ref, {
-                title = _("Update installed"),
-                text = tostring(ver),
-                ok_label = _("Restart now"),
-                on_ok = function()
-                    UIManager:restartKOReader()
-                end,
-            })
-        end },
+            self_ref:_install_update(res)
+          end },
     } })
 end
 

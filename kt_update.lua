@@ -617,6 +617,21 @@ function Update.check_bg(opts, callback, deps)
     return true
 end
 
+-- Should the automatic check open the update prompt for this entry?
+-- Returns true + "ok", or false + the reason it stays quiet
+-- ("up_to_date" / "skipped").
+function Update.should_prompt(entry, installed, settings)
+    settings = settings or {}
+    if not Update.is_newer(entry, installed) then
+        return false, "up_to_date"
+    end
+    local tag = Update.entry_tag(entry)
+    if tag and settings.update_skip_version == tag then
+        return false, "skipped"
+    end
+    return true, "ok"
+end
+
 -- Is entry newer than the installed build? installed = { channel, version,
 -- commit } (settings.installed_build; legacy = stable VERSION).
 function Update.is_newer(entry, installed)

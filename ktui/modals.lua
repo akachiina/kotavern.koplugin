@@ -187,6 +187,46 @@ function Modals.search(title, input, hint, callback)
 end
 
 -- Native ButtonDialog menu (ZenPM's Modals.actions). opts:
+-- The update prompt's three actions, as ButtonDialog button rows. Pure (no
+-- widget), so the headless harness can assert the actions and their order.
+function Modals.update_prompt_rows(tag, on_update, on_later, on_cancel)
+    local rows = {}
+    local function row(text, callback)
+        return { { text = text, callback = callback } }
+    end
+    rows[1] = row(_("Update now"), on_update)
+    rows[2] = row(_("Remind me later"), on_later)
+    rows[3] = row(_("Cancel"), on_cancel)
+    return rows
+end
+
+-- The native update prompt: three stacked buttons (now / later / cancel).
+-- Built separately from the show call so the headless harness can inspect
+-- the construction without putting a real dialog on the screen.
+function Modals.build_update_prompt(tag, on_update, on_later, on_cancel)
+    local dialog
+    local rows = Modals.update_prompt_rows(tag, on_update, on_later, on_cancel)
+    for _, r in ipairs(rows) do
+        for _, button in ipairs(r) do
+            local action = button.callback
+            button.callback = function()
+                UIManager:close(dialog)
+                if action then action() end
+            end
+        end
+    end
+    dialog = ButtonDialog:new{
+        title = _("Update available") .. " " .. tostring(tag or ""),
+        title_align = "center",
+        buttons = rows,
+    }
+    return dialog
+end
+
+function Modals.update_prompt(tag, on_update, on_later, on_cancel)
+    UIManager:show(Modals.build_update_prompt(tag, on_update, on_later, on_cancel))
+end
+
 --   rows = { { text, icon, align, checked_func, callback } }
 --   anchor (Geom from the tapped hitbox), anchor_right (hang left off anchor)
 --   compact + compact_min_width, align, title + title_icon (icon + title row),
