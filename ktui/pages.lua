@@ -1754,7 +1754,7 @@ function Pages.release_notes(view, bb, x, y, w, h, scroll)
             elseif kind == "rule" then
                 add("────────", "small", false, Theme.soft)
             elseif kind == "image" then
-                add(_("[Image: %1]"):format(tostring(block.alt or "")), "default", false, Theme.muted)
+                add(_("[Image: %s]"):format(tostring(block.alt or "")), "default", false, Theme.muted)
             elseif kind == "table" then
                 local lines = {}
                 if type(block.header) == "table" then

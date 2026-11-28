@@ -1659,7 +1659,7 @@ do
     local app = fake_app({ page = "release_notes" })
     app.state.settings.update_notes_cache = {
         channel = "stable", target = "new", title = "Nightly", version = "0.4.0",
-        body = "# Heading\n\nSome **bold** text.\n\n- one\n- two",
+        body = "# Heading\n\nSome **bold** text.\n\n![alt text](https://example.org/x.png)\n\n- one\n- two",
         items = {}, truncated = false, fetched_at = os.time(),
     }
     local view = { app = app, hitboxes = {} }
