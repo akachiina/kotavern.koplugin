@@ -960,6 +960,49 @@ end)
 -- T29: the reader position resolves by anchor and NEVER falls back to the
 -- cover (the reported bug: a new message landed on page 1).
 UIManager:scheduleIn(6.0, function()
+    -- T30: the native quick appearance dialog (the knobs that matter most,
+    -- reachable while the reader is on top).
+    do
+        local _ = require("gettext")
+        local Modals = require("ktui/modals")
+        local captured = {}
+        local real_actions = Modals.actions
+        Modals.actions = function(title, rows)
+            captured[#captured + 1] = { title = title, rows = rows }
+        end
+        -- The write path is stubbed: the harness must not reload the book
+        -- under the later blocks.
+        local written = nil
+        local real_set = app.set_book_theme_key
+        app.set_book_theme_key = function(self, key, value)
+            written = { key = key, value = value }
+            self.state.settings.book_theme = self.state.settings.book_theme or {}
+            self.state.settings.book_theme[key] = value
+        end
+        app.state.settings.book_theme = { font_size = 24 }
+        BookUI.book_appearance(app)
+        ok(#captured == 1, "T30a: the quick dialog opens once")
+        local rows = captured[1] and captured[1].rows or {}
+        ok(#rows >= 7, "T30b: the quick dialog carries the common knobs (got "
+            .. #rows .. " rows)")
+        local size_row = find_row(rows, _("Font size"))
+        ok(size_row ~= nil, "T30c: the font size row is there")
+        if size_row then
+            -- The stub stays active: a real Modals.actions would open a
+            -- native dialog headless (and abort the harness).
+            size_row.callback()
+            ok(#captured == 2, "T30d: the font size row opens its picker")
+            local picker = captured[2] and captured[2].rows or {}
+            local pick = find_row(picker, "22")
+            if pick then pick.callback() end
+            ok(written ~= nil and written.key == "font_size" and written.value == 22,
+                "T30e: the picker writes the book theme")
+        end
+        Modals.actions = real_actions
+        app.set_book_theme_key = real_set
+        app.state.settings.book_theme = nil
+    end
+
     local pick = Session._test_choose_position
     local function choice(pos, has_messages)
         if not pick then return nil end

@@ -603,6 +603,99 @@ function BookUI.open_in_list(app)
     session().open_in_list()
 end
 
+-- The quick appearance dialog: the knobs that matter most, reachable while
+-- the reader is on top (the canvas pages are not).
+function BookUI.book_appearance(app)
+    local Modals = require("ktui/modals")
+    local _ = require("gettext")
+    local theme = app:book_theme()
+    local function pick(title, current, options, on_pick)
+        local rows = {}
+        for _oi, option in ipairs(options) do
+            rows[#rows + 1] = {
+                text = option.label,
+                checked = option.value == current,
+                callback = function() on_pick(option.value) end,
+            }
+        end
+        Modals.actions(title, rows)
+    end
+    Modals.actions(_("Book appearance"), {
+        {
+            text = _("Font size"),
+            callback = function()
+                pick(_("Font size"), theme.font_size, {
+                    { label = _("Follow the reader"), value = 0 },
+                    { label = "20", value = 20 },
+                    { label = "22", value = 22 },
+                    { label = "24", value = 24 },
+                    { label = "28", value = 28 },
+                }, function(value) app:set_book_theme_key("font_size", value) end)
+            end,
+        },
+        {
+            text = _("Line spacing"),
+            callback = function()
+                pick(_("Line spacing"), theme.line_spacing, {
+                    { label = _("Follow the reader"), value = 0 },
+                    { label = "90", value = 90 },
+                    { label = "100", value = 100 },
+                    { label = "115", value = 115 },
+                    { label = "130", value = 130 },
+                }, function(value) app:set_book_theme_key("line_spacing", value) end)
+            end,
+        },
+        {
+            text = _("Margins"),
+            callback = function()
+                pick(_("Margins"), theme.margin, {
+                    { label = _("Narrow"), value = "narrow" },
+                    { label = _("Normal"), value = "normal" },
+                    { label = _("Wide"), value = "wide" },
+                }, function(value) app:set_book_theme_key("margin", value) end)
+            end,
+        },
+        {
+            text = _("Message titles"),
+            callback = function()
+                pick(_("Message titles"), theme.message_title, {
+                    { label = _("Speaker"), value = "speaker" },
+                    { label = _("Speaker and time"), value = "speaker_time" },
+                    { label = _("Time"), value = "time" },
+                    { label = _("Number"), value = "number" },
+                    { label = _("None"), value = "none" },
+                }, function(value) app:set_book_theme_key("message_title", value) end)
+            end,
+        },
+        {
+            text = theme.show_reasoning and _("Hide reasoning") or _("Show reasoning"),
+            callback = function()
+                app:set_book_theme_key("show_reasoning", not theme.show_reasoning)
+            end,
+        },
+        {
+            text = theme.cover and _("Hide cover") or _("Show cover"),
+            callback = function()
+                app:set_book_theme_key("cover", not theme.cover)
+            end,
+        },
+        {
+            text = theme.colophon and _("Hide colophon") or _("Show colophon"),
+            callback = function()
+                app:set_book_theme_key("colophon", not theme.colophon)
+            end,
+        },
+        {
+            text = _("Full settings"),
+            callback = function()
+                -- The canvas pages live under the reader: close the book first.
+                app:close_book_reader()
+                app:navigate("settings_book")
+            end,
+        },
+    })
+end
+
 -- === Global actions dialog (the "Menu do livro" link / colophon) ===
 
 function BookUI.global_actions(app)
@@ -647,6 +740,11 @@ function BookUI.global_actions(app)
         text = show_reasoning and _("Hide reasoning") or _("Show reasoning"),
         icon = "eye",
         callback = function() BookUI.toggle_reasoning(app) end,
+    }
+    rows[#rows + 1] = {
+        text = _("Book appearance"),
+        icon = "sliders",
+        callback = function() BookUI.book_appearance(app) end,
     }
     rows[#rows + 1] = {
         text = _("Author's Note"),
@@ -779,6 +877,9 @@ function BookUI.add_to_main_menu(menu_items)
                     end)
                 end,
             }
+            items[#items + 1] = menu_item(_("Book appearance"), function()
+                BookUI.book_appearance(app)
+            end)
             items[#items + 1] = menu_item(_("Author's Note"),
                 function() BookUI.authors_note(app) end)
             items[#items + 1] = menu_item(_("Add System Note"),
