@@ -5929,6 +5929,53 @@ do
     dump(long_bb, "sheet_scrollbar")
 end
 
+-- === 4w-bis. Book theme: normalize, sig, presets, labels ===================
+do
+    local BookTheme = require("kt_book_theme")
+    local t = BookTheme.normalize(nil)
+    ok(t.preset == "default" and t.cover == true and t.message_title == "speaker",
+        "book theme: the defaults are the current look")
+    ok(t.margin == "normal" and t.user_style == "quote" and t.separator == "space",
+        "book theme: the default knobs match the current book")
+    local bad = BookTheme.normalize({ margin = "huge", user_style = 42,
+        message_title = "speaker", font_size = 999, line_spacing = -5,
+        labels = "not-a-table", custom_css = 12 })
+    ok(bad.margin == "normal" and bad.user_style == "quote",
+        "book theme: an unknown enum falls back to the default")
+    ok(bad.font_size == 0 and bad.line_spacing == 0,
+        "book theme: out-of-range numbers fall back")
+    ok(type(bad.labels) == "table" and bad.custom_css == "",
+        "book theme: a broken table/string never survives")
+
+    local sig_a = BookTheme.sig({ cover = true })
+    local sig_b = BookTheme.sig({ cover = false })
+    ok(sig_a ~= sig_b, "book theme: the signature changes with a knob")
+    ok(sig_a == BookTheme.sig({ cover = true }),
+        "book theme: the signature is stable")
+
+    local presets = BookTheme.PRESETS()
+    ok(#presets == 4, "book theme: four presets ship")
+    local ids = {}
+    for _i, p in ipairs(presets) do ids[p.id] = true end
+    ok(ids.default and ids.novel and ids.compact and ids.minimal,
+        "book theme: the preset ids are default/novel/compact/minimal")
+    ok(BookTheme.normalize(presets[2].theme).page_break == true,
+        "book theme: the novel preset breaks pages per message")
+
+    local theme = BookTheme.normalize({ labels = { actions = "Ações do livro" } })
+    ok(BookTheme.label(theme, "actions", "Actions") == "Ações do livro",
+        "book theme: a custom label wins")
+    ok(BookTheme.label(theme, "go_end", "Go to the end") == "Go to the end",
+        "book theme: an unset label keeps the default")
+    ok(#BookTheme.LABEL_KEYS >= 20, "book theme: the label list is complete")
+
+    local legacy = BookTheme.from_settings({ book_show_reasoning = true })
+    ok(legacy.show_reasoning == true,
+        "book theme: the legacy reasoning flag seeds the theme")
+    ok(BookTheme.from_settings({ book_theme = { show_reasoning = false } }).show_reasoning == false,
+        "book theme: an explicit theme wins over the legacy flag")
+end
+
 -- === 5. Icon sheet: every SVG asset rasterizes ==============================
 do
     -- Direct probe: capture the raw failure for any asset NanoSVG rejects.
