@@ -1562,6 +1562,37 @@ do
     ok(okc2 == false, "update: malformed repo rejected (" .. tostring(errc2) .. ")")
 end
 
+-- === 4m-bis. Update tags, release notes and commit notes ====================
+do
+    local Update = require("kt_update")
+    ok(Update.entry_tag({ channel = "stable", version = "0.3.0" }) == "v0.3.0",
+        "update: stable entry tag")
+    ok(Update.entry_tag({ channel = "commits", commit = "a1b2c3d" }) == "commits:a1b2c3d",
+        "update: commits entry tag")
+    ok(Update.entry_tag(nil) == nil and Update.entry_tag({}) == nil,
+        "update: entry tag of a broken entry")
+
+    local commits = {
+        { sha = "cccccccccccccccc", commit = { message = "third\n\nbody", author = { date = "2026-11-20T10:00:00Z" } } },
+        { sha = "bbbbbbbbbbbbbbbb", commit = { message = "second", author = { date = "2026-11-19T10:00:00Z" } } },
+        { sha = "aaaaaaaaaaaaaaa", commit = { message = "first", author = { date = "2026-11-18T10:00:00Z" } } },
+    }
+    local notes = Update.commit_notes(commits, "bbbbbbbb")
+    ok(notes.items and #notes.items == 1 and notes.items[1].sha == "ccccccc",
+        "update: commit notes stop at the installed commit")
+    ok(notes.items[1].message == "third" and notes.items[1].date == "2026-11-20T10:00:00Z",
+        "update: commit note carries the first line and the date")
+    ok(notes.truncated == false, "update: commit notes are not truncated when the anchor is found")
+    local all = Update.commit_notes(commits, "")
+    ok(#all.items == 3 and all.truncated == false,
+        "update: an empty anchor returns every commit")
+    local far = Update.commit_notes(commits, "dddddddd")
+    ok(#far.items == 3 and far.truncated == true,
+        "update: a missing anchor truncates the window")
+    ok(Update.commit_notes(nil, "") and #Update.commit_notes(nil, "").items == 0,
+        "update: commit notes of an empty list")
+end
+
 -- === 4n. Nav labels follow the active language (never frozen) ==================
 do
     local Nav = require("ktui/nav")

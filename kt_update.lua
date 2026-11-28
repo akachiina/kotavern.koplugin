@@ -73,6 +73,59 @@ function Update.normalize_channel(channel)
     return "stable"
 end
 
+-- The identity of an update candidate: "v0.3.0" for a release, "commits:<sha>"
+-- for a repo snapshot. It is the key of the "Cancel" (skip this version)
+-- state and the label of the update prompt.
+function Update.entry_tag(entry)
+    if type(entry) ~= "table" then return nil end
+    if entry.channel == "commits" then
+        local commit = entry.commit
+        if type(commit) == "string" and commit ~= "" then
+            return "commits:" .. commit
+        end
+        return nil
+    end
+    local version = entry.version
+    if type(version) == "string" and version ~= "" then
+        return "v" .. version
+    end
+    return nil
+end
+
+-- The commits newer than the installed one, newest first. The anchor may be
+-- a short or a full SHA; the matching commit itself is NOT part of the list.
+-- truncated = true when the anchor is not in the window (the list is only
+-- the newest N commits, so the installed build may be older than that).
+function Update.commit_notes(commits, installed_commit)
+    local items = {}
+    local anchor = tostring(installed_commit or "")
+    anchor = anchor:gsub("^%s+", ""):gsub("%s+$", "")
+    local found = false
+    for _, c in ipairs(commits or {}) do
+        if type(c) == "table" then
+            local sha = tostring(c.sha or "")
+            if anchor ~= "" and sha ~= ""
+                and (sha:sub(1, #anchor) == anchor or anchor:sub(1, #sha) == sha) then
+                found = true
+                break
+            end
+            local commit = type(c.commit) == "table" and c.commit or {}
+            local author = type(commit.author) == "table" and commit.author or {}
+            local message = tostring(commit.message or "")
+            message = message:match("^[^\n]*") or ""
+            items[#items + 1] = {
+                sha = sha:sub(1, 7),
+                message = message,
+                date = tostring(author.date or ""),
+            }
+        end
+    end
+    return {
+        truncated = (anchor ~= "" and not found),
+        items = items,
+    }
+end
+
 -- === Trust validation =========================================================
 
 local trusted_download_hosts = {
@@ -114,6 +167,10 @@ function Update.pick_stable_release(releases)
                             version = version, tag = r.tag_name,
                             published_at = r.published_at or r.created_at or "",
                             asset = a, index = i,
+                            -- The release text: the "What's new" page shows it.
+                            body = type(r.body) == "string" and r.body or "",
+                            name = type(r.name) == "string" and r.name or "",
+                            html_url = type(r.html_url) == "string" and r.html_url or "",
                         }
                         break
                     end
@@ -423,6 +480,90 @@ function Update.is_newer(entry, installed)
         return true -- switching channels always offers the build
     end
     return Update.version_gt(entry.version, installed.version or "0")
+end
+
+-- The release notes for the "What's new" page.
+-- opts = { repo, channel }; installed = { channel, version, commit }.
+-- Returns { channel, target, title, version, commit, body, items, truncated }
+-- where target is "new" (something newer than the installed build exists) or
+-- "installed" (the user is up to date and wants the notes of what they run).
+function Update.notes(opts, installed)
+    opts = opts or {}
+    installed = installed or {}
+    local _ = require("gettext")
+    local repo = tostring(opts.repo or ""):match("^%s*(.-)%s*$")
+    if repo == "" then
+        repo = Update.default_repo()
+    end
+    local channel = Update.normalize_channel(opts.channel)
+
+    if channel == "commits" then
+        local commits, err = api_get(repo_api(repo) .. "/commits?per_page=30&sha=" .. Update.BRANCH)
+        if not commits then return nil, err end
+        if type(commits) ~= "table" then
+            return nil, "Could not read the commit list."
+        end
+        local list = Update.commit_notes(commits, installed.commit or "")
+        return {
+            channel = "commits",
+            target = (#list.items > 0) and "new" or "installed",
+            title = _("Commits"),
+            version = nil,
+            commit = installed.commit,
+            body = "",
+            items = list.items,
+            truncated = list.truncated,
+        }
+    end
+
+    local releases, err = api_get(repo_api(repo) .. "/releases?per_page=100")
+    if not releases then return nil, err end
+    if type(releases) ~= "table" then
+        return nil, "Could not read release information."
+    end
+
+    local function release_by_tag(tag)
+        for _, r in ipairs(releases) do
+            if type(r) == "table" and tostring(r.tag_name or "") == tostring(tag or "") then
+                return r
+            end
+        end
+        return nil
+    end
+
+    local newest = Update.pick_stable_release(releases)
+    local installed_version = tostring(installed.version or ""):gsub("^v", "")
+    local installed_release = nil
+    if installed_version ~= "" then
+        installed_release = release_by_tag("v" .. installed_version)
+    end
+
+    local target = "installed"
+    local release = installed_release
+    if newest and (installed_version == ""
+        or Update.version_gt(newest.version, installed_version)) then
+        -- There IS something newer: the notes the user wants are the ones
+        -- of the release they would get.
+        target = "new"
+        release = release_by_tag(newest.tag) or installed_release
+    end
+    if not release then release = installed_release end
+    if not release then
+        return nil, "Could not find the release notes."
+    end
+
+    local title = type(release.name) == "string" and release.name or ""
+    if title == "" then title = tostring(release.tag_name or "") end
+    return {
+        channel = "stable",
+        target = target,
+        title = title,
+        version = tostring(release.tag_name or ""):gsub("^v", ""),
+        commit = nil,
+        body = type(release.body) == "string" and release.body or "",
+        items = {},
+        truncated = false,
+    }
 end
 
 -- Full install: download + verify + extract + swap. Returns ok, version/err.
