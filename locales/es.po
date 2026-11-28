@@ -217,6 +217,9 @@ msgstr "Chats"
 msgid "Check for updates"
 msgstr "Buscar actualizaciones"
 
+msgid "Check for updates automatically"
+msgstr "Comprobar actualizaciones automáticamente"
+
 msgid "Checking for updates…"
 msgstr "Buscando actualizaciones…"
 
@@ -243,6 +246,9 @@ msgstr "Separados por comas"
 
 msgid "Comment"
 msgstr "Comentario"
+
+msgid "Commits"
+msgstr "Commits"
 
 msgid "Compact"
 msgstr "Compacto"
@@ -589,6 +595,9 @@ msgstr "Favoritos"
 msgid "Favorites first"
 msgstr "Favoritos primero"
 
+msgid "Fetching release notes…"
+msgstr "Obteniendo las notas de la versión…"
+
 msgid "Fill the API URL first, then search models."
 msgstr "Completa la URL de la API primero y luego busca modelos."
 
@@ -723,6 +732,9 @@ msgstr "Orden de inserción"
 
 msgid "Installed"
 msgstr "Instalado"
+
+msgid "Installed version"
+msgstr "Versión instalada"
 
 msgid "Interval"
 msgstr "Intervalo"
@@ -868,6 +880,9 @@ msgstr "Nuevo script"
 msgid "New connection"
 msgstr "Nueva conexión"
 
+msgid "New in %s"
+msgstr "Nuevo en %s"
+
 msgid "New name"
 msgstr "Nuevo nombre"
 
@@ -969,6 +984,9 @@ msgstr "Sin respuestas rápidas. Gestiónalas en Ajustes → Datos."
 
 msgid "No regex scripts. They find/replace text in AI output or prompts (Lua patterns)."
 msgstr "Sin scripts de regex. Localizan/sustituyen texto en la salida de la IA o en los prompts (patrones Lua)."
+
+msgid "No release notes yet."
+msgstr "Todavía no hay notas de la versión."
 
 msgid "None"
 msgstr "Ninguno"
@@ -1159,6 +1177,9 @@ msgstr "Scripts de regex"
 msgid "Regex scripts"
 msgstr "Scripts de regex"
 
+msgid "Remind me later"
+msgstr "Recordar más tarde"
+
 msgid "Remove Favorite"
 msgstr "Quitar favorito"
 
@@ -1230,6 +1251,12 @@ msgstr "Pensando…"
 
 msgid "Turn"
 msgstr "Turno"
+
+msgid "Update now"
+msgstr "Actualizar ahora"
+
+msgid "What's new"
+msgstr "Novedades"
 
 msgid "Write next message"
 msgstr "Escribir siguiente mensaje"
@@ -1515,6 +1542,9 @@ msgstr "Escribir"
 
 msgid "Write as "
 msgstr "Escribir como "
+
+msgid "[Image: %s]"
+msgstr "[Imagen: %s]"
 
 msgid "active"
 msgstr "activo"
