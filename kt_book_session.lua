@@ -26,6 +26,7 @@ local logger = require("logger")
 local _ = require("gettext")
 
 local Book = require("kt_book")
+local BookTheme = require("kt_book_theme")
 local Storage = require("kt_storage")
 
 local Session = {}
@@ -69,6 +70,13 @@ end
 
 -- === Data collection ===
 
+-- The current look of the book (the theme owns every knob, including the
+-- reasoning flag). The app settings are the only source.
+function Session.theme()
+    local st = app_state()
+    return BookTheme.from_settings(st and st.settings or {})
+end
+
 -- Header metadata, mtime-cached by kt_storage (cheap enough for every build).
 local function read_meta(chat_path)
     local header = Storage.chat_header(chat_path)
@@ -107,13 +115,16 @@ local function collect()
     -- for every build so immediate and generation-deferred reloads both see it.
     local meta = read_meta(state.chat_path)
     state.meta = meta
+    local theme = Session.theme()
     return {
         messages = messages,
         chat_name = meta.chat_name or character_name,
         character_name = character_name,
         persona_name = persona_name,
         created_at = meta.created_at,
-        show_reasoning = st and st.settings and st.settings.book_show_reasoning or false,
+        theme = theme,
+        labels = theme.labels,
+        show_reasoning = theme.show_reasoning,
         revealed_spoilers = state.revealed_spoilers,
         revealed_details = state.revealed_details,
     }
@@ -305,7 +316,12 @@ do_refresh = function(opts)
     -- toggle) must not tear the reader down: compare the freshly built HTML
     -- with the bytes on disk and keep the reader where it is.
     local current = Book.read(state.book_path)
-    if current and current == html then
+    local current_sig = ""
+    if current then
+        current_sig = current:match('name="kotavern%-book%-theme" content="([^"]*)"') or ""
+    end
+    local new_sig = BookTheme.sig(data.theme)
+    if current and current == html and current_sig == new_sig then
         return
     end
 
@@ -337,6 +353,13 @@ do_refresh = function(opts)
             if not saved then
                 state.write_error = save_err or "write failed"
             end
+            -- The reader's per-document settings are rewritten in the reload
+            -- window: the old reader has closed (and flushed its position),
+            -- so the sidecar keeps the reading position and gains the new
+            -- typography before the reader opens again.
+            pcall(function()
+                BookTheme.apply_reader_settings(state.book_path, data.theme)
+            end)
             -- Keep the reader's own copy in sync in case anything reads it
             -- before the reopen (the path is stable, the bytes are new).
             if file and file ~= state.book_path then
@@ -435,13 +458,16 @@ function Session.open(app, chat_path)
     end
 
     clear_reveals()
+    local theme = Session.theme()
     local data = {
         messages = messages,
         chat_name = meta.chat_name,
         character_name = st and st.current_character,
         persona_name = persona_name,
         created_at = meta.created_at,
-        show_reasoning = st and st.settings and st.settings.book_show_reasoning or false,
+        theme = theme,
+        labels = theme.labels,
+        show_reasoning = theme.show_reasoning,
         revealed_spoilers = state.revealed_spoilers,
         revealed_details = state.revealed_details,
     }
@@ -451,6 +477,14 @@ function Session.open(app, chat_path)
     if not book_path then
         return nil, err or "write failed"
     end
+
+    -- The reader's per-document settings (font, size, margins) travel with
+    -- the generated book: they are written BEFORE the reader opens, so the
+    -- first paint already uses them. A failure is not fatal: the book opens
+    -- with the reader's own defaults.
+    pcall(function()
+        BookTheme.apply_reader_settings(book_path, theme)
+    end)
 
     -- First open: jump to the last page once the reader is ready. Later
     -- opens keep whatever position the sidecar restored.

@@ -845,6 +845,60 @@ UIManager:scheduleIn(5.4, function()
     ui.reloadDocument = real_reload
 end)
 
+-- T29: a theme change reloads the reader and the book carries the new look.
+UIManager:scheduleIn(5.6, function()
+    local ui = ReaderUI.instance
+    if not ui then
+        ok(false, "T29a: a theme change reloads the reader once")
+        ok(false, "T29b: the reloaded book carries the new theme")
+        return
+    end
+    local original_bytes = read_generated_book()
+    local original_theme = app.state.settings.book_theme
+    app.state.settings.book_theme = { cover = false, message_title = "number" }
+    local reloads = 0
+    local real_reload = ui.reloadDocument
+    local real_schedule = UIManager.scheduleIn
+    local pending = {}
+    local function drain(limit)
+        local ran = 0
+        while ran < limit do
+            local picked = nil
+            for index = #pending, 1, -1 do
+                if pending[index].delay <= 1.0 then
+                    picked = pending[index]
+                    table.remove(pending, index)
+                    break
+                end
+            end
+            if not picked then break end
+            picked.callback()
+            ran = ran + 1
+        end
+    end
+    ui.reloadDocument = function(_, after_close, _, after_open)
+        reloads = reloads + 1
+        if after_close then after_close(ui.document.file) end
+        if after_open then after_open() end
+    end
+    UIManager.scheduleIn = function(_, delay, callback)
+        pending[#pending + 1] = { delay = delay, callback = callback }
+    end
+    Session.on_chat_changed(chat_path, { kind = "mutation" })
+    drain(5)
+    local after = read_generated_book()
+    ok(reloads == 1,
+        "T29a: a theme change reloads the reader once (got " .. tostring(reloads) .. ")")
+    ok(after ~= original_bytes and after:find('<div class="book-title">', 1, true) == nil,
+        "T29b: the reloaded book carries the new theme")
+    -- Restore the fixture: the chat and the generated file go back to the
+    -- bytes the later blocks expect.
+    app.state.settings.book_theme = original_theme
+    Book.save(Book.path_for(chat_path), original_bytes)
+    UIManager.scheduleIn = real_schedule
+    ui.reloadDocument = real_reload
+end)
+
 -- T28: the send path and the generation end carry the anchor of the new
 -- message (#mN), so the reader can land on it instead of the cover.
 UIManager:scheduleIn(5.8, function()
