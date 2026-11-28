@@ -4651,9 +4651,8 @@ do
     dump(bb_g, "settings_appearance")
 end
 
--- The display mode (List | Book) is an EXPERIMENTAL feature: its picker
--- only exists while Debug Mode is armed, and in book mode the chat theme
--- launcher leaves (KOReader's reader paints the chat, themes have no say).
+-- The chat mode (List | Book) is a NORMAL setting: its picker is always
+-- there, and both look rows (chat themes / book appearance) stay visible.
 do
     local function appearance_fixture(settings)
         local app = fake_app({ page = "settings_appearance", settings = settings })
@@ -4669,21 +4668,20 @@ do
         return app, view, okp, bb
     end
 
-    -- Without Debug Mode: Theme / Font size / Chat themes / Dashboard.
+    -- Without Debug Mode: the Chat mode row is there anyway (5 rows).
     local app_nd, view_nd, okp_nd = appearance_fixture({
         theme = "light", base_font_size = 22, debug_mode = false, chat_mode = "list" })
     ok(okp_nd, "appearance: paints without Debug Mode")
-    ok(#view_nd.hitboxes == 4,
-        "appearance: without Debug Mode the Chat mode row is gone (got "
+    ok(#view_nd.hitboxes == 5,
+        "appearance: the Chat mode row shows without Debug Mode (got "
         .. #view_nd.hitboxes .. " rows)")
 
-    -- With Debug Mode: the Chat mode row joins (5 rows) and opens the
-    -- List/Book sheet.
+    -- With Debug Mode: the same rows (Debug no longer owns the mode).
     local app_d, view_d, okp_d, bb_d = appearance_fixture({
         theme = "light", base_font_size = 22, debug_mode = true, chat_mode = "list" })
     ok(okp_d, "appearance: paints with Debug Mode")
     ok(#view_d.hitboxes == 5,
-        "appearance: with Debug Mode the Chat mode row shows (got "
+        "appearance: Debug Mode does not change the row count (got "
         .. #view_d.hitboxes .. " rows)")
     dump(bb_d, "appearance_debug_list")
     view_d.hitboxes[3].callback(0, 0)
@@ -4696,12 +4694,12 @@ do
             "appearance: the Book action switches the chat mode")
     end
 
-    -- Book mode: the chat theme launcher leaves (4 rows, no themes).
+    -- Book mode: the chat theme launcher stays (it configures the List mode).
     local app_b, view_b, okp_b, bb_b = appearance_fixture({
         theme = "light", base_font_size = 22, debug_mode = true, chat_mode = "book" })
     ok(okp_b, "appearance: paints in book mode")
-    ok(#view_b.hitboxes == 4,
-        "appearance: book mode hides the chat theme launcher (got "
+    ok(#view_b.hitboxes == 5,
+        "appearance: book mode keeps the chat theme launcher (got "
         .. #view_b.hitboxes .. " rows)")
     dump(bb_b, "appearance_debug_book")
 end
@@ -4711,8 +4709,7 @@ end
 -- is armed.
 do
     local app_dbg = fake_app({ page = "settings_debug",
-        settings = { debug_mode = true, chat_mode = "list" } })
-    function app_dbg:toggle_book_mode() self._toggled = true end
+        settings = { debug_mode = true, chat_mode = "book" } })
     function app_dbg:toggle_setting(key) self._toggled_key = key end
     function app_dbg:navigate(page) self._nav = page end
     local view_dbg = { app = app_dbg, hitboxes = {}, refresh = function() end }
@@ -4720,11 +4717,12 @@ do
     local okp_dbg = pcall(function()
         Pages.settings_debug(view_dbg, bb_dbg, 0, 0, VW, VH, 0)
     end)
-    ok(okp_dbg, "debug: page paints with the book mode toggle")
-    -- The book toggle is the FIRST row of the Experimental section.
+    ok(okp_dbg, "debug: page paints without the book mode toggle")
+    -- The book mode left the Debug category: the FIRST experimental row is
+    -- now the HTML sandbox.
     view_dbg.hitboxes[1].callback(0, 0)
-    ok(app_dbg._toggled == true,
-        "debug: the first experimental row toggles book mode")
+    ok(app_dbg._nav == "html_test",
+        "debug: the first experimental row opens the HTML sandbox")
 
     -- HTML is the sole normal message-body renderer. Capture the real row
     -- specification as well as painting it, so the removed toggle cannot return.
@@ -8387,10 +8385,11 @@ do
                 Pages.settings_appearance(view_r2, bb_r2, 0, 0, VW, VH, 0)
             end)
             ok(okp_r2, "r2: Appearance paints without the density row")
-            -- Rows: Theme(1) Font size(2) Chat(3) Dashboard(4) - and no
-            -- 5th row: density must not have crept back in.
-            ok(#view_r2.hitboxes == 4,
-                "r2: Appearance = 4 tappable rows, no density (got "
+            -- Rows: Theme(1) Font size(2) Chat mode(3) Chat themes(4)
+            -- Dashboard(5) - and no 6th row: density must not have crept
+            -- back in.
+            ok(#view_r2.hitboxes == 5,
+                "r2: Appearance = 5 tappable rows, no density (got "
                 .. #view_r2.hitboxes .. ")")
             local Theme_r2 = require("ktui/theme")
             ok(app_r2b.state.settings.density == "normal"

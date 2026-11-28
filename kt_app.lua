@@ -37,7 +37,7 @@ local SETTINGS_DEFAULTS = {
     custom_css = "",           -- user CSS appended to the chat stylesheet (ST custom_css parity)
     chat_footer = false,      -- thin info band above the composer (KOReader readerfooter parity)
     book_show_reasoning = false, -- book mode: render the reasoning blocks
-    chat_mode = "list",        -- list | book (Debug > Experimental; Appearance > Chat mode)
+    chat_mode = "book",        -- list | book (Book is the default and recommended mode)
     debug_header_stats = false, -- Debug: plugin/device RAM+CPU beside the header dots
     bubble_radius = "normal",  -- bubbles panel corner radius: small | normal | large
     bubble_theme_id = "",      -- global default bubble theme (empty = plain settings)
@@ -738,11 +738,6 @@ end
 
 function App:disable_debug_mode()
     self.state.settings.debug_mode = false
-    -- Book mode is an experimental feature gated by Debug Mode: leaving it
-    -- armed would strand the user in a mode whose switch just disappeared.
-    if self.state.settings.chat_mode == "book" then
-        self:set_chat_mode("list")
-    end
     Storage.save_settings(self.state.settings)
     self:apply_settings()
     -- Leaving a debug page? Back to Settings so the (now hidden) category

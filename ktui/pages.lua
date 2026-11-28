@@ -467,49 +467,44 @@ function Pages.settings_appearance(view, bb, x, y, w, h, scroll)
             callback = function() app:prompt_base_font_size() end,
         },
     }
-    -- Chat mode (List | Book). Book mode is an experimental feature, so
-    -- the picker only exists while Debug Mode is armed (the switch itself
-    -- lives in Settings > Debug > Experimental).
-    if app.state.settings.debug_mode then
-        rows[#rows + 1] = {
-            text = _("Chat mode"),
-            icon = "comments",
-            subtext = _("List (SillyTavern) or Book (experimental)"),
-            value = function()
-                return (app.state.settings.chat_mode == "book")
-                    and _("Book") or _("List")
-            end,
-            callback = function()
-                local Sheets = require("ktui/sheets")
-                local current = app.state.settings.chat_mode
-                Sheets.show(app, {
-                    title = _("Chat mode"),
-                    actions = {
-                        { label = _("List"), icon = "list",
-                          checked = (current ~= "book"),
-                          on_tap = function()
-                              app:set_chat_mode("list")
-                          end },
-                        { label = _("Book"), icon = "book",
-                          checked = (current == "book"),
-                          on_tap = function()
-                              app:set_chat_mode("book")
-                          end },
-                    },
-                })
-            end,
-        }
-    end
-    -- Chat themes paint the LIST view only. In book mode the chat is
-    -- rendered by KOReader's own reader, so there is nothing for the theme
-    -- knobs to customize: the row leaves instead of lying around greyed.
-    if app.state.settings.chat_mode ~= "book" then
-        rows[#rows + 1] = {
-            text = _("Chat themes"),
-            icon = "sliders",
-            callback = function() app:navigate("settings_appearance_chat") end,
-        }
-    end
+    -- Chat mode (List | Book). The Book mode is the default and the
+    -- recommended one: the reader's own pagination beats the canvas on
+    -- e-ink. The picker is always here - it is a normal setting now.
+    rows[#rows + 1] = {
+        text = _("Chat mode"),
+        icon = "comments",
+        subtext = _("List (SillyTavern) or Book (native reader)"),
+        value = function()
+            return (app.state.settings.chat_mode == "book")
+                and _("Book") or _("List")
+        end,
+        callback = function()
+            local Sheets = require("ktui/sheets")
+            local current = app.state.settings.chat_mode
+            Sheets.show(app, {
+                title = _("Chat mode"),
+                actions = {
+                    { label = _("List"), icon = "list",
+                      checked = (current ~= "book"),
+                      on_tap = function()
+                          app:set_chat_mode("list")
+                      end },
+                    { label = _("Book"), icon = "book",
+                      checked = (current == "book"),
+                      on_tap = function()
+                          app:set_chat_mode("book")
+                      end },
+                },
+            })
+        end,
+    }
+    -- Chat themes paint the LIST view only (the book has its own look), but
+    -- the row stays in both modes: each mode has its own settings.
+    rows[#rows + 1] = {
+        text = _("Chat themes"),
+        icon = "sliders",
+        callback = function() app:navigate("settings_appearance_chat") end,
+    }
     rows[#rows + 1] = {
         text = _("Dashboard"), callback = function() app:navigate("settings_dashboard") end }
     return Pages.settings_section(view, bb, x, y, w, h, scroll, rows)
@@ -524,14 +519,6 @@ function Pages.settings_appearance_chat(view, bb, x, y, w, h, scroll)
     -- (Pages.theme_edit); this page only routes - create, manage, and
     -- the global default picker.
     local app = view.app
-
-    -- Book mode renders the chat in KOReader's own reader: the theme
-    -- launcher has nothing to customize. Bounce back to Appearance instead
-    -- of showing a page whose rows do nothing.
-    if app.state.settings.chat_mode == "book" then
-        app:navigate("settings_appearance")
-        return 0
-    end
 
     -- Global default (the dialog picks it): show the global name, not the
     -- chat-resolved one (the two states reading as one value was its own
@@ -1446,10 +1433,6 @@ function Pages.settings_debug(view, bb, x, y, w, h, scroll)
     local app = view.app
     local rows = {
         { section = true, text = _("Experimental") },
-        { text = _("Book mode"), icon = "book", toggle = true,
-          subtext = _("Open chats as a native KOReader book (experimental)"),
-          value = function() return app.state.settings.chat_mode == "book" end,
-          callback = function() app:toggle_book_mode() end },
         { text = _("Test HTML"), icon = "eye",
           subtext = _("Sandbox page painted by MuPDF from HTML"),
           callback = function() app:navigate("html_test") end },

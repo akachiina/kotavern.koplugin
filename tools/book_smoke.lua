@@ -1140,9 +1140,9 @@ UIManager:scheduleIn(15.4, function()
             app.state.settings.debug_mode = true
             app:set_chat_mode("book")
             app:disable_debug_mode()
-            ok(app.state.settings.chat_mode == "list"
+            ok(app.state.settings.chat_mode == "book"
                 and app.state.settings.debug_mode == false,
-                "T19: disabling Debug Mode forces the display mode back to List")
+                "T19: disabling Debug Mode keeps the Book mode")
             app:close_book_reader()
             UIManager:scheduleIn(0.4, function()
                 -- T21e: choosing a quick reply sends its configured text via
