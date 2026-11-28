@@ -5976,6 +5976,33 @@ do
         "book theme: an explicit theme wins over the legacy flag")
 end
 
+-- === 4w-ter. The book look app API ========================================
+do
+    local App = require("kt_app")
+    local app = fake_app({ page = "settings_book" })
+    -- The REAL App methods (the fake app only carries the state).
+    setmetatable(app, { __index = App })
+    app.state.settings.book_theme = { cover = false, labels = { actions = "Ações" } }
+    ok(app:book_theme().cover == false,
+        "book look: the app reads the stored theme")
+    ok(app:book_theme().labels.actions == "Ações",
+        "book look: the app reads the stored labels")
+    for _i, name in ipairs({ "set_book_theme_key", "apply_book_preset",
+        "set_book_label", "reset_book_labels", "reset_book_look",
+        "list_book_fonts", "choose_book_font", "prompt_book_custom_css" }) do
+        ok(type(app[name]) == "function",
+            "book look: the app exposes " .. name)
+    end
+    -- The font list exposes NAMES (the reader's font_face is a name).
+    local fonts = app:list_book_fonts()
+    ok(type(fonts) == "table", "book look: the font list is a table")
+    for _i, font in ipairs(fonts) do
+        ok(type(font.name) == "string" and font.name ~= "",
+            "book look: every font carries a name")
+        break
+    end
+end
+
 -- === 5. Icon sheet: every SVG asset rasterizes ==============================
 do
     -- Direct probe: capture the raw failure for any asset NanoSVG rejects.

@@ -6835,6 +6835,140 @@ function App:refresh_release_notes()
     return true
 end
 
+-- === Book look (the Book-mode theme) =======================================
+--
+-- The look of the generated book: a theme (kt_book_theme) in the settings,
+-- the page that edits it (Settings > Appearance > Book appearance) and the
+-- quick native dialog over the reader.
+
+function App:book_theme()
+    local BookTheme = require("kt_book_theme")
+    return BookTheme.from_settings(self.state.settings)
+end
+
+-- Any change to the look asks the open book to reload: the generated HTML
+-- and the per-document reader settings both change.
+function App:_book_look_changed()
+    local ok, Session = pcall(require, "kt_book_session")
+    if not ok or not Session then return end
+    if not Session.is_active() then return end
+    local path = self.state.current_chat_path
+    if not path then return end
+    pcall(function()
+        Session.on_chat_changed(path, { kind = "mutation" })
+    end)
+end
+
+function App:_save_book_theme(theme)
+    self.state.settings.book_theme = theme
+    Storage.save_settings(self.state.settings)
+    self:_book_look_changed()
+    self:refresh(true)
+end
+
+function App:set_book_theme_key(key, value)
+    local BookTheme = require("kt_book_theme")
+    local theme = BookTheme.from_settings(self.state.settings)
+    theme[key] = value
+    theme.preset = "custom"
+    self:_save_book_theme(BookTheme.normalize(theme))
+end
+
+function App:apply_book_preset(id)
+    local BookTheme = require("kt_book_theme")
+    for _, preset in ipairs(BookTheme.PRESETS()) do
+        if preset.id == id then
+            local theme = BookTheme.normalize(preset.theme)
+            theme.preset = id
+            self:_save_book_theme(theme)
+            return true
+        end
+    end
+    return false
+end
+
+function App:set_book_label(key, value)
+    local BookTheme = require("kt_book_theme")
+    local theme = BookTheme.from_settings(self.state.settings)
+    local labels = {}
+    for k, v in pairs(theme.labels or {}) do labels[k] = v end
+    if value == nil or value == "" then
+        labels[key] = nil
+    else
+        labels[key] = tostring(value):sub(1, 120)
+    end
+    theme.labels = labels
+    theme.preset = "custom"
+    self:_save_book_theme(BookTheme.normalize(theme))
+end
+
+function App:reset_book_labels()
+    local BookTheme = require("kt_book_theme")
+    local theme = BookTheme.from_settings(self.state.settings)
+    theme.labels = {}
+    theme.preset = "custom"
+    self:_save_book_theme(BookTheme.normalize(theme))
+end
+
+function App:reset_book_look()
+    return self:apply_book_preset("default")
+end
+
+-- The installed fonts, by NAME: the reader's per-document "font_face" is the
+-- font name, not the file path.
+function App:list_book_fonts()
+    local out = {}
+    local ok, FontList = pcall(require, "fontlist")
+    if not ok or not FontList or type(FontList.fontinfo) ~= "table" then
+        return out
+    end
+    for _, info in ipairs(FontList.fontinfo) do
+        local entry = info[1]
+        local path = info[2]
+        if type(entry) == "table" and type(entry.name) == "string"
+            and entry.name ~= "" then
+            out[#out + 1] = { name = entry.name, path = tostring(path or "") }
+        end
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return out
+end
+
+function App:choose_book_font()
+    local Sheets = require("ktui/sheets")
+    local _ = require("gettext")
+    local self_ref = self
+    local current = self:book_theme().font_face
+    local actions = {
+        { label = _("Follow the reader"), checked = current == "",
+          on_tap = function()
+              self_ref:set_book_theme_key("font_face", "")
+          end },
+    }
+    for _, font in ipairs(self:list_book_fonts()) do
+        actions[#actions + 1] = {
+            label = font.name,
+            checked = current == font.name,
+            on_tap = function()
+                self_ref:set_book_theme_key("font_face", font.name)
+            end,
+        }
+    end
+    Sheets.show(self, { title = _("Book font"), actions = actions })
+end
+
+function App:prompt_book_custom_css()
+    local Modals = require("ktui/modals")
+    local _ = require("gettext")
+    local self_ref = self
+    Modals.input(_("Custom CSS"), self:book_theme().custom_css or "",
+        _("e.g. p { margin: 0 0 4px 0; }"), _("Save"), function(text)
+            self_ref:set_book_theme_key("custom_css", text)
+        end, function()
+            self_ref:set_book_theme_key("custom_css", "")
+        end, true)
+end
+
 -- === Storage: usage, backup export/import, data folder ===========================
 -- Memoized per data root; refresh_storage() forces a recount.
 
